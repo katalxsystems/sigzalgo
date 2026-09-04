@@ -161,19 +161,6 @@ def _has_fresher_session(username, current_session_id=None):
     return False
 
 
-def has_login_this_trading_session(username) -> bool:
-    """Return True if ``username`` has an active session that authenticated at
-    or after today's rollover boundary (default 03:00 IST).
-
-    Unlike ``is_session_valid()``, this reads only the database and never
-    touches the Flask request-scoped ``session``, so background threads can ask
-    it. Used at boot to decide whether the stored broker token belongs to the
-    current trading session: Indian broker tokens die at the daily rollover, and
-    only a login after that boundary re-establishes one.
-    """
-    return _has_fresher_session(username)
-
-
 def revoke_user_tokens(revoke_db_tokens=True):
     """
     Revoke auth tokens for the current user when session expires.
@@ -248,6 +235,14 @@ def revoke_user_tokens(revoke_db_tokens=True):
             except Exception as cache_error:
                 logger.exception(f"Error clearing settings cache: {cache_error}")
 
+            # Clear strategy cache on logout/session expiry
+            try:
+                from database.strategy_db import clear_strategy_cache
+
+                clear_strategy_cache()
+            except Exception as cache_error:
+                logger.exception(f"Error clearing strategy cache: {cache_error}")
+
             # Clear telegram cache on logout/session expiry
             try:
                 from database.telegram_db import clear_telegram_cache
@@ -304,16 +299,34 @@ def revoke_user_tokens(revoke_db_tokens=True):
 
 
 def check_session_validity(f):
-    """Decorator to check session validity before executing route"""
+    """Decorator to check session validity before executing route.
+
+    Requires a fully logged-in session (password + connected broker) --
+    is_session_valid() returns False whenever session["logged_in"] isn't
+    set, which is also true for a merely broker-less (but otherwise
+    perfectly valid) session, since connecting a broker is optional now
+    (the dashboard shows a Connect Broker CTA instead of forcing it).
+
+    That distinction matters here specifically because this decorator does
+    not just deny the request -- on failure it calls revoke_user_tokens()
+    and session.clear(), wiping the ENTIRE session, not just the broker
+    connection. Applied unconditionally, that meant any route still using
+    this decorator would hard-log-out a validly-logged-in, broker-less user
+    the moment their browser touched it (e.g. Navbar's background calls),
+    which is a strictly worse outcome than the route just denying access.
+    So: a genuinely invalid/expired session (no "user" at all, or past the
+    daily IST rollover) still gets the full revoke+clear treatment below;
+    a session that's merely missing a broker connection gets a plain 401
+    (or a redirect to the broker-connect flow) with the session left
+    intact, so the user stays logged in and can still reach the dashboard.
+
+    Routes that don't need a broker at all should use require_app_session
+    instead -- this decorator is for routes that genuinely need one.
+    """
 
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not is_session_valid():
-            # Revoke tokens before clearing session
-            revoke_user_tokens()
-            session.clear()
-
-            # Check if this is an AJAX/fetch request
             from flask import jsonify, request
 
             is_ajax = (
@@ -322,6 +335,24 @@ def check_session_validity(f):
                 or request.content_type == "application/json"
                 or request.is_json
             )
+
+            if "user" in session and not session.get("logged_in"):
+                # App session is fine, just no broker connected -- deny
+                # without touching the session (see docstring above).
+                logger.info("Broker not connected for this route (session left intact)")
+                if is_ajax:
+                    return jsonify(
+                        {
+                            "status": "error",
+                            "code": "BROKER_SESSION_EXPIRED",
+                            "message": "Broker not connected - please connect your broker",
+                        }
+                    ), 401
+                return redirect(url_for("auth.broker_login"))
+
+            # Genuinely invalid/expired session -- revoke tokens and clear.
+            revoke_user_tokens()
+            session.clear()
 
             if is_ajax:
                 # Return JSON response for AJAX requests instead of redirect
@@ -338,6 +369,144 @@ def check_session_validity(f):
             logger.info("Invalid session detected - redirecting to login")
             return redirect(url_for("auth.login"))
         logger.debug("Session validated successfully")
+        return f(*args, **kwargs)
+
+    return decorated_function
+
+
+def require_app_session(f):
+    """Like check_session_validity, but doesn't require a connected broker
+    — only a valid password-authenticated app session (``"user" in session``).
+
+    check_session_validity's is_session_valid() requires
+    session["logged_in"], which only becomes true once a broker is
+    connected. That's correct for routes that genuinely need a broker
+    (trading, funds, positions, ...), but wrong for routes that already
+    handle "no broker yet" gracefully themselves (a manual
+    ``if not session.get("broker"): return 401/400 ...`` in the body) —
+    under check_session_validity that manual check is dead code, since the
+    decorator 401s first with a generic "session expired" message instead
+    of the route's own, more accurate one. Use this decorator for those
+    routes instead. When the session *is* fully logged in, the same daily
+    expiry check as check_session_validity still applies.
+    """
+
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        from flask import jsonify, request
+
+        is_ajax = (
+            request.headers.get("X-Requested-With") == "XMLHttpRequest"
+            or request.headers.get("Accept", "").startswith("application/json")
+            or request.content_type == "application/json"
+            or request.is_json
+        )
+
+        if "user" not in session:
+            if is_ajax:
+                return jsonify(
+                    {
+                        "status": "error",
+                        "error": "session_expired",
+                        "message": "Your session has expired. Please log in again.",
+                    }
+                ), 401
+            return redirect(url_for("auth.login"))
+
+        if session.get("logged_in") and not is_session_valid():
+            revoke_user_tokens()
+            session.clear()
+
+            if is_ajax:
+                logger.info("Invalid session detected - returning 401 for AJAX request")
+                return jsonify(
+                    {
+                        "status": "error",
+                        "error": "session_expired",
+                        "message": "Your session has expired. Please log in again.",
+                    }
+                ), 401
+
+            logger.info("Invalid session detected - redirecting to login")
+            return redirect(url_for("auth.login"))
+
+        return f(*args, **kwargs)
+
+    return decorated_function
+
+
+def admin_required(f):
+    """Decorator to require a valid session AND an administrator account.
+
+    Requires a password-authenticated session and is_admin=True — NOT a
+    connected broker. Admin actions (managing other users, broker-plugin
+    config, holiday calendars, SMTP/security settings) have nothing to do
+    with whether the admin's own broker happens to be connected right now,
+    so (like require_app_session, and unlike check_session_validity) this
+    does not wipe the session just because logged_in is False — only a
+    genuinely missing/expired app session does that. Use this (instead of
+    check_session_validity) on routes that mutate instance-wide state, now
+    that self-registration means a logged-in session no longer implies
+    "the one and only user."
+    """
+
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        from flask import jsonify, request
+
+        is_ajax = (
+            request.headers.get("X-Requested-With") == "XMLHttpRequest"
+            or request.headers.get("Accept", "").startswith("application/json")
+            or request.content_type == "application/json"
+            or request.is_json
+        )
+
+        if "user" not in session:
+            if is_ajax:
+                return jsonify(
+                    {
+                        "status": "error",
+                        "error": "session_expired",
+                        "message": "Your session has expired. Please log in again.",
+                    }
+                ), 401
+            return redirect(url_for("auth.login"))
+
+        if session.get("logged_in") and not is_session_valid():
+            # Genuinely stale (past the daily IST rollover) rather than
+            # merely broker-less -- this is the real "log all the way out"
+            # case, matching check_session_validity's behavior.
+            revoke_user_tokens()
+            session.clear()
+
+            if is_ajax:
+                logger.info("Invalid session detected - returning 401 for AJAX request")
+                return jsonify(
+                    {
+                        "status": "error",
+                        "error": "session_expired",
+                        "message": "Your session has expired. Please log in again.",
+                    }
+                ), 401
+
+            logger.info("Invalid session detected - redirecting to login")
+            return redirect(url_for("auth.login"))
+
+        from database.user_db import find_user_by_exact_username
+
+        username = session.get("user")
+        user = find_user_by_exact_username(username) if username else None
+        if user is None or not user.is_admin:
+            logger.warning(f"Admin-only route denied for non-admin session: {username}")
+
+            if is_ajax:
+                return jsonify(
+                    {"status": "error", "message": "Administrator access required."}
+                ), 403
+
+            return redirect(url_for("auth.login"))
+
+        logger.debug("Admin session validated successfully")
         return f(*args, **kwargs)
 
     return decorated_function

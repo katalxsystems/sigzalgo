@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Dict, List, Tuple
 
 from sqlalchemy import distinct, func
 
@@ -76,19 +76,7 @@ def get_expiry_dates(
             )
 
         # Validate exchange
-        # NCO/NCDEX commodities and BCD currency list their own options.
-        # NCDEX was missing here, so its expiry lookup returned a 400 and every
-        # downstream selector in Strategy Builder stayed empty.
-        supported_exchanges = [
-            "NFO",
-            "BFO",
-            "MCX",
-            "CDS",
-            "NCO",
-            "BCD",
-            "NCDEX",
-            "CRYPTO",
-        ]
+        supported_exchanges = ["NFO", "BFO", "MCX", "CDS", "CRYPTO"]
         if exchange.upper() not in supported_exchanges:
             logger.warning(f"Unsupported exchange provided: {exchange}")
             return (
@@ -124,9 +112,9 @@ def get_expiry_dates(
             # All exchanges support FUT along with their specific types
             if exchange in ["NFO", "BFO"]:
                 query = query.filter(SymToken.instrumenttype.in_(["FUTSTK", "FUTIDX", "FUT"]))
-            elif exchange in ["MCX", "NCDEX"]:
+            elif exchange == "MCX":
                 query = query.filter(SymToken.instrumenttype.in_(["FUTCOM", "FUTENR", "FUT"]))
-            elif exchange in ["CDS", "BCD"]:
+            elif exchange == "CDS":
                 query = query.filter(SymToken.instrumenttype.in_(["FUTCUR", "FUTIRC", "FUT"]))
             elif exchange == "CRYPTO":
                 query = query.filter(SymToken.instrumenttype.in_(["FUT", "PERPFUT"]))
@@ -134,9 +122,9 @@ def get_expiry_dates(
             # All exchanges support CE/PE along with their specific types
             if exchange in ["NFO", "BFO"]:
                 query = query.filter(SymToken.instrumenttype.in_(["OPTSTK", "OPTIDX", "CE", "PE"]))
-            elif exchange in ["MCX", "NCDEX"]:
+            elif exchange == "MCX":
                 query = query.filter(SymToken.instrumenttype.in_(["OPTFUT", "CE", "PE"]))
-            elif exchange in ["CDS", "BCD"]:
+            elif exchange == "CDS":
                 query = query.filter(SymToken.instrumenttype.in_(["OPTCUR", "OPTIRC", "CE", "PE"]))
             elif exchange == "CRYPTO":
                 query = query.filter(SymToken.instrumenttype.in_(["CE", "PE"]))

@@ -34,10 +34,9 @@ Python strategies use APScheduler with IST timezone support to automatically sta
 │  │    │                                                                     ││
 │  │    └── Check holiday calendar (NSE holidays)                            ││
 │  │                                                                          ││
-│  │  Market Hours (read from the market calendar DB, not hardcoded):         ││
+│  │  Market Hours:                                                           ││
 │  │    NSE/BSE: 09:15 - 15:30                                               ││
-│  │    NFO/BFO: 09:15 - 15:40  (F&O runs past the cash close)               ││
-│  │    MCX: 09:00 - 23:55                                                   ││
+│  │    MCX: 09:00 - 23:30                                                   ││
 │  │    CDS: 09:00 - 17:00                                                   ││
 │  └─────────────────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────────────────┘

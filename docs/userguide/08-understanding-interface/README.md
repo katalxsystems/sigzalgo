@@ -48,7 +48,8 @@ OpenAlgo's interface is designed to be intuitive while providing powerful functi
 │                         │
 │  STRATEGIES             │
 │  ├── Flow Builder       │
-│  └── Python Strategy    │
+│  ├── Python Strategy    │
+│  └── Strategy Manager   │
 │                         │
 │  MONITORING             │
 │  ├── PnL Tracker        │

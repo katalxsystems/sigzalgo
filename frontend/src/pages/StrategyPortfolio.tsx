@@ -31,7 +31,6 @@ import {
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useMarketData } from '@/hooks/useMarketData'
-import { isLegClosed } from '@/lib/strategyMath'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { showToast } from '@/utils/toast'
@@ -92,7 +91,7 @@ function isExpired(leg: PortfolioLeg, now: Date): boolean {
 function legPnl(leg: PortfolioLeg, currentLtp: number | undefined): number {
   const sign = leg.side === 'BUY' ? 1 : -1
   const qty = leg.lots * leg.lotSize
-  if (isLegClosed(leg)) {
+  if (leg.exitPrice !== undefined && leg.exitPrice > 0) {
     return sign * (leg.exitPrice - leg.price) * qty
   }
   if (currentLtp === undefined) return 0
@@ -254,7 +253,7 @@ export default function StrategyPortfolio() {
       const ex = optionExchangeFor(entry.exchange)
       for (const leg of entry.legs) {
         if (!leg.symbol) continue
-        if (isLegClosed(leg)) continue
+        if (leg.exitPrice !== undefined && leg.exitPrice > 0) continue
         if (isExpired(leg, now)) continue
         const key = `${ex}:${leg.symbol}`
         if (seen.has(key)) continue
@@ -359,7 +358,7 @@ export default function StrategyPortfolio() {
       let closedCount = 0
       for (const leg of entry.legs) {
         pnl += legPnl(leg, pricesBySymbol[leg.symbol])
-        if (isLegClosed(leg)) closedCount++
+        if (leg.exitPrice !== undefined && leg.exitPrice > 0) closedCount++
       }
       const status: 'open' | 'partial' | 'closed' =
         entry.legs.length === 0
@@ -712,7 +711,8 @@ export default function StrategyPortfolio() {
                                 </thead>
                                 <tbody className="divide-y">
                                   {entry.legs.map((leg, i) => {
-                                    const isClosed = isLegClosed(leg)
+                                    const isClosed =
+                                      leg.exitPrice !== undefined && leg.exitPrice > 0
                                     const legExpired = !isClosed && isExpired(leg, new Date())
                                     const currentLtp = pricesBySymbol[leg.symbol]
                                     const qty = leg.lots * leg.lotSize

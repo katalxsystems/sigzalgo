@@ -5,14 +5,13 @@ Based on Noren WebSocket API (same as Flattrade)
 """
 
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable
 from typing import Any, Dict, Optional
 
 import websocket
-
-from utils.logging import get_logger
 
 
 class ZebuWebSocket:
@@ -92,7 +91,7 @@ class ZebuWebSocket:
         self._heartbeat_lock = threading.Lock()
 
         # Logging
-        self.logger = get_logger("zebu_websocket")
+        self.logger = logging.getLogger("zebu_websocket")
 
     def connect(self) -> bool:
         """

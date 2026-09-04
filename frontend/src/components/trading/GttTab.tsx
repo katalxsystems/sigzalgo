@@ -83,17 +83,7 @@ function formatDateTime(iso?: string): string {
   })
 }
 
-interface GttTabProps {
-  /**
-   * Asked before a cancel or a modify leaves for the broker; true refuses
-   * and the host has already said why. The trading dock supplies one so a
-   * GTT cannot be changed under a replaying chart, where no other order route
-   * on the page will act. The order book page passes nothing.
-   */
-  refuse?: () => boolean
-}
-
-export default function GttTab({ refuse }: GttTabProps = {}) {
+export default function GttTab() {
   const { apiKey, user } = useAuthStore()
   const formatCurrency = useMemo(() => makeFormatCurrency(user?.broker), [user?.broker])
 
@@ -154,7 +144,6 @@ export default function GttTab({ refuse }: GttTabProps = {}) {
   }, [fetchGtts])
 
   const handleCancel = async (triggerId: string) => {
-    if (refuse?.()) return
     setCancellingId(triggerId)
     try {
       const response = await tradingApi.cancelGttOrder(triggerId)
@@ -174,7 +163,6 @@ export default function GttTab({ refuse }: GttTabProps = {}) {
   }
 
   const openModify = (gtt: GttOrder) => {
-    if (refuse?.()) return
     setModifyingGtt(gtt)
 
     const isOco = gtt.trigger_type === 'two-leg'
@@ -209,8 +197,6 @@ export default function GttTab({ refuse }: GttTabProps = {}) {
 
   const saveModify = async () => {
     if (!modifyingGtt || !modifyForm) return
-    // Asked again here: a replay can start while the dialog stands open.
-    if (refuse?.()) return
     if (modifyForm.quantity <= 0 || modifyForm.price < 0) {
       showToast.error('Quantity and limit price must be positive', 'orders')
       return

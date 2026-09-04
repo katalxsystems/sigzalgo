@@ -10,7 +10,7 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-def authenticate_broker(mobile_number, totp, mpin):
+def authenticate_broker(mobile_number, totp, mpin, account_id=None):
     """
     Authenticate with Kotak using TOTP and MPIN flow.
 
@@ -39,8 +39,8 @@ def authenticate_broker(mobile_number, totp, mpin):
         # Get UCC from BROKER_API_KEY and access_token from BROKER_API_SECRET
         from utils.config import get_broker_api_key, get_broker_api_secret
 
-        ucc = get_broker_api_key()
-        access_token = get_broker_api_secret()
+        ucc = get_broker_api_key(account_id)
+        access_token = get_broker_api_secret(account_id)
 
         if not ucc:
             logger.error("BROKER_API_KEY (UCC) is not configured")
@@ -83,9 +83,9 @@ def authenticate_broker(mobile_number, totp, mpin):
         )
 
         logger.debug(f"TOTP Login Response Status: {response.status_code}")
+        logger.debug(f"TOTP Login Response: {response.text}")
 
         data_dict = json.loads(response.text)
-        logger.debug(f"TOTP Login Response fields: {list(data_dict)}")
 
         # Check for errors in TOTP login
         if "data" not in data_dict or data_dict.get("data", {}).get("status") != "success":
@@ -119,9 +119,9 @@ def authenticate_broker(mobile_number, totp, mpin):
         )
 
         logger.debug(f"MPIN Validation Response Status: {response.status_code}")
+        logger.debug(f"MPIN Validation Response: {response.text}")
 
         data_dict = json.loads(response.text)
-        logger.debug(f"MPIN Validation Response fields: {list(data_dict)}")
 
         # Check for errors in MPIN validation
         if "data" not in data_dict or data_dict.get("data", {}).get("status") != "success":
@@ -143,7 +143,9 @@ def authenticate_broker(mobile_number, totp, mpin):
         # Create auth string: trading_token:::trading_sid:::base_url:::access_token
         # This format allows extracting all components needed for subsequent API calls
         auth_string = f"{trading_token}:::{trading_sid}:::{base_url}:::{access_token}"
-        logger.debug(f"AUTH TOKEN CREATED for base URL: {base_url}")
+        logger.debug(
+            f"AUTH TOKEN CREATED: {trading_token[:10]}...:::{trading_sid}:::{base_url}:::{access_token[:10]}..."
+        )
 
         return auth_string, None
 

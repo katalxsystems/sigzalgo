@@ -15,7 +15,7 @@ Custom Domain:  POST https://<your-custom-domain>/api/v1/optiongreeks
 ```json
 {
   "apikey": "<your_app_apikey>",
-  "symbol": "NIFTY25AUG2626000CE",
+  "symbol": "NIFTY25NOV2526000CE",
   "exchange": "NFO",
   "interest_rate": 0.00,
   "underlying_symbol": "NIFTY",
@@ -30,7 +30,7 @@ curl -X POST http://127.0.0.1:5000/api/v1/optiongreeks \
   -H 'Content-Type: application/json' \
   -d '{
   "apikey": "<your_app_apikey>",
-  "symbol": "NIFTY25AUG2626000CE",
+  "symbol": "NIFTY25NOV2526000CE",
   "exchange": "NFO",
   "interest_rate": 0.00,
   "underlying_symbol": "NIFTY",
@@ -43,12 +43,12 @@ curl -X POST http://127.0.0.1:5000/api/v1/optiongreeks \
 ```json
 {
   "status": "success",
-  "symbol": "NIFTY25AUG2626000CE",
+  "symbol": "NIFTY25NOV2526000CE",
   "exchange": "NFO",
   "underlying": "NIFTY",
   "strike": 26000.0,
   "option_type": "CE",
-  "expiry_date": "25-Aug-2026",
+  "expiry_date": "25-Nov-2025",
   "days_to_expiry": 28.5071,
   "spot_price": 25966.05,
   "option_price": 435,
@@ -59,7 +59,7 @@ curl -X POST http://127.0.0.1:5000/api/v1/optiongreeks \
     "gamma": 0.000352,
     "theta": -7.919,
     "vega": 28.9489,
-    "rho": -0.339742
+    "rho": 9.733994
   }
 }
 ```

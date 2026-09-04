@@ -92,18 +92,18 @@ interface ChartInstance {
 export default function IVChart() {
   const { mode } = useThemeStore()
   const isDarkMode = mode === 'dark'
-  const { toolsFnoExchanges, defaultToolsFnoExchange, defaultUnderlyings } = useSupportedExchanges()
+  const { fnoExchanges, defaultFnoExchange, defaultUnderlyings } = useSupportedExchanges()
 
   // Control state
   const [isLoading, setIsLoading] = useState(false)
   const [activeTab, setActiveTab] = useState<MetricKey>('iv')
-  const [selectedExchange, setSelectedExchange] = useState(defaultToolsFnoExchange)
+  const [selectedExchange, setSelectedExchange] = useState(defaultFnoExchange)
   const [underlyings, setUnderlyings] = useState<string[]>(
-    defaultUnderlyings[defaultToolsFnoExchange] || []
+    defaultUnderlyings[defaultFnoExchange] || []
   )
   const [underlyingOpen, setUnderlyingOpen] = useState(false)
   const [selectedUnderlying, setSelectedUnderlying] = useState(
-    defaultUnderlyings[defaultToolsFnoExchange]?.[0] || ''
+    defaultUnderlyings[defaultFnoExchange]?.[0] || ''
   )
   const [expiries, setExpiries] = useState<string[]>([])
   const [selectedExpiry, setSelectedExpiry] = useState('')
@@ -115,9 +115,9 @@ export default function IVChart() {
   // Re-sync exchange when broker capabilities load asynchronously
   useEffect(() => {
     setSelectedExchange((prev) =>
-      prev && toolsFnoExchanges.some((ex) => ex.value === prev) ? prev : defaultToolsFnoExchange
+      prev && fnoExchanges.some((ex) => ex.value === prev) ? prev : defaultFnoExchange
     )
-  }, [defaultToolsFnoExchange, toolsFnoExchanges])
+  }, [defaultFnoExchange, fnoExchanges])
 
   // Chart refs
   const containerRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -474,7 +474,7 @@ export default function IVChart() {
                 <SelectValue placeholder="Exchange" />
               </SelectTrigger>
               <SelectContent>
-                {toolsFnoExchanges.map((ex) => (
+                {fnoExchanges.map((ex) => (
                   <SelectItem key={ex.value} value={ex.value}>
                     {ex.label}
                   </SelectItem>

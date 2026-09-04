@@ -18,6 +18,7 @@ from database.auth_db import (
     get_api_key,
     get_api_key_for_tradingview,
     get_order_mode,
+    get_owner_username,
     update_order_mode,
     upsert_api_key,
     verify_api_key,
@@ -34,6 +35,22 @@ api_key_bp = Blueprint("api_key_bp", __name__, url_prefix="/")
 
 # Initialize Argon2 hasher
 ph = PasswordHasher()
+
+
+def _owns_account(account_id):
+    """Ownership check: account_id must belong to session["user"].
+
+    Before any broker account (Auth row) exists for a platform user,
+    account_id defaults to the platform username itself (the legacy,
+    pre-multi-account convention — see database.auth_db.upsert_auth).
+    get_owner_username() returns None in that case, so fall back to a
+    direct username comparison rather than denying a user their own
+    not-yet-created default account.
+    """
+    owner = get_owner_username(account_id)
+    if owner is not None:
+        return owner == session.get("user")
+    return account_id == session.get("user")
 
 
 def generate_api_key():
@@ -84,6 +101,12 @@ def manage_api_key():
             logger.error("API key update attempted without user ID")
             return jsonify({"error": "User ID is required"}), 400
 
+        if not _owns_account(user_id):
+            logger.warning(
+                f"API key update denied: {session.get('user')} does not own account {user_id}"
+            )
+            return jsonify({"error": "Account not found"}), 404
+
         # Generate new API key
         api_key = generate_api_key()
 
@@ -111,6 +134,12 @@ def update_api_key_mode():
         if not user_id:
             logger.error("Order mode update attempted without user ID")
             return jsonify({"error": "User ID is required"}), 400
+
+        if not _owns_account(user_id):
+            logger.warning(
+                f"Order mode update denied: {session.get('user')} does not own account {user_id}"
+            )
+            return jsonify({"error": "Account not found"}), 404
 
         if not mode or mode not in ["auto", "semi_auto"]:
             logger.error(f"Invalid order mode: {mode}")

@@ -21,6 +21,9 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+# Configure logging
+logger = get_logger(__name__)
+
 
 class PocketfulPermissionError(Exception):
     """Custom exception for Pocketful API permission errors"""

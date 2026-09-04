@@ -8,14 +8,15 @@ and subscribe to different types of market data (LTP, Quote, Depth).
 
 import asyncio
 import json
-import os
 import sys
 
 import websockets
 
 # Configuration
 WS_URL = "ws://localhost:8765"  # Update if your server is on a different host/port
-API_KEY = os.environ.get("OPENALGO_API_KEY", "")
+API_KEY = (
+    "918d504f250e6f7d6b533b245a46009d3f3b8cad8e6314c8b45ae8a35b972d8a"  # Your OpenAlgo API key
+)
 
 # Test symbols
 RELIANCE_NSE = {"exchange": "MCX", "symbol": "GOLDPETAL30MAY25FUT"}
@@ -222,10 +223,7 @@ def main():
     """Main function to run the WebSocket tests"""
     print("OpenAlgo WebSocket Client Test")
     print(f"Connecting to: {WS_URL}")
-    if not API_KEY:
-        print("OPENALGO_API_KEY is required before running this manual script")
-        return
-    print("API key loaded from OPENALGO_API_KEY")
+    print(f"API Key: {API_KEY[:8]}...{API_KEY[-8:]}")
 
     # Check command line arguments for specific tests
     if len(sys.argv) > 1:

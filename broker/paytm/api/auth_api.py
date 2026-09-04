@@ -1,12 +1,11 @@
-import os
-
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def authenticate_broker(request_token):
+def authenticate_broker(request_token, account_id=None):
     """
     Authenticate with Paytm Money broker API.
 
@@ -25,8 +24,8 @@ def authenticate_broker(request_token):
             - error_message: Error details if authentication fails, None on success
     """
     try:
-        BROKER_API_KEY = os.getenv("BROKER_API_KEY")
-        BROKER_API_SECRET = os.getenv("BROKER_API_SECRET")
+        BROKER_API_KEY = get_broker_api_key(account_id)
+        BROKER_API_SECRET = get_broker_api_secret(account_id)
 
         url = "https://developer.paytmmoney.com/accounts/v2/gettoken"
         data = {
@@ -40,7 +39,7 @@ def authenticate_broker(request_token):
 
         if response.status_code == 200:
             response_data = response.json()
-            logger.debug("Token response received; fields=%s", list(response_data.keys()))
+            logger.debug(f"Token: {response_data}")
 
             # Paytm returns multiple tokens:
             # - access_token: For REST API calls
@@ -64,7 +63,7 @@ def authenticate_broker(request_token):
             else:
                 error_msg = "Authentication succeeded but no access token was returned."
                 logger.error(error_msg)
-                logger.debug("Token response did not contain an access token")
+                logger.debug(f"Full response: {response_data}")
                 return None, None, error_msg
         else:
             # Parsing the error message from the API response
@@ -80,7 +79,9 @@ def authenticate_broker(request_token):
             except Exception:
                 error_msg = f"Authentication failed with status code {response.status_code} and non-JSON response: {response.text}"
 
-            logger.error("Authentication failed; status=%s", response.status_code)
+            logger.error(
+                f"Authentication failed with status code {response.status_code}. Error: {error_msg}"
+            )
             return None, None, error_msg
     except Exception:
         logger.exception("An exception occurred during authentication.")

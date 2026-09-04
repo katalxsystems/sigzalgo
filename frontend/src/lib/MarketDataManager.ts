@@ -45,10 +45,6 @@ export interface SymbolData {
   exchange: string
   data: MarketData
   lastUpdate?: number
-  /** Origin of the latest cache update; only websocket updates prove stream freshness. */
-  updateSource?: 'websocket' | 'rest'
-  /** Authentication epoch that produced the WebSocket update. */
-  connectionEpoch?: number
 }
 
 export type SubscriptionMode = 'LTP' | 'Quote' | 'Depth'
@@ -67,7 +63,6 @@ export type StateListener = (state: {
   isAuthenticated: boolean
   isPaused: boolean
   isFallbackMode: boolean
-  connectionEpoch: number
   error: string | null
 }) => void
 
@@ -129,7 +124,6 @@ export class MarketDataManager {
   private maxReconnectAttempts: number = 10
   private userDisconnected: boolean = false
   private connectAbortController: AbortController | null = null
-  private connectionEpoch: number = 0
 
   // REST API fallback properties
   private fallbackMode: boolean = false
@@ -138,8 +132,6 @@ export class MarketDataManager {
   private apiKey: string | null = null
   private consecutiveFailures: number = 0
   private maxConsecutiveFailures: number = 3 // Switch to fallback after 3 consecutive connection failures
-  /** Invalidates REST responses that belong to an earlier fallback session. */
-  private fallbackGeneration: number = 0
 
   private constructor() {
     // Private constructor for singleton pattern
@@ -291,7 +283,6 @@ export class MarketDataManager {
       isAuthenticated: this.connectionState === 'authenticated',
       isPaused: this.connectionState === 'paused',
       isFallbackMode: this.fallbackMode,
-      connectionEpoch: this.connectionEpoch,
       error: this.error,
     }
   }
@@ -506,7 +497,6 @@ export class MarketDataManager {
     }
 
     // Stop fallback polling on disconnect
-    this.fallbackGeneration += 1
     this.stopFallbackPolling()
     this.fallbackMode = false
     this.consecutiveFailures = 0
@@ -557,7 +547,6 @@ export class MarketDataManager {
       switch (type) {
         case 'auth':
           if (data.status === 'success') {
-            this.connectionEpoch += 1
             this.setConnectionState('authenticated')
             this.error = null
             this.consecutiveFailures = 0 // Reset failure count on successful auth
@@ -601,8 +590,6 @@ export class MarketDataManager {
             ...existing,
             data: newData,
             lastUpdate: Date.now(),
-            updateSource: 'websocket',
-            connectionEpoch: this.connectionEpoch,
           }
           this.dataCache.set(dataKey, updatedSymbolData)
 
@@ -701,19 +688,13 @@ export class MarketDataManager {
     if (this.fallbackMode) return
 
     this.fallbackMode = true
-    const generation = ++this.fallbackGeneration
     this.notifyStateListeners()
 
     // Fetch API key for REST calls
     await this.fetchApiKeyForFallback()
 
     // Start polling if we have subscriptions
-    if (
-      this.fallbackMode &&
-      generation === this.fallbackGeneration &&
-      this.subscriptions.size > 0 &&
-      this.apiKey
-    ) {
+    if (this.subscriptions.size > 0 && this.apiKey) {
       this.startFallbackPolling()
     }
   }
@@ -725,7 +706,6 @@ export class MarketDataManager {
     if (!this.fallbackMode) return
 
     this.fallbackMode = false
-    this.fallbackGeneration += 1
     this.stopFallbackPolling()
     this.consecutiveFailures = 0
     this.notifyStateListeners()
@@ -777,8 +757,7 @@ export class MarketDataManager {
    * Fetch market data via REST API (multiquotes endpoint)
    */
   private async fetchMarketDataViaRest(): Promise<void> {
-    if (!this.fallbackMode || !this.apiKey || this.subscriptions.size === 0) return
-    const generation = this.fallbackGeneration
+    if (!this.apiKey || this.subscriptions.size === 0) return
 
     try {
       // Collect unique symbols from subscriptions
@@ -808,8 +787,6 @@ export class MarketDataManager {
 
       const data = (await response.json()) as MultiQuotesApiResponse
 
-      if (!this.fallbackMode || generation !== this.fallbackGeneration) return
-
       if (data.status === 'success' && data.results) {
         // Process each result and update cache + notify subscribers
         for (const result of data.results) {
@@ -836,8 +813,6 @@ export class MarketDataManager {
             ...existing,
             data: newData,
             lastUpdate: Date.now(),
-            updateSource: 'rest',
-            connectionEpoch: undefined,
           }
           this.dataCache.set(dataKey, updatedSymbolData)
 

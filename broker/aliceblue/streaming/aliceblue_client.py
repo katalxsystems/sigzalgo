@@ -1,6 +1,7 @@
 import enum
 import hashlib
 import json
+import logging
 import os
 import ssl
 import threading
@@ -11,9 +12,7 @@ from time import sleep
 import requests
 import websocket
 
-from utils.logging import get_logger
-
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 Instrument = namedtuple("Instrument", ["exchange", "token", "symbol", "name", "expiry", "lot_size"])
 
@@ -199,7 +198,7 @@ class Aliceblue:
         # Debug logging for WebSocket session creation
         if "createWsSession" in method:
             logger.info(f"Creating WebSocket session - URL: {url}")
-            logger.info(f"Request header fields: {sorted(headers)}")
+            logger.info(f"Request headers: {headers}")
             logger.info(f"Request data: {data}")
 
         response = requests.post(
@@ -210,7 +209,7 @@ class Aliceblue:
         if "createWsSession" in method:
             logger.info(f"Response status: {response.status_code}")
             logger.info(f"Response headers: {dict(response.headers)}")
-            logger.info(f"Response content length: {len(response.text)} bytes")
+            logger.info(f"Response content: {response.text}")
 
         if response.status_code == 200:
             if "json" in response.headers.get("content-type"):

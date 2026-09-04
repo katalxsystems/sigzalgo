@@ -3,6 +3,7 @@ import os
 from urllib.parse import quote_plus
 
 from broker.iiflcapital.baseurl import BASE_URL, LOGIN_URL
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -14,9 +15,9 @@ def _generate_checksum(client_id: str, auth_code: str, app_secret: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def get_login_url() -> str:
+def get_login_url(account_id=None) -> str:
     """Generate IIFL Capital login URL from environment variables."""
-    app_key = os.getenv("BROKER_API_KEY", "").strip()
+    app_key = (get_broker_api_key(account_id) or "").strip()
     redirect_url = os.getenv("REDIRECT_URL", "").strip()
 
     if not app_key or not redirect_url:
@@ -33,7 +34,7 @@ def get_login_url() -> str:
     )
 
 
-def authenticate_broker(auth_code: str, client_id: str):
+def authenticate_broker(auth_code: str, client_id: str, account_id=None):
     """
     Exchange authCode + clientId for userSession.
 
@@ -41,7 +42,7 @@ def authenticate_broker(auth_code: str, client_id: str):
         tuple: (auth_token, error_message)
     """
     try:
-        app_secret = os.getenv("BROKER_API_SECRET", "").strip()
+        app_secret = (get_broker_api_secret(account_id) or "").strip()
         if not app_secret:
             return None, "BROKER_API_SECRET not found in environment variables"
 

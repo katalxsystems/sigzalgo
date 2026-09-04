@@ -84,20 +84,14 @@ export function TemplateDialog({
   const resolution = useMemo<{
     legs: ResolvedTemplateLeg[]
     errors: string[]
-    strikeErrorIndexes: Set<number>
-    expiryInvalid: boolean
   }>(() => {
-    if (!template || atmStrike === null || chain === null) {
-      return { legs: [], errors: [], strikeErrorIndexes: new Set(), expiryInvalid: false }
-    }
+    if (!template || atmStrike === null || chain === null) return { legs: [], errors: [] }
 
     const unresolvedTopology: Array<{
       strikeOffset: number
       resolvedStrike: number | null
     }> = []
     const errors: string[] = []
-    const strikeErrorIndexes = new Set<number>()
-    let expiryInvalid = false
     const legs = template.legs.map((leg, idx) => {
       const override = strikeOverrides[idx]
       const listedStrike = resolveStrikeOffset(strikes, atmStrike, leg.strikeOffset)
@@ -107,7 +101,6 @@ export function TemplateDialog({
       const offset = leg.expiryOffset ?? 0
       const listedExpiry = resolveExpiryOffset(expiries, expiry, offset)
       if (listedExpiry === null) {
-        expiryInvalid = true
         errors.push(
           offset > 0
             ? `A later expiry is required for ${template.name}.`
@@ -116,7 +109,6 @@ export function TemplateDialog({
       }
       const resolvedExpiry = listedExpiry ?? expiry
       const displayStrike = resolvedStrike ?? atmStrike
-      if (resolvedStrike === null) strikeErrorIndexes.add(idx)
 
       // Chain symbols are only available for the currently-loaded expiry.
       // For legs on a different expiry the caller rebuilds the symbol from
@@ -124,7 +116,6 @@ export function TemplateDialog({
       const canUseChain = resolvedExpiry === expiry
       const side = canUseChain ? resolveListedContract(chain, displayStrike, leg.optionType) : null
       if (canUseChain && resolvedStrike !== null && side === null) {
-        strikeErrorIndexes.add(idx)
         errors.push(
           `The required ${leg.optionType} contract at ${displayStrike} is not available in the loaded option chain.`
         )
@@ -138,25 +129,12 @@ export function TemplateDialog({
       }
     })
 
-    const topologyErrors = validateTemplateStrikeTopology(unresolvedTopology)
-    if (topologyErrors.length > 0) {
-      for (let index = 0; index < template.legs.length; index += 1) {
-        strikeErrorIndexes.add(index)
-      }
-    }
-    errors.push(...topologyErrors)
-    return {
-      legs,
-      errors: Array.from(new Set(errors)),
-      strikeErrorIndexes,
-      expiryInvalid,
-    }
+    errors.push(...validateTemplateStrikeTopology(unresolvedTopology))
+    return { legs, errors: Array.from(new Set(errors)) }
   }, [template, atmStrike, chain, strikes, strikeOverrides, expiry, expiries])
 
   const resolved = resolution.legs
   const validationErrors = resolution.errors
-  const expiryInvalid = resolution.expiryInvalid
-  const validationErrorId = 'template-validation-error'
 
   if (!template) return null
 
@@ -171,7 +149,6 @@ export function TemplateDialog({
         <div className="space-y-3">
           {resolved.map((leg, idx) => {
             const multiExpiry = leg.resolvedExpiry !== expiry
-            const strikeInvalid = resolution.strikeErrorIndexes.has(idx)
             const moneyness = strikeMoneyness(
               leg.resolvedStrike,
               atmStrike,
@@ -198,12 +175,7 @@ export function TemplateDialog({
                   }
                   disabled={multiExpiry}
                 >
-                  <SelectTrigger
-                    aria-label={`Strike for ${leg.side.toLowerCase()} ${leg.optionType === 'CE' ? 'call' : 'put'} leg ${idx + 1}`}
-                    aria-invalid={strikeInvalid}
-                    aria-describedby={strikeInvalid ? validationErrorId : undefined}
-                    className="h-8 w-[120px] text-xs"
-                  >
+                  <SelectTrigger className="h-8 w-[120px] text-xs">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -254,7 +226,6 @@ export function TemplateDialog({
 
           {validationErrors.length > 0 && (
             <div
-              id={validationErrorId}
               role="alert"
               className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
             >
@@ -268,12 +239,7 @@ export function TemplateDialog({
             <div className="flex flex-col gap-1">
               <label className="text-[11px] font-medium text-muted-foreground">Expiry</label>
               <Select value={expiry} onValueChange={onExpiryChange}>
-                <SelectTrigger
-                  aria-label="Strategy expiry"
-                  aria-invalid={expiryInvalid}
-                  aria-describedby={expiryInvalid ? validationErrorId : undefined}
-                  className="h-9 text-xs"
-                >
+                <SelectTrigger className="h-9 text-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -291,7 +257,6 @@ export function TemplateDialog({
               <div className="flex h-9 items-center overflow-hidden rounded-md border">
                 <button
                   type="button"
-                  aria-label="Decrease strategy lots"
                   onClick={() => setLots(Math.max(1, lots - 1))}
                   className="h-full px-2 text-muted-foreground hover:bg-muted"
                 >
@@ -299,7 +264,6 @@ export function TemplateDialog({
                 </button>
                 <input
                   type="number"
-                  aria-label="Strategy lot quantity"
                   min={1}
                   value={lots}
                   onChange={(e) => setLots(Math.max(1, Number(e.target.value) || 1))}
@@ -307,7 +271,6 @@ export function TemplateDialog({
                 />
                 <button
                   type="button"
-                  aria-label="Increase strategy lots"
                   onClick={() => setLots(lots + 1)}
                   className="h-full px-2 text-muted-foreground hover:bg-muted"
                 >
@@ -338,7 +301,7 @@ export function TemplateDialog({
                 setIsConfirming(false)
               }
             }}
-            className="bg-emerald-700 text-white hover:bg-emerald-800 dark:bg-emerald-600 dark:hover:bg-emerald-700"
+            className="bg-emerald-500 hover:bg-emerald-600"
           >
             {isConfirming ? 'Validating...' : 'Add Strategy'}
           </Button>

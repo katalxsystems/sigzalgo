@@ -1,4 +1,5 @@
 import importlib
+from typing import Dict, Optional, Type
 
 from utils.logging import get_logger
 
@@ -15,7 +16,10 @@ logger = get_logger(__name__)
 # Registry of all supported broker adapters
 BROKER_ADAPTERS: dict[str, type[BaseBrokerWebSocketAdapter]] = {}
 
-# Registry of pooled adapters (one pool per user_id + broker combination)
+# Registry of pooled adapters, one pool per (broker, account_id) combination.
+# "user_id" throughout this module is really the broker account_id
+# (database.auth_db.Auth.name) — a platform user may own several accounts,
+# including more than one on the same broker, each getting its own pool key.
 _POOLED_ADAPTERS: dict[str, ConnectionPool] = {}
 
 
@@ -72,7 +76,7 @@ def _get_adapter_class(broker_name: str) -> type[BaseBrokerWebSocketAdapter]:
 
     except (ImportError, AttributeError) as e:
         logger.exception(f"Failed to load adapter for broker {broker_name}: {e}")
-        raise ValueError(f"Unsupported broker: {broker_name}. No adapter available.") from e
+        raise ValueError(f"Unsupported broker: {broker_name}. No adapter available.")
 
 
 def create_broker_adapter(
@@ -196,8 +200,7 @@ class _PooledAdapterWrapper:
     def unsubscribe_all(self):
         """Unsubscribe from all symbols"""
         if self._pool:
-            return self._pool.unsubscribe_all()
-        return {"status": "error", "message": "Not initialized"}
+            self._pool.unsubscribe_all()
 
     def get_stats(self) -> dict:
         """Get pool statistics"""
@@ -324,7 +327,8 @@ def cleanup_all_pools():
 
 
 def cleanup_pools_for_user(user_id: str, broker_name: str | None = None) -> int:
-    """Tear down cached connection pools tied to ``user_id``.
+    """Tear down cached connection pools tied to ``user_id`` (really the
+    broker account_id — see the ``_POOLED_ADAPTERS`` comment above).
 
     Called by ``database.auth_db.upsert_auth`` whenever fresh broker
     credentials are persisted (login, re-login, token refresh). Without this
@@ -335,9 +339,10 @@ def cleanup_pools_for_user(user_id: str, broker_name: str | None = None) -> int:
     process. See marketcalls/openalgo#1394 for the user-visible symptom.
 
     Args:
-        user_id: OpenAlgo username whose pools should be discarded.
+        user_id: Broker account_id (database.auth_db.Auth.name) whose pools
+            should be discarded.
         broker_name: Optional. When set, only that broker's pool is
-            discarded; otherwise every pool keyed by this user is purged.
+            discarded; otherwise every pool keyed by this account is purged.
 
     Returns:
         Count of pools removed.

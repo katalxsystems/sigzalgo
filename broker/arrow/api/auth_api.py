@@ -13,16 +13,16 @@
 # `code` and expects this 2-tuple contract: (auth_token, error_message).
 
 import hashlib
-import os
 
 from broker.arrow.api.baseurl import AUTH_TOKEN_URL
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def authenticate_broker(request_token):
+def authenticate_broker(request_token, account_id=None):
     """Exchange the Arrow request-token for a JWT access token.
 
     Args:
@@ -32,8 +32,8 @@ def authenticate_broker(request_token):
         (auth_token, None) on success, (None, error_message) on failure.
     """
     try:
-        app_id = os.getenv("BROKER_API_KEY")
-        app_secret = os.getenv("BROKER_API_SECRET")
+        app_id = get_broker_api_key(account_id)
+        app_secret = get_broker_api_secret(account_id)
 
         if not app_id or not app_secret:
             return None, "Configuration error: BROKER_API_KEY / BROKER_API_SECRET not set."

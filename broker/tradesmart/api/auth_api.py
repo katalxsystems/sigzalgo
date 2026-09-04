@@ -13,9 +13,9 @@ TradeSmart v2 docs (Quick start step 4) — this differs from flattrade's
 
 import hashlib
 import json
-import os
 
 from broker.tradesmart.api.baseurl import GENACSTOK_URL, get_api_key
+from utils.config import get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -27,7 +27,7 @@ def sha256_hash(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def authenticate_broker(code, password=None, totp_code=None):
+def authenticate_broker(code, password=None, totp_code=None, account_id=None):
     """Exchange the login ``code`` for a TradeSmart access token.
 
     Args:
@@ -39,7 +39,7 @@ def authenticate_broker(code, password=None, totp_code=None):
     """
     try:
         api_key = get_api_key()
-        secret_key = os.getenv("BROKER_API_SECRET")
+        secret_key = get_broker_api_secret(account_id)
 
         if not api_key or not secret_key:
             return None, "BROKER_API_KEY / BROKER_API_SECRET not configured"

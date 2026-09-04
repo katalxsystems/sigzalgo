@@ -1,23 +1,28 @@
 import hashlib
-import os
 
 import httpx
 import requests
 
 from broker.wisdom.baseurl import INTERACTIVE_URL, MARKET_DATA_URL
+from utils.config import (
+    get_broker_api_key,
+    get_broker_api_key_market,
+    get_broker_api_secret,
+    get_broker_api_secret_market,
+)
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def authenticate_broker(request_token):
+def authenticate_broker(request_token, account_id=None):
     try:
         # Get the shared httpx client
         client = get_httpx_client()
         # Fetching the necessary credentials from environment variables
-        BROKER_API_KEY = os.getenv("BROKER_API_KEY")
-        BROKER_API_SECRET = os.getenv("BROKER_API_SECRET")
+        BROKER_API_KEY = get_broker_api_key(account_id)
+        BROKER_API_SECRET = get_broker_api_secret(account_id)
 
         # Make POST request to get the final token
         payload = {"appKey": BROKER_API_KEY, "secretKey": BROKER_API_SECRET, "source": "WebAPI"}
@@ -61,8 +66,8 @@ def authenticate_broker(request_token):
 def get_feed_token():
     try:
         # Fetch credentials for feed token
-        BROKER_API_KEY_MARKET = os.getenv("BROKER_API_KEY_MARKET")
-        BROKER_API_SECRET_MARKET = os.getenv("BROKER_API_SECRET_MARKET")
+        BROKER_API_KEY_MARKET = get_broker_api_key_market()
+        BROKER_API_SECRET_MARKET = get_broker_api_secret_market()
 
         # Construct payload for feed token request
         feed_payload = {
@@ -85,7 +90,7 @@ def get_feed_token():
             if feed_result.get("type") == "success":
                 feed_token = feed_result["result"].get("token")
                 user_id = feed_result["result"].get("userID")
-                logger.debug("Feed token received")
+                logger.debug(f"Feed Token: {feed_token}")
             else:
                 return None, None, "Feed token request failed. Please check the response."
         else:

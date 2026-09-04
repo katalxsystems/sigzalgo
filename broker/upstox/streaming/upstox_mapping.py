@@ -2,10 +2,6 @@
 import logging
 from typing import Dict, Set
 
-from utils.logging import get_logger
-
-logger = get_logger(__name__)
-
 
 class UpstoxExchangeMapper:
     """Maps between OpenAlgo exchange codes and Upstox specific exchange types"""
@@ -58,7 +54,7 @@ class UpstoxExchangeMapper:
             str: Exchange type code for Upstox API
         """
         if exchange is None:
-            logger.warning("Exchange is None, defaulting to NSE_EQ")
+            logging.warning("Exchange is None, defaulting to NSE_EQ")
             return "NSE_EQ"
 
         # Convert to string and uppercase
@@ -68,11 +64,11 @@ class UpstoxExchangeMapper:
         exchange_code = UpstoxExchangeMapper.EXCHANGE_TYPES.get(exchange)
 
         if exchange_code is not None:
-            logger.info(f"Mapped exchange '{exchange}' to code {exchange_code}")
+            logging.info(f"Mapped exchange '{exchange}' to code {exchange_code}")
             return exchange_code
 
         # If we get here, log a warning and default to NSE_EQ
-        logger.warning(f"Unknown exchange '{exchange}', defaulting to NSE_EQ")
+        logging.warning(f"Unknown exchange '{exchange}', defaulting to NSE_EQ")
         return "NSE_EQ"
 
     @staticmethod

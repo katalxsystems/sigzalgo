@@ -1,7 +1,7 @@
 import hashlib
-import os
 import time
 
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -85,7 +85,7 @@ def get_access_token_via_checksum(api_key, api_secret):
         return None, f"Authentication error: {str(e)}"
 
 
-def authenticate_broker(code):
+def authenticate_broker(code, account_id=None):
     """
     Authenticate with Groww using API key and secret with checksum-based flow.
     The 'code' parameter is not used as authentication relies on environment variables.
@@ -97,8 +97,8 @@ def authenticate_broker(code):
         tuple: (access_token, error_message)
     """
     try:
-        BROKER_API_KEY = os.getenv("BROKER_API_KEY")
-        BROKER_API_SECRET = os.getenv("BROKER_API_SECRET")
+        BROKER_API_KEY = get_broker_api_key(account_id)
+        BROKER_API_SECRET = get_broker_api_secret(account_id)
 
         if not BROKER_API_KEY or not BROKER_API_SECRET:
             return (

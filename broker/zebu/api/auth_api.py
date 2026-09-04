@@ -1,22 +1,22 @@
 import hashlib
 import json
-import os
 
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def authenticate_broker(code):
+def authenticate_broker(code, account_id=None):
     """
     Authenticate with Zebu using OAuth 2.0 flow.
     Exchanges the authorization code for an access token.
     """
     # BROKER_API_KEY format: userid:::client_id (e.g., Z56004:::Z56004_U)
-    full_api_key = os.getenv("BROKER_API_KEY")
+    full_api_key = get_broker_api_key(account_id)
     client_id = full_api_key.split(":::")[1]  # OAuth client_id
-    secret_key = os.getenv("BROKER_API_SECRET")
+    secret_key = get_broker_api_secret(account_id)
 
     try:
         # Get the shared httpx client

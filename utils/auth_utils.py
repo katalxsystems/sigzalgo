@@ -2,7 +2,7 @@ import importlib
 import os
 import re
 import time
-from datetime import datetime, date
+from datetime import date, datetime
 from threading import Thread
 
 import pytz
@@ -10,7 +10,6 @@ from flask import current_app as app
 from flask import jsonify, redirect, request, session, url_for
 
 from database.auth_db import get_feed_token as db_get_feed_token
-from utils.ip_helper import get_real_ip
 from database.auth_db import upsert_auth
 from database.master_contract_status_db import (
     get_exchange_stats_from_db,
@@ -22,6 +21,7 @@ from database.master_contract_status_db import (
     update_status,
 )
 from utils.constants import CRYPTO_BROKERS
+from utils.ip_helper import get_real_ip
 from utils.logging import get_logger
 from utils.session import get_session_expiry_time, set_session_login_time
 
@@ -295,17 +295,6 @@ def async_master_contract_download(broker):
     try:
         master_contract_status = master_contract_module.master_contract_download()
 
-        # Brokers disagree on what `name` holds for a derivative row - the
-        # underlying root, or the contract description. Every lookup that
-        # resolves an underlying wants the root, so settle it here, on the one
-        # path all 35+ brokers share, before anything reads the table.
-        try:
-            from database.symbol import normalize_derivative_underlyings
-
-            normalize_derivative_underlyings()
-        except Exception as normalize_error:
-            logger.exception(f"Could not normalize derivative underlyings: {normalize_error}")
-
         # Most brokers return the socketio.emit result, we need to check completion
         # by looking at the module's actual completion
 
@@ -360,13 +349,26 @@ def async_master_contract_download(broker):
     return master_contract_status
 
 
-def handle_auth_success(auth_token, user_session_key, broker, feed_token=None, user_id=None):
+def handle_auth_success(auth_token, user_session_key, broker, feed_token=None, user_id=None,
+                         owner_username=None):
     """
     Handles common tasks after successful authentication.
     - Sets session parameters
     - Stores auth token in the database
     - Initiates asynchronous master contract download (smart: skips if downloaded after 8 AM IST)
+
+    ``user_session_key`` is the broker account_id (database.auth_db.Auth.name)
+    being connected — NOT necessarily the platform login username, since a
+    user may own several accounts. ``owner_username`` is the platform user;
+    when omitted it defaults to ``session["user"]`` (every call site here
+    runs within an authenticated web session), which also reproduces the
+    pre-multi-account behavior where the two were always the same value.
+    Device/session-security tracking (ActiveSession, LoginAttempt) is keyed
+    by owner_username, not account_id, since it tracks web-UI logins, not
+    broker connections.
     """
+    owner_username = owner_username or session.get("user") or user_session_key
+
     # Set session parameters
     session["logged_in"] = True
     # NOTE: do NOT store the broker auth_token in the Flask session. Flask's
@@ -379,6 +381,7 @@ def handle_auth_success(auth_token, user_session_key, broker, feed_token=None, u
     if user_id:
         session["USER_ID"] = user_id  # Store user ID in session if available
     session["user_session_key"] = user_session_key
+    session["active_account_id"] = user_session_key
     session["broker"] = broker
 
     # Set session expiry and login time
@@ -391,9 +394,9 @@ def handle_auth_success(auth_token, user_session_key, broker, feed_token=None, u
     session_id = secrets.token_hex(32)
     session["session_id"] = session_id  # Store in cookie for logout cleanup
 
-    from database.auth_db import register_session, get_active_sessions
+    from database.auth_db import get_active_sessions, register_session
     register_session(
-        username=user_session_key,
+        username=owner_username,
         session_id=session_id,
         device_info=request.headers.get("User-Agent", "")[:500],
         ip_address=get_real_ip(),
@@ -402,19 +405,22 @@ def handle_auth_success(auth_token, user_session_key, broker, feed_token=None, u
 
     # Emit session count update via SocketIO (event-driven, no polling)
     from extensions import socketio
-    active = get_active_sessions(user_session_key)
+    active = get_active_sessions(owner_username)
     socketio.emit("active_sessions_update", {
         "count": len(active),
         "sessions": active,
     })
 
-    logger.info(f"User {user_session_key} logged in successfully with broker {broker}")
+    logger.info(
+        f"User {owner_username} logged in successfully with broker {broker} "
+        f"(account: {user_session_key})"
+    )
 
     # Log OAuth login attempt (resume logins are logged separately in auth.py)
     try:
         from database.auth_db import log_login_attempt
         log_login_attempt(
-            username=user_session_key,
+            username=owner_username,
             ip_address=get_real_ip(),
             device_info=request.headers.get("User-Agent", ""),
             status="success",
@@ -426,7 +432,8 @@ def handle_auth_success(auth_token, user_session_key, broker, feed_token=None, u
 
     # Store auth token in database
     inserted_id = upsert_auth(
-        user_session_key, auth_token, broker, feed_token=feed_token, user_id=user_id
+        user_session_key, auth_token, broker, feed_token=feed_token, user_id=user_id,
+        owner_username=owner_username,
     )
     if inserted_id:
         logger.info(f"Database record upserted with ID: {inserted_id}")

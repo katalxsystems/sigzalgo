@@ -1,6 +1,5 @@
-import os
-
 from broker.rmoney.baseurl import HOSTLOOKUP_URL, INTERACTIVE_URL, MARKET_DATA_URL
+from utils.config import get_broker_api_key_market, get_broker_api_secret_market
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -57,8 +56,8 @@ def authenticate_broker(request_token):
 
 def get_feed_token():
     try:
-        BROKER_API_KEY_MARKET = os.getenv("BROKER_API_KEY_MARKET")
-        BROKER_API_SECRET_MARKET = os.getenv("BROKER_API_SECRET_MARKET")
+        BROKER_API_KEY_MARKET = get_broker_api_key_market()
+        BROKER_API_SECRET_MARKET = get_broker_api_secret_market()
 
         feed_payload = {
             "secretKey": BROKER_API_SECRET_MARKET,
@@ -79,7 +78,7 @@ def get_feed_token():
             if feed_result.get("type") == "success":
                 feed_token = feed_result["result"].get("token")
                 user_id = feed_result["result"].get("userID")
-                logger.info("Feed token received")
+                logger.info(f"Feed Token: {feed_token}")
             else:
                 return None, None, "Feed token request failed. Please check the response."
         else:

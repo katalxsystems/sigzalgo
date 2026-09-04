@@ -14,7 +14,7 @@ TOKEN_ENDPOINT = f"{BASE_URL}/oauth2/token"
 USER_INFO_ENDPOINT = f"{BASE_URL}/api/v1/user/trading_info"
 
 
-def authenticate_broker(auth_code=None, state=None):
+def authenticate_broker(auth_code=None, state=None, account_id=None):
     """
     Authenticate with Pocketful using OAuth2 flow
 
@@ -37,8 +37,8 @@ def authenticate_broker(auth_code=None, state=None):
             )
 
         # Get client credentials from environment
-        client_id = get_broker_api_key()
-        client_secret = get_broker_api_secret()
+        client_id = get_broker_api_key(account_id)
+        client_secret = get_broker_api_secret(account_id)
 
         if not client_id or not client_secret:
             return (
@@ -131,7 +131,7 @@ def authenticate_broker(auth_code=None, state=None):
         return None, None, None, f"An exception occurred: {str(e)}"
 
 
-def get_authorization_url():
+def get_authorization_url(account_id=None):
     """
     Generate the authorization URL for Pocketful OAuth
 
@@ -139,7 +139,7 @@ def get_authorization_url():
         Tuple of (url, state) or (None, error_message)
     """
     try:
-        client_id = get_broker_api_key()
+        client_id = get_broker_api_key(account_id)
         if not client_id:
             return None, "Missing API key. Please set BROKER_API_KEY in your environment."
 

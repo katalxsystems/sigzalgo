@@ -1,4 +1,5 @@
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -8,7 +9,6 @@ import requests
 import socketio
 
 from broker.jainamxts.baseurl import BASE_URL, INTERACTIVE_URL, MARKET_DATA_URL
-from utils.logging import get_logger
 
 
 class JainamXTSWebSocketClient:
@@ -77,7 +77,7 @@ class JainamXTSWebSocketClient:
         self.on_message = None
 
         # Logger
-        self.logger = get_logger("jainamxts_websocket")
+        self.logger = logging.getLogger("jainamxts_websocket")
 
         # Subscriptions tracking
         self.subscriptions = {}

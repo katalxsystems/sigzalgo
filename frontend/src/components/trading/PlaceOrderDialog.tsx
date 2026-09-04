@@ -59,53 +59,9 @@ export interface PlaceOrderDialogProps {
   tickSize?: number
   product?: 'MIS' | 'NRML' | 'CNC'
   priceType?: 'MARKET' | 'LIMIT' | 'SL' | 'SL-M'
-  /**
-   * Starting limit and trigger prices, for a caller that already has one: a
-   * chart row clicked at a price. Left out, a LIMIT or SL ticket fills its
-   * price from the live LTP as before.
-   */
-  price?: number
-  triggerPrice?: number
   strategy?: string
-  /**
-   * Where to send the confirmed order. Left out, it posts through
-   * tradingApi.placeOrder as it always has. The chart supplies one so its
-   * ticket goes through the terminal's trade feed, which asserts the page's
-   * mode against the server before anything is sent; a ticket must not be
-   * the one order route that decides on the server's global switch.
-   */
-  place?: (order: TicketOrder) => Promise<{ orderId: string }>
-  /**
-   * The element the dialog is portalled into, for a caller that is the
-   * fullscreen element: nothing outside it paints, so a dialog on body would
-   * open unseen and take focus. Null or absent means body, as before.
-   */
-  container?: HTMLElement | null
   onSuccess?: (orderId: string) => void
   onError?: (error: string) => void
-}
-
-/** The confirmed order, in the shape the placeorder endpoint takes. */
-export interface TicketOrder {
-  symbol: string
-  exchange: string
-  action: 'BUY' | 'SELL'
-  quantity: number
-  pricetype: 'MARKET' | 'LIMIT' | 'SL' | 'SL-M'
-  product: 'MIS' | 'NRML' | 'CNC'
-  price?: number
-  trigger_price?: number
-}
-
-/**
- * The lot count a starting quantity stands for. The box shows lots on a
- * derivative segment while the order carries units, so the two are derived
- * from one figure here rather than seeded separately: a 150-unit ticket on a
- * 75-lot contract reads 2, not 1.
- */
-export function lotsFor(quantity: number | undefined, lotSize: number): number {
-  if (quantity === undefined || lotSize <= 0) return 1
-  return Math.max(1, Math.round(quantity / lotSize))
 }
 
 // Tick size validation helpers
@@ -126,9 +82,8 @@ function adjustPrice(price: number, tickSize: number, direction: 'up' | 'down'):
 // Check if exchange is F&O/Commodity/Currency (uses NRML/MIS)
 // NSE, BSE = Equity → CNC/MIS
 // NFO, BFO, CDS, BCD, MCX, NCDEX, NCO = F&O/Currency/Commodity → NRML/MIS
-// CRYPTO = crypto derivatives (utils/constants.py): NRML/MIS in lots, no CNC
 function isFnOExchange(exchange: string): boolean {
-  return ['NFO', 'BFO', 'MCX', 'CDS', 'BCD', 'NCDEX', 'NCO', 'CRYPTO'].includes(exchange)
+  return ['NFO', 'BFO', 'MCX', 'CDS', 'BCD', 'NCDEX', 'NCO'].includes(exchange)
 }
 
 export function PlaceOrderDialog({
@@ -142,11 +97,7 @@ export function PlaceOrderDialog({
   tickSize = 0.05,
   product: initialProduct = 'NRML',
   priceType: initialPriceType = 'MARKET',
-  price: initialPrice,
-  triggerPrice: initialTriggerPrice,
   strategy = 'OptionChain',
-  place,
-  container,
   onSuccess,
   onError,
 }: PlaceOrderDialogProps) {
@@ -203,33 +154,18 @@ export function PlaceOrderDialog({
       const productToUse =
         initialProduct && validProducts.includes(initialProduct) ? initialProduct : defaultProduct
       setFormProduct(productToUse)
-      // A supplied price survives the LTP fill below, which only writes over 0.
-      setFormPrice(initialPrice ?? 0)
-      setFormTriggerPrice(initialTriggerPrice ?? 0)
+      setFormPrice(0)
+      setFormTriggerPrice(0)
       setIsDepthExpanded(false)
       // Cash equity has no lots, so the quantity box must show the real share
       // count. Defaulting to 'lots' here displayed lotMultiplier (1) while
       // formQuantity held the actual size -- opening Exit on a 70-share holding
       // showed "1" in the box and would have placed 70.
       setQuantityMode(isFnOExchange(exchange) && lotSize > 1 ? 'lots' : 'shares')
-      // Derived from the same figure as formQuantity above, so the Lots box
-      // and the order it places agree: the chart's ticket arrives in units
-      // for however many lots its pane asked for, and a box reading 1 over
-      // an order of 150 is the mistake the ticket exists to prevent.
-      setLotMultiplier(lotsFor(initialQuantity, lotSize))
+      setLotMultiplier(1)
       setFormExchange(exchange)
     }
-  }, [
-    open,
-    initialAction,
-    initialQuantity,
-    lotSize,
-    initialPriceType,
-    initialProduct,
-    initialPrice,
-    initialTriggerPrice,
-    exchange,
-  ])
+  }, [open, initialAction, initialQuantity, lotSize, initialPriceType, initialProduct, exchange])
 
   // Use data from centralized hook
   const mergedData = {
@@ -298,7 +234,9 @@ export function PlaceOrderDialog({
       // Backend accepts: MARKET, LIMIT, SL (Stop Loss Limit), SL-M (Stop Loss Market)
       const apiPriceType = formPriceType as 'MARKET' | 'LIMIT' | 'SL' | 'SL-M'
 
-      const order: TicketOrder = {
+      const orderRequest = {
+        apikey: apiKey,
+        strategy,
         exchange: exchange_,
         symbol,
         action: formAction,
@@ -309,16 +247,7 @@ export function PlaceOrderDialog({
         ...(needsTrigger && { trigger_price: formTriggerPrice }),
       }
 
-      // A caller's own route (the chart's trade feed, which checks the mode
-      // before it posts) takes the order whole and reports by throwing.
-      if (place) {
-        const placed = await place(order)
-        onSuccess?.(placed.orderId)
-        onOpenChange(false)
-        return
-      }
-
-      const response = await tradingApi.placeOrder({ apikey: apiKey, strategy, ...order })
+      const response = await tradingApi.placeOrder(orderRequest)
 
       // Response structure: { status: "success", orderid: "..." } or { status: "error", message: "..." }
       // Note: orderid is at root level, not in data field
@@ -373,11 +302,7 @@ export function PlaceOrderDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="sm:max-w-[420px]"
-        aria-describedby={undefined}
-        container={container}
-      >
+      <DialogContent className="sm:max-w-[420px]" aria-describedby={undefined}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <span>Place Order -</span>

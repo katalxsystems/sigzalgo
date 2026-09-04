@@ -224,6 +224,21 @@ def find_user_by_username():
     return User.query.filter_by(is_admin=True).first()
 
 
+def list_users():
+    """List every platform user (admin use only). Never includes
+    password_hash or totp_secret."""
+    return [
+        {
+            "id": u.id,
+            "username": u.username,
+            "email": u.email,
+            "is_admin": bool(u.is_admin),
+            "totp_enabled": bool(u.totp_enabled),
+        }
+        for u in User.query.order_by(User.id.asc()).all()
+    ]
+
+
 def find_user_by_exact_username(username):
     """Look up a user by exact username match. Returns None if not found."""
     if not username:

@@ -1,5 +1,6 @@
 import atexit
 import json
+import logging
 import os
 import sys
 import threading
@@ -14,7 +15,6 @@ from database.auth_db import (
     get_feed_token_dbquery,
 )
 from database.token_db import get_br_symbol, get_symbol, get_token
-from utils.logging import get_logger
 
 # Add parent directory to path to allow imports
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../"))
@@ -30,7 +30,7 @@ class PaytmWebSocketAdapter(BaseBrokerWebSocketAdapter):
 
     def __init__(self):
         super().__init__()
-        self.logger = get_logger("paytm_websocket")
+        self.logger = logging.getLogger("paytm_websocket")
         self.ws_client = None
         self.user_id = None
         self.broker_name = "paytm"

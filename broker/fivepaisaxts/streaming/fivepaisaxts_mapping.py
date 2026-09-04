@@ -1,9 +1,5 @@
 import logging
 
-from utils.logging import get_logger
-
-logger = get_logger(__name__)
-
 
 class FivepaisaXTSExchangeMapper:
     """Maps between OpenAlgo exchange codes and Fivepaisa XTS specific exchange types"""
@@ -56,7 +52,7 @@ class FivepaisaXTSExchangeMapper:
             int: Exchange type code for Fivepaisa XTS API
         """
         if exchange is None:
-            logger.warning("Exchange is None, defaulting to NSE (1)")
+            logging.warning("Exchange is None, defaulting to NSE (1)")
             return 1
 
         # Convert to string and uppercase
@@ -96,11 +92,11 @@ class FivepaisaXTSExchangeMapper:
         exchange_code = all_exchange_mappings.get(exchange)
 
         if exchange_code is not None:
-            logger.info(f"Mapped exchange '{exchange}' to code {exchange_code}")
+            logging.info(f"Mapped exchange '{exchange}' to code {exchange_code}")
             return exchange_code
 
         # If we get here, log a warning and default to NSE
-        logger.warning(f"Unknown exchange '{exchange}', defaulting to NSE (1)")
+        logging.warning(f"Unknown exchange '{exchange}', defaulting to NSE (1)")
         return 1
 
     @staticmethod

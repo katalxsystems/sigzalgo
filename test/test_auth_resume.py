@@ -48,7 +48,8 @@ def test_resume_rejects_broker_test_auth_failure(monkeypatch, app_context):
         get_margin_data=lambda token: pytest.fail("get_margin_data should not run"),
     )
 
-    monkeypatch.setattr(auth_db, "get_auth_token_dbquery", lambda username: _auth_record())
+    monkeypatch.setattr(auth_db, "get_default_account_id", lambda username: username)
+    monkeypatch.setattr(auth_db, "get_auth_token_dbquery", lambda account_id: _auth_record())
     monkeypatch.setattr(auth_db, "decrypt_token", lambda token: "plain-token")
     monkeypatch.setattr(importlib, "import_module", lambda module_path: fake_funds)
     monkeypatch.setattr(
@@ -69,7 +70,8 @@ def test_resume_rejects_structured_funds_error(monkeypatch, app_context):
         get_margin_data=lambda token: {"status": "error", "message": "token expired"}
     )
 
-    monkeypatch.setattr(auth_db, "get_auth_token_dbquery", lambda username: _auth_record("zerodha"))
+    monkeypatch.setattr(auth_db, "get_default_account_id", lambda username: username)
+    monkeypatch.setattr(auth_db, "get_auth_token_dbquery", lambda account_id: _auth_record("zerodha"))
     monkeypatch.setattr(auth_db, "decrypt_token", lambda token: "plain-token")
     monkeypatch.setattr(importlib, "import_module", lambda module_path: fake_funds)
     monkeypatch.setattr(
@@ -95,7 +97,8 @@ def test_resume_accepts_valid_broker_validation(monkeypatch, app_context):
         session["logged_in"] = True
         session["broker"] = kwargs["broker"]
 
-    monkeypatch.setattr(auth_db, "get_auth_token_dbquery", lambda username: _auth_record())
+    monkeypatch.setattr(auth_db, "get_default_account_id", lambda username: username)
+    monkeypatch.setattr(auth_db, "get_auth_token_dbquery", lambda account_id: _auth_record())
     monkeypatch.setattr(auth_db, "decrypt_token", lambda token: "plain-token")
     monkeypatch.setattr(importlib, "import_module", lambda module_path: fake_funds)
     monkeypatch.setattr(auth_utils, "handle_auth_success", fake_auth_success)

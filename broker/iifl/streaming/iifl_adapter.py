@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import sys
 import threading
@@ -9,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from broker.iifl.streaming.iifl_websocket import IiflWebSocketClient
 from database.auth_db import get_auth_token, get_feed_token
 from database.token_db import get_token
-from utils.logging import get_logger
+from utils.config import get_broker_api_key_market, get_broker_api_secret_market
 
 # Add parent directory to path to allow imports
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../"))
@@ -26,7 +27,7 @@ class IiflWebSocketAdapter(BaseBrokerWebSocketAdapter):
 
     def __init__(self):
         super().__init__()
-        self.logger = get_logger("iifl_websocket")
+        self.logger = logging.getLogger("iifl_websocket")
         self.ws_client = None
         self.user_id = None
         self.broker_name = "iifl"
@@ -70,8 +71,8 @@ class IiflWebSocketAdapter(BaseBrokerWebSocketAdapter):
 
             # For XTS, we need API key and secret, not just tokens
             # These should be stored in environment variables or config
-            api_key = os.getenv("BROKER_API_KEY_MARKET")
-            api_secret = os.getenv("BROKER_API_SECRET_MARKET")
+            api_key = get_broker_api_key_market()
+            api_secret = get_broker_api_secret_market()
 
             if not api_key or not api_secret:
                 self.logger.error(
@@ -83,14 +84,14 @@ class IiflWebSocketAdapter(BaseBrokerWebSocketAdapter):
             # Use provided tokens
             auth_token = auth_data.get("auth_token")
             feed_token = auth_data.get("feed_token")
-            api_key = auth_data.get("api_key", os.getenv("BROKER_API_KEY_MARKET"))
-            api_secret = auth_data.get("api_secret", os.getenv("BROKER_API_SECRET_MARKET"))
+            api_key = auth_data.get("api_key", get_broker_api_key_market())
+            api_secret = auth_data.get("api_secret", get_broker_api_secret_market())
 
             if not auth_token or not feed_token:
                 self.logger.error("Missing required authentication data")
                 raise ValueError("Missing required authentication data")
 
-        self.logger.info("Using configured API key for Iifl XTS connection")
+        self.logger.info(f"Using API Key: {api_key[:10]}... for Iifl XTS connection")
 
         # Create Iifl WebSocket client with API credentials
         self.ws_client = IiflWebSocketClient(

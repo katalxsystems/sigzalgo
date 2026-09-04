@@ -12,7 +12,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import scoped_session, sessionmaker
 from sqlalchemy.pool import NullPool
 
-from database.auth_db import PEPPER
+from database.auth_db import PEPPER, decrypt_token, encrypt_token
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -59,6 +59,17 @@ class Settings(Base):
     security_api_threshold = Column(Integer, default=100)  # Invalid API attempts before ban
     security_api_ban_duration = Column(Integer, default=0)  # 0 = permanent ban
     security_repeat_offender_limit = Column(Integer, default=2)  # Bans before permanent ban
+
+    # Instance-wide default broker credentials. This is the fallback layer
+    # utils.config.get_broker_api_key/get_broker_api_secret use when a
+    # broker account has no per-account override (database.auth_db.Auth.
+    # broker_api_key) — DB-stored so changing it takes effect immediately,
+    # unlike the .env values this replaces (see blueprints/broker_credentials.py).
+    broker_api_key_encrypted = Column(Text, nullable=True)
+    broker_api_secret_encrypted = Column(Text, nullable=True)
+    broker_api_key_market_encrypted = Column(Text, nullable=True)
+    broker_api_secret_market_encrypted = Column(Text, nullable=True)
+    broker_redirect_url = Column(String(500), nullable=True)
 
 
 def init_db():
@@ -292,6 +303,76 @@ def set_security_settings(
     # Invalidate cache after update
     if "security_settings" in _settings_cache:
         del _settings_cache["security_settings"]
+
+
+def get_broker_settings():
+    """Get instance-wide default broker credentials (cached for 1 hour).
+
+    Returns None for any field never set, so callers (utils.config) can
+    tell "not configured here" apart from "configured as empty string" and
+    fall through to the next layer (.env) correctly.
+    """
+    cache_key = "broker_settings"
+
+    if cache_key in _settings_cache:
+        return _settings_cache[cache_key]
+
+    settings = Settings.query.first()
+    if not settings:
+        return None
+
+    result = {
+        "broker_api_key": decrypt_token(settings.broker_api_key_encrypted)
+        if settings.broker_api_key_encrypted
+        else None,
+        "broker_api_secret": decrypt_token(settings.broker_api_secret_encrypted)
+        if settings.broker_api_secret_encrypted
+        else None,
+        "broker_api_key_market": decrypt_token(settings.broker_api_key_market_encrypted)
+        if settings.broker_api_key_market_encrypted
+        else None,
+        "broker_api_secret_market": decrypt_token(settings.broker_api_secret_market_encrypted)
+        if settings.broker_api_secret_market_encrypted
+        else None,
+        "redirect_url": settings.broker_redirect_url,
+    }
+
+    _settings_cache[cache_key] = result
+    return result
+
+
+def set_broker_settings(
+    broker_api_key=None,
+    broker_api_secret=None,
+    broker_api_key_market=None,
+    broker_api_secret_market=None,
+    redirect_url=None,
+):
+    """Set instance-wide default broker credentials. Only fields that are
+    not None are updated (mirrors set_smtp_settings's semantics)."""
+    settings = Settings.query.first()
+    if not settings:
+        settings = Settings(analyze_mode=False)
+        db_session.add(settings)
+
+    if broker_api_key is not None:
+        settings.broker_api_key_encrypted = encrypt_token(broker_api_key) or None
+    if broker_api_secret is not None:
+        settings.broker_api_secret_encrypted = encrypt_token(broker_api_secret) or None
+    if broker_api_key_market is not None:
+        settings.broker_api_key_market_encrypted = encrypt_token(broker_api_key_market) or None
+    if broker_api_secret_market is not None:
+        settings.broker_api_secret_market_encrypted = (
+            encrypt_token(broker_api_secret_market) or None
+        )
+    if redirect_url is not None:
+        settings.broker_redirect_url = redirect_url or None
+
+    db_session.commit()
+    logger.info("Broker settings updated successfully")
+
+    if "broker_settings" in _settings_cache:
+        del _settings_cache["broker_settings"]
 
 
 def clear_settings_cache():

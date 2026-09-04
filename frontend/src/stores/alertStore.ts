@@ -18,6 +18,7 @@ export interface AlertCategories {
 
   // User-initiated operations (Tier 1 - High Impact)
   historify: boolean // Historify job operations, file uploads, schedules (67 toasts)
+  strategy: boolean // Strategy management, symbol configuration (39 toasts)
   positions: boolean // Position close/update operations
 
   // User-initiated operations (Tier 2 - Medium Impact)
@@ -74,6 +75,7 @@ const DEFAULT_STATE = {
     actionCenter: true,
     // Tier 1
     historify: true,
+    strategy: true,
     positions: true,
     // Tier 2
     chartink: true,
@@ -126,8 +128,6 @@ export const useAlertStore = create<AlertStore>()(
       },
     }),
     {
-      // Unversioned, so an existing install keeps the retired `categories.strategy`
-      // key in localStorage. Harmless: zustand shallow-merges and nothing reads it.
       name: 'openalgo-alerts',
       partialize: (state) => ({
         toastsEnabled: state.toastsEnabled,

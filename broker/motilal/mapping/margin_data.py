@@ -1,13 +1,6 @@
 # Mapping OpenAlgo API Request https://openalgo.in/docs
-# Mapping Motilal Oswal Margin API
-# See broker-api-docs/motilaloswal-api-docs/ (docs 24 margin summary,
-# 25 margin detail).
-#
-# Note: Motilal Oswal does not provide a margin calculator API — no such
-# endpoint exists anywhere in the documentation set. The functions below are
-# kept only so the module surface matches other brokers; the real refusal is
-# raised by broker/motilal/api/margin_api.py:calculate_margin_api, which
-# services/margin_service.py turns into an HTTP 501.
+# Mapping Motilal Oswal Margin API - See Motilal_Oswal.md documentation
+# Note: Motilal Oswal does not provide a margin calculator API.
 
 from utils.logging import get_logger
 

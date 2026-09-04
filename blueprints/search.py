@@ -230,17 +230,9 @@ def api_expiries():
     """API endpoint to get available expiry dates for FNO symbols"""
     exchange = request.args.get("exchange", "").strip() or None
     underlying = request.args.get("underlying", "").strip() or None
-    # Option-chain tools pass instrumenttype=options. Without it the list mixes
-    # futures and options expiries, which coincide on NFO but not on MCX.
-    instrumenttype = request.args.get("instrumenttype", "").strip() or None
 
-    logger.debug(
-        f"Fetching expiries: exchange={exchange}, underlying={underlying}, "
-        f"instrumenttype={instrumenttype}"
-    )
-    expiries = get_distinct_expiries(
-        exchange=exchange, underlying=underlying, instrumenttype=instrumenttype
-    )
+    logger.debug(f"Fetching expiries: exchange={exchange}, underlying={underlying}")
+    expiries = get_distinct_expiries(exchange=exchange, underlying=underlying)
 
     return jsonify({"status": "success", "expiries": expiries})
 

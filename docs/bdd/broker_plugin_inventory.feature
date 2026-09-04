@@ -24,7 +24,6 @@ Feature: Broker plugin inventory
       | flattrade | IN_stock |
       | fyers | IN_stock |
       | groww | IN_stock |
-      | hdfcsecurities | IN_stock |
       | hdfcsky | IN_stock |
       | ibulls | IN_stock |
       | iifl | IN_stock |

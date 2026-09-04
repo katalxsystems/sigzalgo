@@ -1,15 +1,15 @@
 import json
-import os
 
 import httpx
 
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def authenticate_with_totp(password, totp_code):
+def authenticate_with_totp(password, totp_code, account_id=None):
     """
     Authenticate with mstock using Type B TOTP authentication (single-step).
 
@@ -23,7 +23,7 @@ def authenticate_with_totp(password, totp_code):
     logger.info("Starting mStock Type B TOTP authentication (single-step)")
 
     # Get credentials from environment variables
-    clientcode = os.getenv("BROKER_API_KEY")
+    clientcode = get_broker_api_key(account_id)
 
     if not clientcode:
         return None, None, "BROKER_API_KEY (clientcode) not found in environment variables."
@@ -32,7 +32,7 @@ def authenticate_with_totp(password, totp_code):
     if not totp_code:
         return None, None, "TOTP code is required."
 
-    logger.info("Using configured mStock clientcode")
+    logger.info(f"Using clientcode: {clientcode}")
 
     try:
         client = get_httpx_client()
@@ -65,7 +65,7 @@ def authenticate_with_totp(password, totp_code):
         status = login_result.get("status")
         if status not in [True, "true"] or "data" not in login_result:
             error_message = login_result.get("message", "Authentication failed.")
-            logger.error("Authentication failed; status=%s", status)
+            logger.error(f"Authentication failed: {error_message}")
             return None, None, error_message
 
         # Get refresh token from response (not the final auth token)
@@ -74,13 +74,13 @@ def authenticate_with_totp(password, totp_code):
 
         if not refresh_token:
             logger.error("No refreshToken in login response")
-            logger.info("Login response data fields: %s", list(data.keys()))
+            logger.info(f"Available fields in data: {data}")
             return None, None, "Failed to get refresh token from response."
 
         logger.info("Login with TOTP successful, now verifying TOTP to get final token")
 
         # Step 2: Verify TOTP with refresh token to get the final authentication token
-        api_key = os.getenv("BROKER_API_SECRET")
+        api_key = get_broker_api_secret(account_id)
         verify_headers = {
             "X-Mirae-Version": "1",
             "X-PrivateKey": api_key,
@@ -106,18 +106,18 @@ def authenticate_with_totp(password, totp_code):
         status = verify_result.get("status")
         if status not in [True, "true"] or "data" not in verify_result:
             error_message = verify_result.get("message", "TOTP verification failed.")
-            logger.error("TOTP verification failed; status=%s", status)
+            logger.error(f"TOTP verification failed: {error_message}")
             return None, None, error_message
 
         # Get final authentication tokens
         final_data = verify_result["data"]
         auth_token = final_data.get("jwtToken")
         feed_token = final_data.get("feedToken")
-        logger.debug("Auth token received")
+        logger.debug(f"Feed token received: {auth_token}")
 
         if not auth_token:
             logger.error("No jwtToken in verification response")
-            logger.debug("Verification response fields: %s", list(final_data.keys()))
+            logger.debug(f"Available fields in data: {final_data}")
             return None, None, "Failed to get authentication token from verification response."
 
         logger.info("TOTP authentication successful, got final jwtToken")
@@ -128,17 +128,17 @@ def authenticate_with_totp(password, totp_code):
         try:
             error_detail = e.response.json()
             error_msg += f" - {error_detail.get('message', e.response.text)}"
-            logger.error("mStock authentication HTTP error; status=%s", e.response.status_code)
+            logger.error(f"HTTP Error: {e.response.status_code}, Details: {error_detail}")
         except Exception:
             error_msg += f" - {e.response.text}"
-            logger.error("mStock authentication HTTP error; status=%s", e.response.status_code)
+            logger.error(f"HTTP Error: {e.response.status_code}, Raw: {e.response.text}")
         return None, None, error_msg
     except Exception as e:
         logger.exception("Unexpected error during TOTP authentication")
         return None, None, str(e)
 
 
-def send_otp(password):
+def send_otp(password, account_id=None):
     """
     Step 1 of Type B authentication: Send password to trigger OTP.
 
@@ -151,14 +151,14 @@ def send_otp(password):
     logger.info("Starting mStock Type B authentication - Step 1: Send OTP")
 
     # Get credentials from environment variables
-    clientcode = os.getenv("BROKER_API_KEY")
+    clientcode = get_broker_api_key(account_id)
 
     if not clientcode:
         return None, None, "BROKER_API_KEY (clientcode) not found in environment variables."
     if not password:
         return None, None, "Password is required."
 
-    logger.debug("Using configured mStock clientcode")
+    logger.debug(f"Using clientcode: {clientcode}")
 
     try:
         client = get_httpx_client()
@@ -185,7 +185,7 @@ def send_otp(password):
         status = login_result.get("status")
         if status not in [True, "true"] or "data" not in login_result:
             error_message = login_result.get("message", "Login failed.")
-            logger.error("Login failed; status=%s", status)
+            logger.error(f"Login failed: {error_message}")
             return None, None, error_message
 
         # Check if refreshToken field exists first, otherwise use jwtToken
@@ -194,10 +194,12 @@ def send_otp(password):
 
         if not refresh_token:
             logger.error("No refreshToken or jwtToken in login response")
-            logger.debug("Login response data fields: %s", list(data.keys()))
+            logger.debug(f"Available fields in data: {data}")
             return None, None, "Failed to get refreshToken from login response."
 
-        logger.debug("Refresh token received; length=%s", len(refresh_token))
+        logger.debug(
+            f"Using token as refreshToken: {refresh_token[:30]}... (length: {len(refresh_token)})"
+        )
 
         success_message = login_result.get("message", "OTP sent successfully")
         logger.debug(f"Login successful, OTP sent. Message: {success_message}")
@@ -209,17 +211,17 @@ def send_otp(password):
         try:
             error_detail = e.response.json()
             error_msg += f" - {error_detail.get('message', e.response.text)}"
-            logger.error("mStock OTP HTTP error; status=%s", e.response.status_code)
+            logger.error(f"HTTP Error: {e.response.status_code}, Details: {error_detail}")
         except Exception:
             error_msg += f" - {e.response.text}"
-            logger.error("mStock OTP HTTP error; status=%s", e.response.status_code)
+            logger.error(f"HTTP Error: {e.response.status_code}, Raw: {e.response.text}")
         return None, None, error_msg
     except Exception as e:
         logger.exception("Unexpected error during OTP send")
         return None, None, str(e)
 
 
-def verify_otp(otp_code, refresh_token):
+def verify_otp(otp_code, refresh_token, account_id=None):
     """
     Step 2 of Type B authentication: Verify OTP to get access token.
 
@@ -232,7 +234,7 @@ def verify_otp(otp_code, refresh_token):
     """
     logger.info("Starting mStock Type B authentication - Step 2: Verify OTP")
 
-    api_key = os.getenv("BROKER_API_SECRET")
+    api_key = get_broker_api_secret(account_id)
 
     if not api_key:
         return None, None, "BROKER_API_SECRET (API key) not found in environment variables."
@@ -256,8 +258,8 @@ def verify_otp(otp_code, refresh_token):
         logger.debug(f"RefreshToken length: {len(refresh_token) if refresh_token else 0}")
         logger.debug(f"API Key (X-PrivateKey) length: {len(api_key) if api_key else 0}")
         logger.debug("Request URL: https://api.mstock.trade/openapi/typeb/session/token")
-        logger.debug(f"Request header fields: {list(token_headers)}")
-        logger.debug("Sending refresh token request with OTP")
+        logger.debug(f"Request headers: {token_headers}")
+        logger.debug(f"Request body: refreshToken=[{refresh_token[:20]}...], otp={otp_code}")
 
         token_response = client.post(
             "https://api.mstock.trade/openapi/typeb/session/token",
@@ -266,11 +268,8 @@ def verify_otp(otp_code, refresh_token):
         )
 
         logger.debug(f"OTP verification HTTP status: {token_response.status_code}")
-        logger.debug(
-            "OTP verification response received; status=%s, content_type=%s",
-            token_response.status_code,
-            token_response.headers.get("content-type"),
-        )
+        logger.debug(f"OTP verification response headers: {dict(token_response.headers)}")
+        logger.debug(f"OTP verification raw response text: [{token_response.text}]")
 
         token_response.raise_for_status()
         token_result = token_response.json()
@@ -287,7 +286,7 @@ def verify_otp(otp_code, refresh_token):
             return auth_token, feed_token, None
         else:
             error_message = token_result.get("message", "Token generation failed.")
-            logger.error("OTP verification failed; status=%s", status)
+            logger.error(f"OTP verification failed: {error_message}")
             return None, None, error_message
 
     except httpx.HTTPStatusError as e:
@@ -295,10 +294,10 @@ def verify_otp(otp_code, refresh_token):
         try:
             error_detail = e.response.json()
             error_msg += f" - {error_detail.get('message', e.response.text)}"
-            logger.error("mStock token HTTP error; status=%s", e.response.status_code)
+            logger.error(f"HTTP Error: {e.response.status_code}, Details: {error_detail}")
         except Exception:
             error_msg += f" - {e.response.text}"
-            logger.error("mStock token HTTP error; status=%s", e.response.status_code)
+            logger.error(f"HTTP Error: {e.response.status_code}, Raw: {e.response.text}")
         return None, None, error_msg
     except Exception as e:
         logger.exception("Unexpected error during OTP verification")

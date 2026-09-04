@@ -1,7 +1,7 @@
 import hashlib
 import json
-import os
 
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -21,7 +21,7 @@ def sha256_hash(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def authenticate_broker(userid, password, totp_code):
+def authenticate_broker(userid, password, totp_code, account_id=None):
     """
     Authenticate with Firstock using the updated API and return the auth token.
 
@@ -39,8 +39,8 @@ def authenticate_broker(userid, password, totp_code):
             - On failure: (None, error_message_string)
     """
     # Get the Firstock API credentials from environment variables
-    api_key = os.getenv("BROKER_API_SECRET")  # This should be the apiKey
-    vendor_code = os.getenv("BROKER_API_KEY")  # This should be the vendorCode
+    api_key = get_broker_api_secret(account_id)  # This should be the apiKey
+    vendor_code = get_broker_api_key(account_id)  # This should be the vendorCode
 
     # Validate required environment variables
     if not api_key:

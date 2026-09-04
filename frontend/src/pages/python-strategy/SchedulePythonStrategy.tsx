@@ -7,9 +7,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
-import { useStrategyExchanges } from '@/hooks/useStrategyExchanges'
 import type { PythonStrategy } from '@/types/python-strategy'
-import { CRYPTO_EXCHANGE_VALUE, SCHEDULE_DAYS } from '@/types/python-strategy'
+import { CRYPTO_EXCHANGE_VALUE, SCHEDULE_DAYS, STRATEGY_EXCHANGES } from '@/types/python-strategy'
 import { showToast } from '@/utils/toast'
 
 export default function SchedulePythonStrategy() {
@@ -23,9 +22,7 @@ export default function SchedulePythonStrategy() {
   const [stopTime, setStopTime] = useState('15:30')
   const [selectedDays, setSelectedDays] = useState<string[]>(['mon', 'tue', 'wed', 'thu', 'fri'])
 
-  const { exchanges, getWindow } = useStrategyExchanges()
   const isCrypto = exchange === CRYPTO_EXCHANGE_VALUE
-  const sessionWindow = getWindow(exchange)
 
   useEffect(() => {
     const fetchStrategy = async () => {
@@ -164,7 +161,7 @@ export default function SchedulePythonStrategy() {
                 onChange={(e) => setExchange(e.target.value)}
                 className="w-full px-3 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary"
               >
-                {exchanges.map((opt) => (
+                {STRATEGY_EXCHANGES.map((opt) => (
                   <option key={opt.value} value={opt.value}>
                     {opt.label}
                   </option>
@@ -178,41 +175,33 @@ export default function SchedulePythonStrategy() {
             </div>
 
             {/* Time Inputs */}
-            <div className="space-y-2">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="start_time" className="flex items-center gap-2">
-                    <Clock className="h-4 w-4" />
-                    Start Time (IST)
-                  </Label>
-                  <Input
-                    id="start_time"
-                    type="time"
-                    value={startTime}
-                    onChange={(e) => setStartTime(e.target.value)}
-                    required
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="stop_time" className="flex items-center gap-2">
-                    <Clock className="h-4 w-4" />
-                    Stop Time (IST)
-                  </Label>
-                  <Input
-                    id="stop_time"
-                    type="time"
-                    value={stopTime}
-                    onChange={(e) => setStopTime(e.target.value)}
-                    required
-                  />
-                </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="start_time" className="flex items-center gap-2">
+                  <Clock className="h-4 w-4" />
+                  Start Time (IST)
+                </Label>
+                <Input
+                  id="start_time"
+                  type="time"
+                  value={startTime}
+                  onChange={(e) => setStartTime(e.target.value)}
+                  required
+                />
               </div>
-              {sessionWindow && !isCrypto && (
-                <p className="text-xs text-muted-foreground">
-                  {exchange} trades {sessionWindow.start} - {sessionWindow.stop} IST today. The
-                  strategy is stopped at whichever comes first, your stop time or the session close.
-                </p>
-              )}
+              <div className="space-y-2">
+                <Label htmlFor="stop_time" className="flex items-center gap-2">
+                  <Clock className="h-4 w-4" />
+                  Stop Time (IST)
+                </Label>
+                <Input
+                  id="stop_time"
+                  type="time"
+                  value={stopTime}
+                  onChange={(e) => setStopTime(e.target.value)}
+                  required
+                />
+              </div>
             </div>
 
             {/* Days Selection */}

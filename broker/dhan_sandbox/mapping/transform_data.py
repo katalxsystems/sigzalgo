@@ -133,7 +133,6 @@ def map_exchange_type(exchange):
         "BFO": "BSE_FNO",
         "BCD": "BSE_CURRENCY",
         "MCX": "MCX_COMM",
-        "NCO": "NSE_COMM",
     }
     return exchange_mapping.get(exchange)  # Default to MARKET if not found
 
@@ -150,7 +149,6 @@ def map_exchange(brexchange):
         "BSE_FNO": "BFO",
         "BSE_CURRENCY": "BCD",
         "MCX_COMM": "MCX",
-        "NSE_COMM": "NCO",
     }
     return exchange_mapping.get(brexchange)  # Default to MARKET if not found
 
@@ -171,10 +169,7 @@ def reverse_map_product_type(product):
     """
     Reverse maps the broker product type to the OpenAlgo product type, considering the exchange.
     """
-    # Keys are Dhan's productType values, values are OpenAlgo's. The INTRADAY
-    # pair used to be written the wrong way round as "MIS": "INTRADAY", so
-    # every intraday position reverse-mapped to None. See map_product_type
-    # above for the forward direction.
-    product_mapping = {"CNC": "CNC", "MARGIN": "NRML", "INTRADAY": "MIS"}
+    # Exchange to OpenAlgo product type mapping for 'D'
+    product_mapping = {"CNC": "CNC", "MARGIN": "NRML", "MIS": "INTRADAY"}
 
     return product_mapping.get(product)  # Removed default; will return None if not found

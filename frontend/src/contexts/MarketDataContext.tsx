@@ -24,7 +24,6 @@ export interface MarketDataContextValue {
   isAuthenticated: boolean
   isPaused: boolean
   isFallbackMode: boolean
-  connectionEpoch: number
   error: string | null
   subscribe: (
     symbol: string,
@@ -64,7 +63,6 @@ export function MarketDataProvider({
   const [isAuthenticated, setIsAuthenticated] = useState(initialState.isAuthenticated)
   const [isPaused, setIsPaused] = useState(initialState.isPaused)
   const [isFallbackMode, setIsFallbackMode] = useState(initialState.isFallbackMode)
-  const [connectionEpoch, setConnectionEpoch] = useState(initialState.connectionEpoch)
   const [error, setError] = useState<string | null>(initialState.error)
 
   const pauseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -79,7 +77,6 @@ export function MarketDataProvider({
       setIsAuthenticated(state.isAuthenticated)
       setIsPaused(state.isPaused)
       setIsFallbackMode(state.isFallbackMode)
-      setConnectionEpoch(state.connectionEpoch)
       setError(state.error)
     })
 
@@ -126,7 +123,6 @@ export function MarketDataProvider({
     isAuthenticated,
     isPaused,
     isFallbackMode,
-    connectionEpoch,
     error,
     subscribe: (symbol, exchange, mode, callback) =>
       managerRef.current.subscribe(symbol, exchange, mode, callback),

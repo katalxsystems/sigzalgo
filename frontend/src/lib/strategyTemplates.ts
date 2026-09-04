@@ -32,222 +32,17 @@ export interface StrategyTemplate {
   direction: Direction
   description: string
   legs: TemplateLeg[]
-  /** Normalized spot used to resolve relative strikes in the mini preview. */
-  referenceSpot: number
-  /** Normalized strike interval used to resolve relative strikes in the mini preview. */
-  strikeStep: number
-  /** True when a multi-expiry preview is illustrative rather than terminal intrinsic payoff. */
-  illustrativePreview: boolean
   /** Normalised viewBox-(0,0)-(100,40) SVG path for the mini payoff icon. */
   payoffPath: string
 }
 
-interface TemplateDefinition
-  extends Omit<
-    StrategyTemplate,
-    'referenceSpot' | 'strikeStep' | 'illustrativePreview' | 'payoffPath'
-  > {
-  /** Multi-expiry calendars retain time value, so their topology cannot be intrinsic-only. */
-  illustrativePath?: string
-}
-
-const PREVIEW_REFERENCE_SPOT = 100
-const PREVIEW_STRIKE_STEP = 4
-
-/**
- * Synthetic ATM time value, expressed in strike steps.
- *
- * The preview needs a premium, otherwise a long call, a vertical spread and a
- * butterfly all sit entirely on one side of the zero line and read as a step
- * rather than as profit versus loss.
- */
-const PREVIEW_ATM_TIME_VALUE_STEPS = 1.2
-/**
- * Decay width of the synthetic time value, in strike steps. Must stay at or
- * above twice PREVIEW_ATM_TIME_VALUE_STEPS so the modelled premium curve is
- * convex in the strike — see previewPremium.
- */
-const PREVIEW_TIME_VALUE_WIDTH_STEPS = 3
-/** Smallest preview window width, in strike steps, so a single-strike payoff still reads. */
-const PREVIEW_MIN_WINDOW_STEPS = 3
-/** Blank margin drawn on each side of the payoff features, as a fraction of the feature span. */
-const PREVIEW_MARGIN_RATIO = 0.22
-/** Vertical half-height of the drawn curve. */
-const PREVIEW_AMPLITUDE = 16
-/** Baseline y of the icon; TemplateGrid draws its dashed zero line here. */
-const PREVIEW_ZERO_Y = 20
-/** Smallest share of the amplitude the weaker side of the payoff may occupy. */
-const PREVIEW_MIN_SIDE_SPAN = 0.35
-
-type PreviewStrategy = Pick<StrategyTemplate, 'legs' | 'referenceSpot' | 'strikeStep'>
-
-function previewStrike(template: PreviewStrategy, leg: TemplateLeg): number {
-  return template.referenceSpot + leg.strikeOffset * template.strikeStep
-}
-
-/**
- * Deterministic synthetic premium for one preview leg.
- *
- * Time value decays exponentially with distance from the reference spot, and
- * the exponential kink at the money exactly offsets the intrinsic kink, so the
- * modelled premium is convex in the strike. Convexity is what makes derived
- * structures come out with the right sign: butterflies and condors as debits,
- * strangles and iron condors as credits. A concave model (a Gaussian, say)
- * prices a long call condor at a credit, which would draw an all-profit icon.
- */
-function previewPremium(template: PreviewStrategy, leg: TemplateLeg): number {
-  const strike = previewStrike(template, leg)
-  const intrinsic =
-    leg.optionType === 'CE'
-      ? Math.max(0, template.referenceSpot - strike)
-      : Math.max(0, strike - template.referenceSpot)
-  const width = PREVIEW_TIME_VALUE_WIDTH_STEPS * template.strikeStep
-  const decay = Math.exp(-Math.abs(strike - template.referenceSpot) / width)
-  return intrinsic + PREVIEW_ATM_TIME_VALUE_STEPS * template.strikeStep * decay
-}
-
-/** Terminal profit and loss of the normalized template legs, net of the synthetic premium. */
-export function previewValue(template: PreviewStrategy, spot: number): number {
-  const physicalSpot = Math.max(0, spot)
-  return template.legs.reduce((total, leg) => {
-    const strike = previewStrike(template, leg)
-    const intrinsic =
-      leg.optionType === 'CE'
-        ? Math.max(0, physicalSpot - strike)
-        : Math.max(0, strike - physicalSpot)
-    const direction = leg.side === 'BUY' ? 1 : -1
-    return total + direction * leg.lots * (intrinsic - previewPremium(template, leg))
-  }, 0)
-}
-
-/** Distinct leg strikes of the normalized template, ascending. */
-function previewStrikes(template: PreviewStrategy): number[] {
-  return Array.from(new Set(template.legs.map((leg) => previewStrike(template, leg)))).sort(
-    (left, right) => left - right
-  )
-}
-
-/**
- * Slope of the payoff outside the outermost strikes.
- *
- * Below every strike only puts carry intrinsic, and each unit loses one point
- * of value per point of spot. Above every strike only calls carry intrinsic.
- */
-function previewTailSlopes(template: PreviewStrategy): { left: number; right: number } {
-  let left = 0
-  let right = 0
-  for (const leg of template.legs) {
-    const direction = leg.side === 'BUY' ? 1 : -1
-    if (leg.optionType === 'CE') right += direction * leg.lots
-    else left -= direction * leg.lots
-  }
-  return { left, right }
-}
-
-/** Spots at which the payoff crosses zero, including the unbounded outer rays. */
-function previewBreakevens(template: PreviewStrategy, strikes: number[]): number[] {
-  const values = strikes.map((strike) => previewValue(template, strike))
-  const crossings: number[] = []
-  for (let index = 0; index < strikes.length - 1; index++) {
-    const lower = values[index]
-    const upper = values[index + 1]
-    if ((lower < 0 && upper > 0) || (lower > 0 && upper < 0)) {
-      const ratio = lower / (lower - upper)
-      crossings.push(strikes[index] + ratio * (strikes[index + 1] - strikes[index]))
-    }
-  }
-  const slopes = previewTailSlopes(template)
-  const firstStrike = strikes[0]
-  const lastStrike = strikes[strikes.length - 1]
-  if (slopes.left !== 0) {
-    const crossing = firstStrike - values[0] / slopes.left
-    if (crossing >= 0 && crossing < firstStrike) crossings.push(crossing)
-  }
-  if (slopes.right !== 0) {
-    const crossing = lastStrike - values[values.length - 1] / slopes.right
-    if (crossing > lastStrike) crossings.push(crossing)
-  }
-  return crossings
-}
-
-/**
- * Spot range the icon spans, derived from the template's own strikes.
- *
- * A fixed window cannot serve every template: a bullish butterfly sits inside
- * eight normalized points while the Batman spans a hundred and twenty, so a
- * shared window collapses one to a spike and leaves the other cramped. The
- * window therefore starts at the strike range and, only when the payoff never
- * changes sign across the strikes, widens to take in the nearest breakeven so
- * the drawn curve still shows both profit and loss.
- */
-function previewWindow(
-  template: PreviewStrategy,
-  strikes: number[]
-): { low: number; high: number } {
-  const values = strikes.map((strike) => previewValue(template, strike))
-  let low = strikes[0]
-  let high = strikes[strikes.length - 1]
-  const changesSign = values.some((value) => value > 0) && values.some((value) => value < 0)
-  if (!changesSign) {
-    for (const crossing of previewBreakevens(template, strikes)) {
-      low = Math.min(low, crossing)
-      high = Math.max(high, crossing)
-    }
-  }
-  const centre = (low + high) / 2
-  const span = Math.max(high - low, PREVIEW_MIN_WINDOW_STEPS * template.strikeStep)
-  const half = span / 2 + span * PREVIEW_MARGIN_RATIO
-  return { low: Math.max(0, centre - half), high: centre + half }
-}
-
-function clamp(value: number, lower: number, upper: number): number {
-  return Math.min(upper, Math.max(lower, value))
-}
-
-/**
- * Build an SVG topology from the actual normalized legs and their strike kinks.
- *
- * Vertices are the window edges plus every strike, which is exact: the payoff
- * is piecewise linear and kinks only at strikes. Profit and loss are scaled
- * independently, but neither side is stretched past the shared scale, so the
- * weaker side stays visible without a lopsided payoff being drawn as balanced.
- */
-export function templatePreviewPath(template: PreviewStrategy): string {
-  const strikes = previewStrikes(template)
-  const window = previewWindow(template, strikes)
-  const width = window.high - window.low
-  const spots = Array.from(new Set([window.low, ...strikes, window.high])).sort(
-    (left, right) => left - right
-  )
-  const values = spots.map((spot) => previewValue(template, spot))
-  const maxProfit = Math.max(0, ...values)
-  const maxLoss = Math.max(0, ...values.map((value) => -value))
-  const scale = Math.max(maxProfit, maxLoss)
-  const profitScale = maxProfit > 0 ? Math.min(scale, maxProfit / PREVIEW_MIN_SIDE_SPAN) : scale
-  const lossScale = maxLoss > 0 ? Math.min(scale, maxLoss / PREVIEW_MIN_SIDE_SPAN) : scale
-  const points = spots.map((spot, index) => {
-    const value = values[index]
-    const x = width > 0 ? ((spot - window.low) / width) * 100 : 50
-    const offset =
-      scale === 0
-        ? 0
-        : value >= 0
-          ? -(value / profitScale) * PREVIEW_AMPLITUDE
-          : (-value / lossScale) * PREVIEW_AMPLITUDE
-    const y = PREVIEW_ZERO_Y + clamp(offset, -PREVIEW_AMPLITUDE, PREVIEW_AMPLITUDE)
-    const command = index === 0 ? 'M' : 'L'
-    return `${command}${Number(clamp(x, 0, 100).toFixed(2))},${Number(y.toFixed(2))}`
-  })
-  return points.join(' ')
-}
-
 /**
  * Icons are drawn so that:
- *   x = 0 .. 100 spans the template's own strike window, not a fixed spot range,
- *   y = 4 (top, max profit) .. 36 (bottom, max loss),
+ *   x = 0 .. 100 represents the underlying range,
+ *   y = 0 (top, max profit) .. 40 (bottom, max loss),
  *   the zero line sits at y = 20.
  */
-const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
+export const STRATEGY_TEMPLATES: StrategyTemplate[] = [
   // ──────────────────────────────────────────────────────────────────────
   // BULLISH (9)
   // ──────────────────────────────────────────────────────────────────────
@@ -257,6 +52,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
     direction: 'BULLISH',
     description: 'Unlimited upside, limited downside. Best for strong bullish view.',
     legs: [{ side: 'BUY', optionType: 'CE', strikeOffset: 0, lots: 1 }],
+    payoffPath: 'M0,30 L55,30 L100,2',
   },
   {
     id: 'short_put',
@@ -264,6 +60,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
     direction: 'BULLISH',
     description: 'Collect premium; profit if price stays above strike.',
     legs: [{ side: 'SELL', optionType: 'PE', strikeOffset: 0, lots: 1 }],
+    payoffPath: 'M0,38 L50,10 L100,10',
   },
   {
     id: 'bull_call_spread',
@@ -274,38 +71,42 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'BUY', optionType: 'CE', strikeOffset: 0, lots: 1 },
       { side: 'SELL', optionType: 'CE', strikeOffset: 2, lots: 1 },
     ],
+    payoffPath: 'M0,28 L50,28 L75,6 L100,6',
   },
   {
     id: 'bull_put_spread',
     name: 'Bull Put Spread',
     direction: 'BULLISH',
-    description: 'Sell ATM put, buy OTM put. Typically opened for a net credit.',
+    description: 'Sell ATM put, buy OTM put. Net credit trade.',
     legs: [
       { side: 'SELL', optionType: 'PE', strikeOffset: 0, lots: 1 },
       { side: 'BUY', optionType: 'PE', strikeOffset: -2, lots: 1 },
     ],
+    payoffPath: 'M0,34 L25,34 L50,10 L100,10',
   },
   {
     id: 'call_ratio_back_spread',
     name: 'Call Ratio Back Spread',
     direction: 'BULLISH',
     description:
-      'Sell 1 ATM call, buy 2 OTM calls. Entry may be a credit or debit; upside is unlimited if the market rallies hard.',
+      'Sell 1 ATM call, buy 2 OTM calls. Small credit; unlimited upside if market rallies hard.',
     legs: [
       { side: 'SELL', optionType: 'CE', strikeOffset: 0, lots: 1 },
       { side: 'BUY', optionType: 'CE', strikeOffset: 2, lots: 2 },
     ],
+    payoffPath: 'M0,18 L40,18 L60,28 L75,22 L100,2',
   },
   {
     id: 'long_synthetic',
     name: 'Long Synthetic',
     direction: 'BULLISH',
     description:
-      'Buy ATM call + sell ATM put (same strike). Synthetic long futures — unlimited upside, with downside bounded when spot reaches zero.',
+      'Buy ATM call + sell ATM put (same strike). Synthetic long futures — unlimited upside, unlimited downside.',
     legs: [
       { side: 'BUY', optionType: 'CE', strikeOffset: 0, lots: 1 },
       { side: 'SELL', optionType: 'PE', strikeOffset: 0, lots: 1 },
     ],
+    payoffPath: 'M0,38 L100,2',
   },
   {
     id: 'range_forward',
@@ -317,6 +118,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'SELL', optionType: 'PE', strikeOffset: -2, lots: 1 },
       { side: 'BUY', optionType: 'CE', strikeOffset: 2, lots: 1 },
     ],
+    payoffPath: 'M0,38 L30,22 L65,22 L100,2',
   },
   {
     id: 'bullish_butterfly',
@@ -329,6 +131,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'SELL', optionType: 'CE', strikeOffset: 2, lots: 2 },
       { side: 'BUY', optionType: 'CE', strikeOffset: 4, lots: 1 },
     ],
+    payoffPath: 'M0,26 L55,26 L70,4 L85,26 L100,26',
   },
   {
     id: 'bullish_condor',
@@ -342,6 +145,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'SELL', optionType: 'CE', strikeOffset: 3, lots: 1 },
       { side: 'BUY', optionType: 'CE', strikeOffset: 4, lots: 1 },
     ],
+    payoffPath: 'M0,26 L45,26 L60,6 L80,6 L92,26 L100,26',
   },
 
   // ──────────────────────────────────────────────────────────────────────
@@ -353,23 +157,26 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
     direction: 'BEARISH',
     description: 'Collect premium; profit if price stays below strike.',
     legs: [{ side: 'SELL', optionType: 'CE', strikeOffset: 0, lots: 1 }],
+    payoffPath: 'M0,10 L50,10 L100,38',
   },
   {
     id: 'long_put',
     name: 'Long Put',
     direction: 'BEARISH',
-    description: 'Profit grows as spot falls but is capped at zero; loss is limited.',
+    description: 'Unlimited downside profit, limited loss. Best for strong bearish view.',
     legs: [{ side: 'BUY', optionType: 'PE', strikeOffset: 0, lots: 1 }],
+    payoffPath: 'M0,2 L45,30 L100,30',
   },
   {
     id: 'bear_call_spread',
     name: 'Bear Call Spread',
     direction: 'BEARISH',
-    description: 'Sell ATM call, buy OTM call. Typically opened for a net credit.',
+    description: 'Sell ATM call, buy OTM call. Net credit trade.',
     legs: [
       { side: 'SELL', optionType: 'CE', strikeOffset: 0, lots: 1 },
       { side: 'BUY', optionType: 'CE', strikeOffset: 2, lots: 1 },
     ],
+    payoffPath: 'M0,10 L50,10 L75,34 L100,34',
   },
   {
     id: 'bear_put_spread',
@@ -380,28 +187,31 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'BUY', optionType: 'PE', strikeOffset: 0, lots: 1 },
       { side: 'SELL', optionType: 'PE', strikeOffset: -2, lots: 1 },
     ],
+    payoffPath: 'M0,6 L25,6 L50,28 L100,28',
   },
   {
     id: 'put_ratio_back_spread',
     name: 'Put Ratio Back Spread',
     direction: 'BEARISH',
     description:
-      'Sell 1 ATM put, buy 2 OTM puts. Entry may be a credit or debit; profit grows as spot falls but is capped at zero.',
+      'Sell 1 ATM put, buy 2 OTM puts. Small credit; unlimited downside if market falls hard.',
     legs: [
       { side: 'SELL', optionType: 'PE', strikeOffset: 0, lots: 1 },
       { side: 'BUY', optionType: 'PE', strikeOffset: -2, lots: 2 },
     ],
+    payoffPath: 'M0,2 L25,22 L40,28 L60,18 L100,18',
   },
   {
     id: 'short_synthetic',
     name: 'Short Synthetic',
     direction: 'BEARISH',
     description:
-      'Sell ATM call + buy ATM put (same strike). Synthetic short futures — downside profit is capped at zero and upside loss is unlimited.',
+      'Sell ATM call + buy ATM put (same strike). Synthetic short futures — unlimited downside profit, unlimited upside loss.',
     legs: [
       { side: 'SELL', optionType: 'CE', strikeOffset: 0, lots: 1 },
       { side: 'BUY', optionType: 'PE', strikeOffset: 0, lots: 1 },
     ],
+    payoffPath: 'M0,2 L100,38',
   },
   {
     id: 'risk_reversal',
@@ -413,6 +223,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'BUY', optionType: 'PE', strikeOffset: -2, lots: 1 },
       { side: 'SELL', optionType: 'CE', strikeOffset: 2, lots: 1 },
     ],
+    payoffPath: 'M0,2 L35,22 L70,22 L100,38',
   },
   {
     id: 'bearish_butterfly',
@@ -425,6 +236,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'SELL', optionType: 'PE', strikeOffset: -2, lots: 2 },
       { side: 'BUY', optionType: 'PE', strikeOffset: -4, lots: 1 },
     ],
+    payoffPath: 'M0,26 L15,26 L30,4 L45,26 L100,26',
   },
   {
     id: 'bearish_condor',
@@ -438,6 +250,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'SELL', optionType: 'PE', strikeOffset: -3, lots: 1 },
       { side: 'BUY', optionType: 'PE', strikeOffset: -4, lots: 1 },
     ],
+    payoffPath: 'M0,26 L8,26 L20,6 L40,6 L55,26 L100,26',
   },
 
   // ──────────────────────────────────────────────────────────────────────
@@ -452,6 +265,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'BUY', optionType: 'CE', strikeOffset: 0, lots: 1 },
       { side: 'BUY', optionType: 'PE', strikeOffset: 0, lots: 1 },
     ],
+    payoffPath: 'M0,4 L50,30 L100,4',
   },
   {
     id: 'short_straddle',
@@ -462,6 +276,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'SELL', optionType: 'CE', strikeOffset: 0, lots: 1 },
       { side: 'SELL', optionType: 'PE', strikeOffset: 0, lots: 1 },
     ],
+    payoffPath: 'M0,36 L50,10 L100,36',
   },
   {
     id: 'long_strangle',
@@ -472,6 +287,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'BUY', optionType: 'PE', strikeOffset: -2, lots: 1 },
       { side: 'BUY', optionType: 'CE', strikeOffset: 2, lots: 1 },
     ],
+    payoffPath: 'M0,6 L30,26 L70,26 L100,6',
   },
   {
     id: 'short_strangle',
@@ -482,6 +298,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'SELL', optionType: 'PE', strikeOffset: -2, lots: 1 },
       { side: 'SELL', optionType: 'CE', strikeOffset: 2, lots: 1 },
     ],
+    payoffPath: 'M0,34 L30,14 L70,14 L100,34',
   },
   {
     id: 'jade_lizard',
@@ -494,6 +311,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'SELL', optionType: 'CE', strikeOffset: 2, lots: 1 },
       { side: 'BUY', optionType: 'CE', strikeOffset: 4, lots: 1 },
     ],
+    payoffPath: 'M0,34 L20,34 L35,14 L75,14 L90,20 L100,20',
   },
   {
     id: 'reverse_jade_lizard',
@@ -506,6 +324,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'SELL', optionType: 'PE', strikeOffset: -2, lots: 1 },
       { side: 'BUY', optionType: 'PE', strikeOffset: -4, lots: 1 },
     ],
+    payoffPath: 'M0,20 L10,20 L25,14 L65,14 L80,34 L100,34',
   },
   {
     id: 'call_ratio_spread',
@@ -517,24 +336,26 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'BUY', optionType: 'CE', strikeOffset: 0, lots: 1 },
       { side: 'SELL', optionType: 'CE', strikeOffset: 2, lots: 2 },
     ],
+    payoffPath: 'M0,28 L50,28 L75,4 L100,38',
   },
   {
     id: 'put_ratio_spread',
     name: 'Put Ratio Spread',
     direction: 'NON_DIRECTIONAL',
     description:
-      'Buy 1 ATM put, sell 2 OTM puts. Peak profit at the short strike; loss below it is substantial but bounded at spot zero.',
+      'Buy 1 ATM put, sell 2 OTM puts. Peak profit at short strike; unlimited downside loss below.',
     legs: [
       { side: 'BUY', optionType: 'PE', strikeOffset: 0, lots: 1 },
       { side: 'SELL', optionType: 'PE', strikeOffset: -2, lots: 2 },
     ],
+    payoffPath: 'M0,38 L25,4 L50,28 L100,28',
   },
   {
     id: 'batman_strategy',
     name: 'Batman Strategy',
     direction: 'NON_DIRECTIONAL',
     description:
-      'Call ratio spread (1×2) above + Put ratio spread (1×2) below. Two-eared "Batman" profile — peaks at the short strikes, with bounded left-tail loss at spot zero and unlimited right-tail loss.',
+      'Call ratio spread (1×2) above + Put ratio spread (1×2) below. Two-eared "Batman" profile — small profit peaks at the short strikes, with unlimited loss on both wings due to the extra short legs.',
     legs: [
       // ── CE side: call ratio spread — long 1, short 2 ──
       { side: 'BUY', optionType: 'CE', strikeOffset: 10, lots: 1 },
@@ -543,6 +364,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'BUY', optionType: 'PE', strikeOffset: -10, lots: 1 },
       { side: 'SELL', optionType: 'PE', strikeOffset: -15, lots: 2 },
     ],
+    payoffPath: 'M0,38 L15,30 L30,12 L45,22 L55,22 L70,12 L85,30 L100,38',
   },
   {
     id: 'long_iron_fly',
@@ -555,6 +377,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'SELL', optionType: 'CE', strikeOffset: 0, lots: 1 },
       { side: 'BUY', optionType: 'CE', strikeOffset: 2, lots: 1 },
     ],
+    payoffPath: 'M0,30 L25,30 L50,6 L75,30 L100,30',
   },
   {
     id: 'short_iron_fly',
@@ -568,6 +391,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'BUY', optionType: 'CE', strikeOffset: 0, lots: 1 },
       { side: 'SELL', optionType: 'CE', strikeOffset: 2, lots: 1 },
     ],
+    payoffPath: 'M0,10 L25,10 L50,34 L75,10 L100,10',
   },
   {
     id: 'double_fly',
@@ -591,6 +415,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'BUY', optionType: 'PE', strikeOffset: 4, lots: 1 },
       { side: 'SELL', optionType: 'PE', strikeOffset: 8, lots: 1 },
     ],
+    payoffPath: 'M0,30 L10,30 L20,8 L35,30 L65,30 L80,8 L90,30 L100,30',
   },
   {
     id: 'long_iron_condor',
@@ -603,6 +428,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'SELL', optionType: 'CE', strikeOffset: 2, lots: 1 },
       { side: 'BUY', optionType: 'CE', strikeOffset: 4, lots: 1 },
     ],
+    payoffPath: 'M0,30 L20,30 L35,14 L65,14 L80,30 L100,30',
   },
   {
     id: 'short_iron_condor',
@@ -616,6 +442,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'BUY', optionType: 'CE', strikeOffset: 2, lots: 1 },
       { side: 'SELL', optionType: 'CE', strikeOffset: 4, lots: 1 },
     ],
+    payoffPath: 'M0,10 L20,10 L35,26 L65,26 L80,10 L100,10',
   },
   {
     id: 'double_condor',
@@ -633,13 +460,14 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'SELL', optionType: 'CE', strikeOffset: 4, lots: 1 },
       { side: 'BUY', optionType: 'CE', strikeOffset: 5, lots: 1 },
     ],
+    payoffPath: 'M0,30 L15,30 L25,12 L40,12 L50,30 L60,30 L70,12 L85,12 L95,30 L100,30',
   },
   {
     id: 'call_calendar',
     name: 'Call Calendar',
     direction: 'NON_DIRECTIONAL',
     description:
-      'Sell near-expiry ATM CE, buy far-expiry ATM CE (same strike). The preview is illustrative: outcome depends on premiums, volatility, and the far leg’s residual time value.',
+      'Sell near-expiry ATM CE, buy far-expiry ATM CE (same strike). Profits from near-leg theta while the long keeps time value.',
     legs: [
       { side: 'SELL', optionType: 'CE', strikeOffset: 0, lots: 1, expiryOffset: 0 },
       { side: 'BUY', optionType: 'CE', strikeOffset: 0, lots: 1, expiryOffset: 1 },
@@ -647,14 +475,14 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
     // Asymmetric — steep left-side rise to a sharp peak, gentle fall off
     // to the right (calls lose value as spot drops; the far leg retains
     // value as spot rises so right-side decay is slower).
-    illustrativePath: 'M0,32 L25,28 L42,6 L65,18 L100,28',
+    payoffPath: 'M0,32 L25,28 L42,6 L65,18 L100,28',
   },
   {
     id: 'put_calendar',
     name: 'Put Calendar',
     direction: 'NON_DIRECTIONAL',
     description:
-      'Sell near-expiry ATM PE, buy far-expiry ATM PE (same strike). The preview is illustrative because premiums, volatility, and residual time value determine the first-expiry result.',
+      'Sell near-expiry ATM PE, buy far-expiry ATM PE (same strike). Put-side equivalent of the call calendar.',
     legs: [
       { side: 'SELL', optionType: 'PE', strikeOffset: 0, lots: 1, expiryOffset: 0 },
       { side: 'BUY', optionType: 'PE', strikeOffset: 0, lots: 1, expiryOffset: 1 },
@@ -662,21 +490,21 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
     // Mirror of the call calendar — gentle left-side rise, steep fall on
     // the right (puts lose value as spot rises; the far leg retains value
     // as spot falls).
-    illustrativePath: 'M0,28 L35,18 L58,6 L75,28 L100,32',
+    payoffPath: 'M0,28 L35,18 L58,6 L75,28 L100,32',
   },
   {
     id: 'diagonal_calendar',
     name: 'Diagonal Calendar',
     direction: 'NON_DIRECTIONAL',
     description:
-      'Sell near ATM CE and buy far OTM CE. The preview is illustrative because the far call retains residual time value at the first expiry.',
+      'Calendar with different strikes — sell near ATM CE, buy far OTM CE. Adds a mild directional tilt to a calendar.',
     legs: [
       { side: 'SELL', optionType: 'CE', strikeOffset: 0, lots: 1, expiryOffset: 0 },
       { side: 'BUY', optionType: 'CE', strikeOffset: 2, lots: 1, expiryOffset: 1 },
     ],
     // Diagonals show a widened peak — two small humps and a plateau
     // between the near-leg strike and the far-leg strike.
-    illustrativePath: 'M0,32 L20,28 L38,14 L50,10 L62,14 L78,22 L100,28',
+    payoffPath: 'M0,32 L20,28 L38,14 L50,10 L62,14 L78,22 L100,28',
   },
   {
     id: 'call_butterfly',
@@ -688,6 +516,7 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'SELL', optionType: 'CE', strikeOffset: 0, lots: 2 },
       { side: 'BUY', optionType: 'CE', strikeOffset: 2, lots: 1 },
     ],
+    payoffPath: 'M0,30 L35,30 L50,6 L65,30 L100,30',
   },
   {
     id: 'put_butterfly',
@@ -699,22 +528,9 @@ const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
       { side: 'SELL', optionType: 'PE', strikeOffset: 0, lots: 2 },
       { side: 'BUY', optionType: 'PE', strikeOffset: -2, lots: 1 },
     ],
+    payoffPath: 'M0,30 L35,30 L50,6 L65,30 L100,30',
   },
 ]
-
-export const STRATEGY_TEMPLATES: StrategyTemplate[] = TEMPLATE_DEFINITIONS.map((definition) => {
-  const { illustrativePath, ...template } = definition
-  const normalized = {
-    ...template,
-    referenceSpot: PREVIEW_REFERENCE_SPOT,
-    strikeStep: PREVIEW_STRIKE_STEP,
-    illustrativePreview: illustrativePath !== undefined,
-  }
-  return {
-    ...normalized,
-    payoffPath: illustrativePath ?? templatePreviewPath(normalized),
-  }
-})
 
 export function templatesByDirection(direction: Direction | 'ALL'): StrategyTemplate[] {
   if (direction === 'ALL') return STRATEGY_TEMPLATES

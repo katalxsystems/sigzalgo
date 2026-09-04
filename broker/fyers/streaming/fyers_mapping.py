@@ -3,13 +3,12 @@ Fyers Data Mapping
 Maps Fyers HSM data to OpenAlgo format for compatibility
 """
 
+import logging
 import time
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from utils.logging import get_logger
-
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class FyersDataMapper:

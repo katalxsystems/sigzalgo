@@ -1,4 +1,5 @@
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -8,7 +9,6 @@ import requests
 import socketio
 
 from broker.iifl.baseurl import BASE_URL, INTERACTIVE_URL, MARKET_DATA_URL
-from utils.logging import get_logger
 
 
 class IiflWebSocketClient:
@@ -77,7 +77,7 @@ class IiflWebSocketClient:
         self.on_message = None
 
         # Logger
-        self.logger = get_logger("iifl_websocket")
+        self.logger = logging.getLogger("iifl_websocket")
 
         # Subscriptions tracking
         self.subscriptions = {}

@@ -65,10 +65,7 @@ Clients can subscribe to different types of market data using the `mode` paramet
 | 2    | **Quote Mode** | Includes OHLC, LTP, volume, change, etc.   |
 | 3    | **Depth Mode** | Includes buy/sell order book (5–50 levels) |
 
-> Note: Mode 3 supports optional request field `depth` to define the number of
-> depth levels requested (for example 5, 20, 30 or 50). Actual support depends
-> on the broker. Modes may be sent as `1`/`2`/`3` or the case-insensitive labels
-> `LTP`/`Quote`/`Depth`.
+> Note: Mode 3 supports optional parameter `depth_level` to define the number of depth levels requested (e.g., 5, 20, 30, 50). Actual support depends on the broker.
 
 ### Subscription Format
 
@@ -77,10 +74,9 @@ Clients can subscribe to different types of market data using the `mode` paramet
 ```json
 {
   "action": "subscribe",
-  "symbols": [
-    {"symbol": "RELIANCE", "exchange": "NSE"}
-  ],
-  "mode": "LTP"
+  "symbol": "RELIANCE",
+  "exchange": "NSE",
+  "mode": 1
 }
 ```
 
@@ -89,11 +85,10 @@ Clients can subscribe to different types of market data using the `mode` paramet
 ```json
 {
   "action": "subscribe",
-  "symbols": [
-    {"symbol": "RELIANCE", "exchange": "NSE"}
-  ],
-  "mode": "Depth",
-  "depth": 5
+  "symbol": "RELIANCE",
+  "exchange": "NSE",
+  "mode": 3,
+  "depth_level": 5
 }
 ```
 
@@ -104,76 +99,28 @@ To unsubscribe from a stream:
 ```json
 {
   "action": "unsubscribe",
-  "symbols": [
-    {"symbol": "RELIANCE", "exchange": "NSE"}
-  ],
-  "mode": "Quote",
-  "request_id": "req-7"
+  "symbol": "RELIANCE",
+  "exchange": "NSE",
+  "mode": 2
 }
 ```
-
-For an array request, a `mode` on an individual symbol wins; otherwise the
-top-level `mode` applies, and only a request with neither defaults to `Quote`.
-For mode-valid requests, the acknowledgement identifies the exact canonical
-mode on each successful or failed item. When mode validation itself fails, the
-failed item cannot have a canonical label, so its `mode` is `null`:
-
-```json
-{
-  "type": "unsubscribe",
-  "status": "success",
-  "message": "Unsubscription processing complete",
-  "successful": [
-    {
-      "symbol": "RELIANCE",
-      "exchange": "NSE",
-      "mode": "Quote",
-      "status": "success",
-      "broker": "zerodha"
-    }
-  ],
-  "failed": [],
-  "broker": "zerodha",
-  "request_id": "req-7"
-}
-```
-
-For the final client that owns a broker subscription, local ownership is
-removed only after the adapter returns success. A failed or malformed broker
-response leaves the subscription registered so the caller can retry. When
-another client still owns the exact symbol, exchange and mode, only the
-requesting client's local owner is removed and the broker stream stays active.
-A socket disconnect is terminal for that client session, so its registry owner
-is removed after the server's cleanup attempt. A release that still fails is
-reclaimed by last-client adapter teardown; the persistent Flattrade or Shoonya
-adapter is retained only after `unsubscribe_all` acknowledges success.
 
 ### Error Handling
 
-Subscription failures are reported on the subscribe acknowledgement, one
-result per symbol. If a broker refuses the requested depth, the wire shape is:
+If a client requests a depth level not supported by their broker:
 
 ```json
 {
-  "type": "subscribe",
-  "status": "partial",
-  "subscriptions": [
-    {
-      "symbol": "RELIANCE",
-      "exchange": "NSE",
-      "status": "error",
-      "message": "Depth level 50 is not supported by this broker",
-      "broker": "angel"
-    }
-  ],
-  "message": "Subscription processing complete",
-  "broker": "angel"
+  "type": "error",
+  "code": "UNSUPPORTED_DEPTH_LEVEL",
+  "message": "Depth level 50 is not supported by broker Angel for exchange NSE",
+  "symbol": "RELIANCE",
+  "exchange": "NSE",
+  "requested_mode": 3,
+  "requested_depth": 50,
+  "supported_depths": [5, 20]
 }
 ```
-
-`status` is `partial` when at least one symbol failed and `success` only when
-every requested symbol succeeded. Adapter messages are broker-specific; there
-is no standardized top-level error code for this case.
 
 ### Market Data Format
 
@@ -182,13 +129,13 @@ is no standardized top-level error code for this case.
 ```json
 {
   "type": "market_data",
-  "symbol": "RELIANCE",
-  "exchange": "NSE",
   "mode": 1,
-  "broker": "zerodha",
+  "topic": "RELIANCE.NSE",
   "data": {
+    "symbol": "RELIANCE",
+    "exchange": "NSE",
     "ltp": 1424.0,
-    "timestamp": 1756376445123
+    "timestamp": "2025-05-28T10:30:45.123Z"
   }
 }
 ```
@@ -198,11 +145,11 @@ is no standardized top-level error code for this case.
 ```json
 {
   "type": "market_data",
-  "symbol": "RELIANCE",
-  "exchange": "NSE",
   "mode": 2,
-  "broker": "zerodha",
+  "topic": "RELIANCE.NSE",
   "data": {
+    "symbol": "RELIANCE",
+    "exchange": "NSE",
     "ltp": 1424.0,
     "change": 6.0,
     "change_percent": 0.42,
@@ -213,21 +160,22 @@ is no standardized top-level error code for this case.
     "close": 1418.0,
     "last_trade_quantity": 50,
     "avg_trade_price": 1419.35,
-    "timestamp": 1756376445123
+    "timestamp": "2025-05-28T10:30:45.123Z"
   }
 }
 ```
 
-#### Depth (Mode 3 with `depth` = 5)
+#### Depth (Mode 3 with depth\_level = 5)
 
 ```json
 {
   "type": "market_data",
-  "symbol": "RELIANCE",
-  "exchange": "NSE",
   "mode": 3,
-  "broker": "zerodha",
+  "depth_level": 5,
+  "topic": "RELIANCE.NSE",
   "data": {
+    "symbol": "RELIANCE",
+    "exchange": "NSE",
     "ltp": 1424.0,
     "depth": {
       "buy": [
@@ -245,7 +193,8 @@ is no standardized top-level error code for this case.
         {"price": 1426.0, "quantity": 30, "orders": 1}
       ]
     },
-    "timestamp": 1756376445123
+    "timestamp": "2025-05-28T10:30:45.123Z",
+    "broker_supported": true
   }
 }
 ```
@@ -306,15 +255,10 @@ configured, deduplicate on `orderid` + `order_status` + `filled_quantity`.
 
 ### Heartbeat and Reconnection
 
-* The server's WebSocket control ping interval and timeout are 20 seconds by default.
-  Operators may change them with `WS_PING_INTERVAL` and `WS_PING_TIMEOUT`.
-* A compliant WebSocket library automatically answers control pings with pong
-  frames. The JSON `{"action":"ping"}` / `{"type":"pong"}` exchange is an
-  optional application-level latency probe, not the control-frame obligation.
-* After a disconnect, clients must re-authenticate and re-subscribe. A client
-  library may remember its own desired subscriptions and issue them again.
-* The server does not restore subscriptions for a disconnected client session;
-  it removes that session's registry entries during cleanup.
+* Server sends `ping` messages every 30 seconds.
+* Clients must respond with `pong` or will be disconnected.
+* Upon reconnection, clients must re-authenticate and re-subscribe to streams.
+* Proxy may automatically restore prior subscriptions if supported by broker.
 
 ### Security & Compliance
 

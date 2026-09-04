@@ -13,8 +13,6 @@ from typing import Any, Dict, List, Optional, Set
 import requests
 import websocket
 
-from utils.logging import get_logger
-
 # Import protobuf message definitions (local copy)
 try:
     from . import msg_pb2 as protomsg
@@ -54,7 +52,7 @@ class FyersTbtWebSocket:
         """
         self.access_token = access_token
         self.log_path = log_path
-        self.logger = get_logger("fyers_tbt_websocket")
+        self.logger = logging.getLogger("fyers_tbt_websocket")
 
         # WebSocket state
         self.ws = None
@@ -766,7 +764,9 @@ class FyersTbtWebSocket:
             self.disconnect()
         except Exception as e:
             # Fallback logging if self.logger is not available
-            logger = get_logger("fyers_tbt_websocket")
+            import logging
+
+            logger = logging.getLogger("fyers_tbt_websocket")
             logger.error(f"Error in TBT WebSocket destructor: {e}")
 
     def force_cleanup(self):

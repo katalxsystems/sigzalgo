@@ -314,7 +314,7 @@ def get_kotak_master_filepaths():
             # Construct full URL
             url = f"{base_url_attempt}{endpoint}"
 
-            logger.info("SCRIPMASTER API - Using configured access token")
+            logger.info(f"SCRIPMASTER API - Using access_token: {access_token[:10]}...")
             logger.info(f"Making request to: {url}")
 
             response = client.get(url, headers=headers, timeout=30)
@@ -322,12 +322,14 @@ def get_kotak_master_filepaths():
             logger.info(f"Response status: {response.status_code} from {base_url_attempt}")
 
             if response.status_code != 200:
-                logger.warning(f"HTTP {response.status_code} from {base_url_attempt}")
+                logger.warning(
+                    f"HTTP {response.status_code} from {base_url_attempt}: {response.text}"
+                )
 
             if response.status_code == 200:
                 try:
                     data_dict = json.loads(response.text)
-                    logger.debug("Scripmaster response fields: %s", list(data_dict.keys()))
+                    logger.debug(f"Response data: {data_dict}")
 
                     # Check for the expected response structure
                     if "data" in data_dict and "filesPaths" in data_dict["data"]:
@@ -361,17 +363,19 @@ def get_kotak_master_filepaths():
                         logger.info(f"Available files: {list(file_dict.keys())}")
                         return file_dict
                     else:
-                        logger.warning(f"Unexpected response structure from {base_url_attempt}")
+                        logger.warning(
+                            f"Unexpected response structure from {base_url_attempt}: {data_dict}"
+                        )
 
                 except json.JSONDecodeError as e:
                     logger.error(f"Failed to parse JSON from {base_url_attempt}: {e}")
-                    logger.debug("Scripmaster response was not valid JSON")
+                    logger.debug(f"Raw response: {response.text}")
 
         except httpx.HTTPError as e:
-            logger.error("HTTP error with %s; type=%s", base_url_attempt, type(e).__name__)
+            logger.error(f"HTTP error with {base_url_attempt}: {e}")
             continue
         except Exception as e:
-            logger.error("Error with %s; type=%s", base_url_attempt, type(e).__name__)
+            logger.error(f"Error with {base_url_attempt}: {e}")
             continue
 
     logger.error("All baseUrl attempts failed for scripmaster API")
@@ -392,35 +396,17 @@ def get_kotak_master_filepaths():
         "NSE_CM": f"https://lapi.kotaksecurities.com/wso2-scripmaster/v1/prod/{today}/transformed-v1/nse_cm-v1.csv",
     }
 
-    # Test accessibility of fallback URLs using httpx.
-    #
-    # A plain HEAD request here reliably hits an infinite redirect loop on
-    # Kotak's CDN (lapi.kotaksecurities.com) -- verified directly: httpx.head()
-    # on these URLs raises "Exceeded maximum allowed redirects" every time,
-    # while httpx.get() on the identical URL returns 200 immediately with the
-    # full CSV, no redirects at all. Because every accessibility check failed,
-    # accessible_urls stayed empty and the caller (download_csv_kotak_data)
-    # raised "Scripmaster API failed" even though the files were fully
-    # downloadable the whole time. Use a ranged GET (bytes=0-0) instead of
-    # HEAD -- avoids the redirect loop. Kotak's CDN ignores the Range header
-    # and answers with the full multi-MB body regardless, so stream the
-    # request and close it after reading only the status line/headers --
-    # otherwise a plain client.get() call buffers the entire CSV into memory
-    # just for this check, then the real download in download_csv_kotak_data
-    # pulls the same bytes again.
+    # Test accessibility of fallback URLs using httpx
     accessible_urls = {}
     for key, url in fallback_urls.items():
         try:
             logger.info(f"Testing direct URL: {url}")
-            with client.stream(
-                "GET", url, timeout=10, follow_redirects=True, headers={"Range": "bytes=0-0"}
-            ) as response:
-                status_code = response.status_code
-            if status_code in (200, 206):
+            response = client.head(url, timeout=10, follow_redirects=True)
+            if response.status_code == 200:
                 accessible_urls[key] = url
                 logger.info(f"Direct URL accessible: {key}")
             else:
-                logger.warning(f"Direct URL returned {status_code}: {key}")
+                logger.warning(f"Direct URL returned {response.status_code}: {key}")
         except httpx.HTTPError as e:
             logger.warning(f"Direct URL HTTP error: {key} - {e}")
         except Exception as e:

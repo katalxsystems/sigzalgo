@@ -2,7 +2,6 @@ import { AlertTriangle, ArrowLeft, ExternalLink, Loader2, Shield } from 'lucide-
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { fetchCSRFToken } from '@/api/client'
-import { BrokerAuthSignOut } from '@/components/auth/BrokerAuthSignOut'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -113,31 +112,6 @@ const brokerFields: Record<string, BrokerConfig> = {
     ],
     callbackUrl: '/firstock/callback',
   },
-  indmoney: {
-    fields: [
-      {
-        name: 'mpin',
-        label: 'MPIN',
-        type: 'password',
-        placeholder: 'Enter your account MPIN',
-        inputMode: 'numeric',
-        hint: 'The MPIN you use to log in to INDstocks',
-      },
-      {
-        name: 'totp',
-        label: 'TOTP Code',
-        type: 'text',
-        placeholder: 'Enter 6-digit TOTP',
-        maxLength: 6,
-        pattern: '[0-9]{6}',
-        inputMode: 'numeric',
-        hint: 'Get TOTP from your authenticator app. Use a fresh code - a code that has already been submitted will be rejected.',
-      },
-    ],
-    callbackUrl: '/indmoney/callback',
-    warning:
-      'Set up TOTP once at indstocks.com > API Trading > Access Tokens, and put the Client ID shown there in BROKER_API_KEY. Token generation is limited to 1 request per 60 seconds, and 5 wrong codes in 15 minutes locks it for 15 minutes.',
-  },
   kotak: {
     fields: [
       {
@@ -215,14 +189,14 @@ const brokerFields: Record<string, BrokerConfig> = {
   nubra: {
     fields: [
       {
-        name: 'otp',
-        label: 'OTP',
+        name: 'totp',
+        label: 'TOTP Code',
         type: 'text',
-        placeholder: 'Enter 6-digit OTP',
+        placeholder: 'Enter 6-digit TOTP',
         maxLength: 6,
         pattern: '[0-9]{6}',
         inputMode: 'numeric',
-        hint: 'An OTP has been sent to your registered mobile number. For a new code, start the Nubra login again from the broker page.',
+        hint: 'Enter the 6-digit code from your authenticator app',
       },
     ],
     callbackUrl: '/nubra/callback',
@@ -261,13 +235,7 @@ const brokerFields: Record<string, BrokerConfig> = {
   },
   tradejini: {
     fields: [
-      {
-        name: 'password',
-        label: 'PIN',
-        type: 'password',
-        placeholder: 'Enter your login PIN',
-        hint: 'The PIN you use to log in to CubePlus, not your account password',
-      },
+      { name: 'password', label: 'Password', type: 'password', placeholder: 'Enter your Password' },
       {
         name: 'twofa',
         label: '2FA Code / TOTP',
@@ -317,7 +285,6 @@ const brokerNames: Record<string, string> = {
   angel: 'Angel One',
   definedge: 'Definedge Securities',
   firstock: 'Firstock',
-  indmoney: 'IndMoney (INDstocks)',
   kotak: 'Kotak NEO',
   motilal: 'Motilal Oswal',
   mstock: 'MStock',
@@ -402,10 +369,10 @@ export default function BrokerTOTP() {
 
       const data = await response.json()
 
-      if (data.status === 'success' || response.ok) {
+      if (data.status === 'success') {
         login(formData.userid || formData.mobile || '', broker || '')
         showToast.success('Authentication successful')
-        navigate('/dashboard')
+        navigate(data.redirect || '/dashboard')
       } else {
         setError(data.message || 'Authentication failed. Please try again.')
       }
@@ -544,7 +511,6 @@ export default function BrokerTOTP() {
                   Documentation
                   <ExternalLink className="h-3 w-3" />
                 </a>
-                <BrokerAuthSignOut />
               </div>
             </div>
           </CardContent>

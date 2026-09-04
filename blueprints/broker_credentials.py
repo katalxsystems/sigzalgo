@@ -1,7 +1,14 @@
 # blueprints/broker_credentials.py
 """
 Broker credentials management API.
-Handles reading and updating broker credentials in the .env file.
+
+Broker-identity fields (BROKER_API_KEY/SECRET, the market-data key pair,
+REDIRECT_URL) are stored in the database (database.settings_db.Settings) —
+see database.settings_db.get_broker_settings/set_broker_settings — so
+changes take effect immediately, no process restart. Server/network infra
+fields (HOST_SERVER, WEBSOCKET_URL, NGROK_ALLOW, ports) remain in the .env
+file: those genuinely require a restart regardless of storage backend
+(socket binding, the fixed ZMQ port — see CLAUDE.md's ZMQ invariants).
 """
 
 import os
@@ -9,8 +16,16 @@ import re
 
 from flask import Blueprint, jsonify, request
 
+from database.settings_db import set_broker_settings
+from utils.config import (
+    get_broker_api_key,
+    get_broker_api_key_market,
+    get_broker_api_secret,
+    get_broker_api_secret_market,
+    get_broker_redirect_url,
+)
 from utils.logging import get_logger
-from utils.session import check_session_validity
+from utils.session import check_session_validity, require_app_session
 
 logger = get_logger(__name__)
 
@@ -121,12 +136,14 @@ def get_broker_from_redirect_url(redirect_url: str) -> str:
 def get_credentials():
     """Get current broker credentials (masked)."""
     try:
-        # Get current values from environment
-        broker_api_key = get_env_value("BROKER_API_KEY")
-        broker_api_secret = get_env_value("BROKER_API_SECRET")
-        broker_api_key_market = get_env_value("BROKER_API_KEY_MARKET")
-        broker_api_secret_market = get_env_value("BROKER_API_SECRET_MARKET")
-        redirect_url = get_env_value("REDIRECT_URL")
+        # Broker-identity fields: DB-first (Profile > Broker save), falling
+        # back to .env for installs that haven't saved via the DB-backed UI
+        # yet — same resolution utils.config uses everywhere else.
+        broker_api_key = get_broker_api_key() or ""
+        broker_api_secret = get_broker_api_secret() or ""
+        broker_api_key_market = get_broker_api_key_market() or ""
+        broker_api_secret_market = get_broker_api_secret_market() or ""
+        redirect_url = get_broker_redirect_url() or ""
         valid_brokers = get_env_value("VALID_BROKERS")
         ngrok_allow = get_env_value("NGROK_ALLOW")
         host_server = get_env_value("HOST_SERVER")
@@ -181,7 +198,8 @@ def get_credentials():
 @broker_credentials_bp.route("/credentials", methods=["POST"])
 @check_session_validity
 def update_credentials():
-    """Update broker credentials in .env file."""
+    """Update broker credentials: broker-identity fields go to the DB
+    (immediate effect), infra fields go to .env (restart required)."""
     try:
         # Support both JSON and form data
         if request.is_json:
@@ -260,91 +278,99 @@ def update_credentials():
                         }
                     ), 400
 
-        # Read current .env content
-        content, error = read_env_file()
-        if error:
+        # Validate the infra fields up front (alongside the redirect_url
+        # validation above) so nothing is persisted -- DB or .env -- if any
+        # field fails validation.
+        if host_server and not re.match(r"^https?://.+", host_server):
             return jsonify(
-                {"status": "error", "message": f"Failed to read .env file: {error}"}
-            ), 500
+                {
+                    "status": "error",
+                    "message": "Invalid HOST_SERVER format. Must start with http:// or https://",
+                }
+            ), 400
 
-        # Track what was updated
+        if websocket_url and not re.match(r"^wss?://.+", websocket_url):
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": "Invalid WEBSOCKET_URL format. Must start with ws:// or wss://",
+                }
+            ), 400
+
+        # Broker-identity fields: DB-backed (database.settings_db.Settings),
+        # takes effect immediately -- no restart.
         updated_fields = []
+        db_kwargs = {}
 
-        # Update values (only if provided - empty string means keep existing)
         if broker_api_key:
-            content = update_env_value(content, "BROKER_API_KEY", broker_api_key)
+            db_kwargs["broker_api_key"] = broker_api_key
             updated_fields.append("BROKER_API_KEY")
-
         if broker_api_secret:
-            content = update_env_value(content, "BROKER_API_SECRET", broker_api_secret)
+            db_kwargs["broker_api_secret"] = broker_api_secret
             updated_fields.append("BROKER_API_SECRET")
-
         if broker_api_key_market:
-            content = update_env_value(content, "BROKER_API_KEY_MARKET", broker_api_key_market)
+            db_kwargs["broker_api_key_market"] = broker_api_key_market
             updated_fields.append("BROKER_API_KEY_MARKET")
-
         if broker_api_secret_market:
-            content = update_env_value(
-                content, "BROKER_API_SECRET_MARKET", broker_api_secret_market
-            )
+            db_kwargs["broker_api_secret_market"] = broker_api_secret_market
             updated_fields.append("BROKER_API_SECRET_MARKET")
-
         if redirect_url:
-            content = update_env_value(content, "REDIRECT_URL", redirect_url)
+            db_kwargs["redirect_url"] = redirect_url
             updated_fields.append("REDIRECT_URL")
 
-        # Check for ngrok_allow by key presence, not value truthiness
-        # This allows setting it to FALSE (disabling ngrok)
-        if has_ngrok_key:
-            ngrok_allow_str = str(ngrok_allow).strip().upper()
-            ngrok_value = "TRUE" if ngrok_allow_str == "TRUE" else "FALSE"
-            content = update_env_value(content, "NGROK_ALLOW", ngrok_value)
-            updated_fields.append("NGROK_ALLOW")
+        if db_kwargs:
+            set_broker_settings(**db_kwargs)
+            logger.info(f"Updated broker credentials in database: {', '.join(db_kwargs.keys())}")
 
-        if host_server:
-            # Validate host_server URL format
-            if not re.match(r"^https?://.+", host_server):
+        # Infra fields: still .env-backed, still need a restart (socket
+        # binding / fixed ZMQ port -- see CLAUDE.md's ZMQ invariants).
+        infra_fields = []
+        if has_ngrok_key or host_server or websocket_url:
+            content, error = read_env_file()
+            if error:
                 return jsonify(
-                    {
-                        "status": "error",
-                        "message": "Invalid HOST_SERVER format. Must start with http:// or https://",
-                    }
-                ), 400
-            content = update_env_value(content, "HOST_SERVER", host_server)
-            updated_fields.append("HOST_SERVER")
+                    {"status": "error", "message": f"Failed to read .env file: {error}"}
+                ), 500
 
-        if websocket_url:
-            # Validate websocket_url format
-            if not re.match(r"^wss?://.+", websocket_url):
+            # Check for ngrok_allow by key presence, not value truthiness
+            # This allows setting it to FALSE (disabling ngrok)
+            if has_ngrok_key:
+                ngrok_allow_str = str(ngrok_allow).strip().upper()
+                ngrok_value = "TRUE" if ngrok_allow_str == "TRUE" else "FALSE"
+                content = update_env_value(content, "NGROK_ALLOW", ngrok_value)
+                infra_fields.append("NGROK_ALLOW")
+
+            if host_server:
+                content = update_env_value(content, "HOST_SERVER", host_server)
+                infra_fields.append("HOST_SERVER")
+
+            if websocket_url:
+                content = update_env_value(content, "WEBSOCKET_URL", websocket_url)
+                infra_fields.append("WEBSOCKET_URL")
+
+            env_path = get_env_path()
+            try:
+                # Use UTF-8 encoding for cross-platform compatibility
+                with open(env_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                logger.info(f"Updated instance config (.env, restart required): {', '.join(infra_fields)}")
+            except Exception as e:
+                logger.exception(f"Error writing .env file: {e}")
                 return jsonify(
-                    {
-                        "status": "error",
-                        "message": "Invalid WEBSOCKET_URL format. Must start with ws:// or wss://",
-                    }
-                ), 400
-            content = update_env_value(content, "WEBSOCKET_URL", websocket_url)
-            updated_fields.append("WEBSOCKET_URL")
+                    {"status": "error", "message": f"Failed to write .env file: {e}"}
+                ), 500
+
+        updated_fields.extend(infra_fields)
 
         if not updated_fields:
             return jsonify({"status": "error", "message": "No credentials provided to update"}), 400
-
-        # Write updated content back to .env
-        env_path = get_env_path()
-        try:
-            # Use UTF-8 encoding for cross-platform compatibility
-            with open(env_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            logger.info(f"Updated broker credentials: {', '.join(updated_fields)}")
-        except Exception as e:
-            logger.exception(f"Error writing .env file: {e}")
-            return jsonify({"status": "error", "message": f"Failed to write .env file: {e}"}), 500
 
         return jsonify(
             {
                 "status": "success",
                 "message": f"Credentials updated successfully. Updated: {', '.join(updated_fields)}",
                 "updated_fields": updated_fields,
-                "restart_required": True,
+                "restart_required": bool(infra_fields),
             }
         )
 
@@ -354,9 +380,17 @@ def update_credentials():
 
 
 @broker_credentials_bp.route("/capabilities", methods=["GET"])
-@check_session_validity
+@require_app_session
 def get_capabilities():
-    """Return broker capabilities (supported exchanges, type, features) from cached plugin.json."""
+    """Return broker capabilities (supported exchanges, type, features) from cached plugin.json.
+
+    Called by the Navbar on every page load (useProfileMenuItems) for every
+    logged-in user, including broker-less ones -- must not require a broker
+    (@check_session_validity would 401 and hard-clear the whole session,
+    not just the broker connection, since is_session_valid() requires
+    session["logged_in"], which needs a connected broker). This route
+    already has its own "no broker" fallback below.
+    """
     from flask import session
 
     from utils.plugin_loader import get_broker_capabilities

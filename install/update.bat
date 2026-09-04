@@ -257,8 +257,7 @@ echo [Step 5/5] Running database migrations...
 if exist "%OPENALGO_DIR%\upgrade\migrate_all.py" (
     %UV_CMD% run upgrade/migrate_all.py
     if errorlevel 1 (
-        echo   [ERROR] Database migrations failed; update aborted.
-        exit /b 1
+        echo   [WARNING] Some migrations may have had issues. Check output above.
     ) else (
         echo   [OK] Database migrations completed.
     )

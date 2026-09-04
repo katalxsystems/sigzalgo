@@ -1,16 +1,16 @@
 import hashlib
 import json
-import os
 
 import httpx
 
+from utils.config import get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def authenticate_broker(userid, authCode):
+def authenticate_broker(userid, authCode, account_id=None):
     """
     Authenticate with AliceBlue using the new V2 vendor API.
 
@@ -30,7 +30,7 @@ def authenticate_broker(userid, authCode):
         # Fetching the necessary credentials from environment variables
         # BROKER_API_KEY   = appCode  (used for the login redirect, not needed here)
         # BROKER_API_SECRET = apiSecret (used to build the checksum)
-        BROKER_API_SECRET = os.environ.get("BROKER_API_SECRET")
+        BROKER_API_SECRET = get_broker_api_secret(account_id)
 
         if not BROKER_API_SECRET:
             logger.error("BROKER_API_SECRET not found in environment variables")
@@ -61,10 +61,7 @@ def authenticate_broker(userid, authCode):
         data_dict = response.json()
 
         # Log full response for debugging
-        logger.info(
-            f"AliceBlue API response: stat={data_dict.get('stat')} "
-            f"fields={sorted(data_dict.keys())}"
-        )
+        logger.info(f"AliceBlue API response: {json.dumps(data_dict, indent=2)}")
 
         # --- Parse the response ---
 
@@ -87,9 +84,7 @@ def authenticate_broker(userid, authCode):
             return None, None, f"API error: {error_msg}"
 
         # If we got here, we couldn't find a session token
-        logger.error(
-            f"Couldn't extract userSession from response. fields={sorted(data_dict.keys())}"
-        )
+        logger.error(f"Couldn't extract userSession from response: {data_dict}")
         return (
             None,
             None,

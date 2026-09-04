@@ -1,7 +1,6 @@
 import { Handle, Position } from '@xyflow/react'
 import { ShoppingCart } from 'lucide-react'
 import { memo } from 'react'
-import { defaultProductForExchange } from '@/lib/flow/constants'
 import { cn } from '@/lib/utils'
 import type { PlaceOrderNodeData } from '@/types/flow'
 
@@ -45,7 +44,7 @@ export const PlaceOrderNode = memo(({ data, selected }: PlaceOrderNodeProps) => 
           </div>
           <div className="flex items-center justify-between text-[9px] text-muted-foreground">
             <span>{data.priceType || 'MARKET'}</span>
-            <span>{data.product || defaultProductForExchange(data.exchange)}</span>
+            <span>{data.product || 'MIS'}</span>
           </div>
           {data.ltp !== undefined && (
             <div className="mt-0.5 flex items-center justify-between rounded border border-border/50 bg-surface-2 px-1.5 py-0.5">

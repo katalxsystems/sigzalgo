@@ -4,6 +4,7 @@ Integrates with the OpenAlgo WebSocket proxy system
 """
 
 import json
+import logging
 import os
 
 # Import base adapter
@@ -30,7 +31,6 @@ except ImportError:
     from mapping import SymbolMapper
 from database.auth_db import get_auth_token
 from database.token_db import get_br_symbol
-from utils.logging import get_logger
 
 # Import our HSM implementation
 from .fyers_adapter import FyersAdapter
@@ -52,7 +52,7 @@ class FyersWebSocketAdapter(BaseBrokerWebSocketAdapter):
 
     def __init__(self):
         super().__init__()
-        self.logger = get_logger("fyers_websocket_adapter")
+        self.logger = logging.getLogger("fyers_websocket_adapter")
         self.fyers_adapter = None
         self.tbt_client = None  # TBT WebSocket for 50-level depth
         self.user_id = None
@@ -1093,7 +1093,9 @@ class FyersWebSocketAdapter(BaseBrokerWebSocketAdapter):
             self.disconnect()
         except Exception as e:
             # Can't rely on self.logger being available during destruction
-            logger = get_logger("fyers_websocket_adapter")
+            import logging
+
+            logger = logging.getLogger("fyers_websocket_adapter")
             logger.error(f"Error in FyersWebSocketAdapter destructor: {e}")
 
     def cleanup_all_resources(self):

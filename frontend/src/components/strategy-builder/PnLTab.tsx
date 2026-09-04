@@ -10,7 +10,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { useMarketData } from '@/hooks/useMarketData'
-import { isLegClosed, type StrategyLeg } from '@/lib/strategyMath'
+import type { StrategyLeg } from '@/lib/strategyMath'
 import { cn } from '@/lib/utils'
 
 export interface PnLTabProps {
@@ -19,7 +19,13 @@ export interface PnLTabProps {
   fnoExchange: string
   /** Snapshot prices from the option chain — used only until the first WS tick. */
   fallbackPrices: Record<string, number>
-  formatCurrency: (value: number) => string
+}
+
+function formatCurrency(v: number): string {
+  if (!Number.isFinite(v)) return '—'
+  const abs = Math.abs(v)
+  const sign = v < 0 ? '-' : v > 0 ? '+' : ''
+  return `${sign}₹${abs.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`
 }
 
 /** Briefly highlight a cell whenever its numeric value changes (WS tick). */
@@ -43,15 +49,7 @@ function useFlashOnChange(value: number | undefined): 'up' | 'down' | null {
   return flash
 }
 
-function PriceCell({
-  value,
-  isClosed,
-  formatCurrency,
-}: {
-  value: number | undefined
-  isClosed: boolean
-  formatCurrency: (value: number) => string
-}) {
+function PriceCell({ value, isClosed }: { value: number | undefined; isClosed: boolean }) {
   const flash = useFlashOnChange(isClosed ? undefined : value)
   if (isClosed || value === undefined) {
     return <span className="text-muted-foreground">—</span>
@@ -64,18 +62,12 @@ function PriceCell({
         flash === 'down' && 'bg-rose-500/20 text-rose-700 dark:text-rose-300'
       )}
     >
-      {formatCurrency(value)}
+      ₹{value.toFixed(2)}
     </span>
   )
 }
 
-function PnlCell({
-  value,
-  formatCurrency,
-}: {
-  value: number
-  formatCurrency: (value: number) => string
-}) {
+function PnlCell({ value }: { value: number }) {
   const flash = useFlashOnChange(value)
   return (
     <span
@@ -92,12 +84,13 @@ function PnlCell({
   )
 }
 
-export function PnLTab({ legs, fnoExchange, fallbackPrices, formatCurrency }: PnLTabProps) {
+export function PnLTab({ legs, fnoExchange, fallbackPrices }: PnLTabProps) {
   // Only active (user-included) legs are considered "open" for this tab.
   // Excluded legs don't appear in the table, don't contribute to the total,
   // and don't consume a WebSocket subscription.
   const openLegs = useMemo(
-    () => legs.filter((l) => l.active && !isLegClosed(l) && l.symbol),
+    () =>
+      legs.filter((l) => l.active && !(l.exitPrice !== undefined && l.exitPrice > 0) && l.symbol),
     [legs]
   )
 
@@ -147,7 +140,7 @@ export function PnLTab({ legs, fnoExchange, fallbackPrices, formatCurrency }: Pn
     return legs
       .filter((leg) => leg.active)
       .map((leg) => {
-        const isClosed = isLegClosed(leg)
+        const isClosed = leg.exitPrice !== undefined && leg.exitPrice > 0
         let current: number | undefined
         if (!isClosed && leg.symbol) {
           const ws = marketData.get(`${fnoExchange}:${leg.symbol}`)
@@ -232,7 +225,7 @@ export function PnLTab({ legs, fnoExchange, fallbackPrices, formatCurrency }: Pn
 
       {/* table-fixed + explicit column widths prevent layout jitter when
           streaming ticks change the character-length of Current/P&L cells
-          (e.g. 29.20 → 29.5 → 129.00). Each numeric column reserves
+          (e.g. ₹29.20 → ₹29.5 → ₹129.00). Each numeric column reserves
           enough space for realistic maximum values and right-aligns content
           within; the Position column is the only fluid one. */}
       <Table className="table-fixed">
@@ -306,20 +299,20 @@ export function PnLTab({ legs, fnoExchange, fallbackPrices, formatCurrency }: Pn
                 </span>
               </TableCell>
               <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">
-                {formatCurrency(leg.price)}
+                ₹{leg.price.toFixed(2)}
               </TableCell>
               <TableCell className="whitespace-nowrap text-right text-xs">
-                <PriceCell value={current} isClosed={isClosed} formatCurrency={formatCurrency} />
+                <PriceCell value={current} isClosed={isClosed} />
               </TableCell>
               <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">
                 {isClosed ? (
-                  <span className="font-semibold">{formatCurrency(leg.exitPrice ?? 0)}</span>
+                  <span className="font-semibold">₹{(leg.exitPrice ?? 0).toFixed(2)}</span>
                 ) : (
                   <span className="text-muted-foreground">—</span>
                 )}
               </TableCell>
               <TableCell className="whitespace-nowrap text-right text-xs">
-                <PnlCell value={pnl} formatCurrency={formatCurrency} />
+                <PnlCell value={pnl} />
               </TableCell>
             </TableRow>
           ))}
@@ -331,7 +324,7 @@ export function PnLTab({ legs, fnoExchange, fallbackPrices, formatCurrency }: Pn
                 Total P&amp;L
               </TableCell>
               <TableCell className="whitespace-nowrap text-right text-sm">
-                <PnlCell value={total} formatCurrency={formatCurrency} />
+                <PnlCell value={total} />
               </TableCell>
             </TableRow>
           </TableFooter>

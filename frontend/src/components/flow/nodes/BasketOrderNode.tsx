@@ -15,15 +15,8 @@ interface BasketOrderNodeProps {
 }
 
 export const BasketOrderNode = memo(({ data, selected }: BasketOrderNodeProps) => {
-  // Editor rows are CSV text; imported workflows may retain richer arrays.
-  // Count either supported representation without rewriting the stored data.
-  const ordersRaw = data.orders
-  const orderCount =
-    typeof ordersRaw === 'string'
-      ? ordersRaw.split('\n').filter((line) => line.trim()).length
-      : Array.isArray(ordersRaw)
-        ? ordersRaw.length
-        : 0
+  // Orders is an array, count items
+  const orderCount = Array.isArray(data.orders) ? data.orders.length : 0
 
   return (
     <div className={cn('workflow-node node-action min-w-[120px]', selected && 'selected')}>
@@ -44,7 +37,7 @@ export const BasketOrderNode = memo(({ data, selected }: BasketOrderNodeProps) =
             <span className="mono-data text-[10px] font-medium">{orderCount}</span>
           </div>
           <div className="text-center text-[9px] text-muted-foreground">
-            {data.basketName || 'Batch execution'}
+            {data.strategy || 'Batch execution'}
           </div>
         </div>
       </div>

@@ -9,30 +9,29 @@ Local Host   :  ws://127.0.0.1:8765
 Custom Host  :  ws://<your-host>:8765
 ```
 
-## WebSocket Request
+## Subscribe to Depth
+
+### Subscribe Message
 
 ```json
 {
   "action": "subscribe",
-  "mode": "Depth",
-  "depth": 5,
-  "symbols": [
+  "mode": "depth",
+  "instruments": [
     {"exchange": "NSE", "symbol": "RELIANCE"},
     {"exchange": "NSE", "symbol": "INFY"}
   ]
 }
 ```
 
-## Sample Response
+### Depth Update Message
 
 ```json
 {
-  "type": "market_data",
-  "symbol": "RELIANCE",
-  "exchange": "NSE",
-  "mode": 3,
-  "broker": "zerodha",
+  "type": "depth",
   "data": {
+    "exchange": "NSE",
+    "symbol": "RELIANCE",
     "ltp": 1187.75,
     "ltq": 100,
     "open": 1172.0,
@@ -42,22 +41,20 @@ Custom Host  :  ws://<your-host>:8765
     "volume": 14414545,
     "totalbuyqty": 591351,
     "totalsellqty": 835701,
-    "depth": {
-      "buy": [
-        {"price": 1187.70, "quantity": 886, "orders": 4},
-        {"price": 1187.65, "quantity": 212, "orders": 2},
-        {"price": 1187.60, "quantity": 351, "orders": 3},
-        {"price": 1187.55, "quantity": 343, "orders": 5},
-        {"price": 1187.50, "quantity": 399, "orders": 2}
-      ],
-      "sell": [
-        {"price": 1187.80, "quantity": 767, "orders": 3},
-        {"price": 1187.85, "quantity": 115, "orders": 1},
-        {"price": 1187.90, "quantity": 162, "orders": 2},
-        {"price": 1187.95, "quantity": 1121, "orders": 6},
-        {"price": 1188.00, "quantity": 430, "orders": 2}
-      ]
-    },
+    "bids": [
+      {"price": 1187.70, "quantity": 886},
+      {"price": 1187.65, "quantity": 212},
+      {"price": 1187.60, "quantity": 351},
+      {"price": 1187.55, "quantity": 343},
+      {"price": 1187.50, "quantity": 399}
+    ],
+    "asks": [
+      {"price": 1187.80, "quantity": 767},
+      {"price": 1187.85, "quantity": 115},
+      {"price": 1187.90, "quantity": 162},
+      {"price": 1187.95, "quantity": 1121},
+      {"price": 1188.00, "quantity": 430}
+    ],
     "timestamp": 1712572800000
   }
 }
@@ -68,19 +65,12 @@ Custom Host  :  ws://<your-host>:8765
 ```json
 {
   "action": "unsubscribe",
-  "mode": "Depth",
-  "symbols": [
+  "mode": "depth",
+  "instruments": [
     {"exchange": "NSE", "symbol": "RELIANCE"}
   ]
 }
 ```
-
-The unsubscribe acknowledgement lists exact outcomes in `successful` and
-`failed`. Mode-valid acknowledgement items carry the canonical `mode` value
-`"Depth"`; when mode validation itself fails, `mode` is `null`. A broker
-refusal leaves the final local owner registered so the request can be retried.
-Disconnect cleanup does not retain a dead client owner; any unresolved feed is
-reclaimed by the user's last-client adapter teardown.
 
 ## Python SDK Example
 
@@ -104,12 +94,11 @@ instruments = [
 # Callback for depth updates
 def on_depth(data):
     print(f"Depth: {data['symbol']}")
-    market = data['data']
-    print(f"  LTP: {market['ltp']}")
-    print(f"  Best Bid: {market['depth']['buy'][0]['price']} x {market['depth']['buy'][0]['quantity']}")
-    print(f"  Best Ask: {market['depth']['sell'][0]['price']} x {market['depth']['sell'][0]['quantity']}")
-    print(f"  Total Buy Qty: {market['totalbuyqty']}")
-    print(f"  Total Sell Qty: {market['totalsellqty']}")
+    print(f"  LTP: {data['ltp']}")
+    print(f"  Best Bid: {data['bids'][0]['price']} x {data['bids'][0]['quantity']}")
+    print(f"  Best Ask: {data['asks'][0]['price']} x {data['asks'][0]['quantity']}")
+    print(f"  Total Buy Qty: {data['totalbuyqty']}")
+    print(f"  Total Sell Qty: {data['totalsellqty']}")
 
 # Connect and subscribe
 client.connect()
@@ -130,25 +119,22 @@ finally:
 | Field | Type | Description |
 |-------|------|-------------|
 | action | string | "subscribe" or "unsubscribe" |
-| mode | integer or string | `3` or case-insensitive `Depth` |
-| depth | integer | Requested levels, default `5`; broker capability decides the supported maximum |
-| symbols | array | Array of symbol/exchange objects. Singular `symbol` plus `exchange` is a compatibility alias |
+| mode | string | "depth" |
+| instruments | array | Array of instrument objects |
 
-### Market Data Update Message
+### Depth Update Message
 
 | Field | Type | Description |
 |-------|------|-------------|
-| type | string | Always `market_data` |
-| symbol | string | Trading symbol |
-| exchange | string | Exchange code |
-| mode | integer | Numeric subscribed mode (`3`) |
-| broker | string | Broker that supplied the frame |
+| type | string | "depth" |
 | data | object | Depth data object |
 
 ### Data Object
 
 | Field | Type | Description |
 |-------|------|-------------|
+| exchange | string | Exchange code |
+| symbol | string | Trading symbol |
 | ltp | number | Last traded price |
 | ltq | number | Last traded quantity |
 | open | number | Day's open price |
@@ -158,28 +144,20 @@ finally:
 | volume | number | Total traded volume |
 | totalbuyqty | number | Total buy quantity in order book |
 | totalsellqty | number | Total sell quantity in order book |
-| depth | object | Order book with `buy` and `sell` arrays |
+| bids | array | Top 5 bid levels |
+| asks | array | Top 5 ask levels |
 | timestamp | number | Update time (epoch ms) |
 
-### Depth Object
-
-| Field | Type | Description |
-|-------|------|-------------|
-| buy | array | Bid levels, best price first |
-| sell | array | Ask levels, best price first |
-
-### Buy/Sell Level Object
+### Bid/Ask Object
 
 | Field | Type | Description |
 |-------|------|-------------|
 | price | number | Price level |
 | quantity | number | Quantity at this level |
-| orders | number | Order count at this level when supplied by the broker |
 
 ## Notes
 
-- Depth mode provides the requested number of order-book levels when the
-  broker supports it; `5` is the default
+- Depth mode provides **full order book** data (top 5 levels)
 - Highest bandwidth consumption among streaming modes
 - Updates on every order book change
 - Use for:

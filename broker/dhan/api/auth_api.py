@@ -1,23 +1,23 @@
 import json
-import os
+import logging
 
 import httpx
 
 from broker.dhan.api.baseurl import BASE_URL, get_url
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
-from utils.logging import get_logger
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 # Dhan Auth API endpoints
 AUTH_BASE_URL = "https://auth.dhan.co"
 
 
-def generate_consent(dhan_client_id):
+def generate_consent(dhan_client_id, account_id=None):
     """Step 1: Generate consent to initiate login session - requires valid Dhan Client ID"""
     try:
-        BROKER_API_KEY = os.getenv("BROKER_API_KEY")
-        BROKER_API_SECRET = os.getenv("BROKER_API_SECRET")
+        BROKER_API_KEY = get_broker_api_key(account_id)
+        BROKER_API_SECRET = get_broker_api_secret(account_id)
 
         # Extract client_id from API key if format is client_id:::api_key
         if ":::" in BROKER_API_KEY:
@@ -37,9 +37,11 @@ def generate_consent(dhan_client_id):
         # Build URL with client_id parameter - REQUIRED by Dhan API
         url = f"{AUTH_BASE_URL}/app/generate-consent"
 
-        logger.info("Generating consent for configured Dhan client")
-        logger.info("Using configured broker API key")
-        logger.info("Using configured Dhan API secret")
+        logger.info(f"Generating consent for Dhan Client ID: {dhan_client_id}")
+        logger.info(f"Using API Key: {BROKER_API_KEY[:8] if BROKER_API_KEY else 'None'}...")
+        logger.info(
+            f"Using API Secret: {BROKER_API_SECRET[:8] if BROKER_API_SECRET else 'None'}..."
+        )
 
         # Make the POST request with the client_id as a query parameter
         # The client_id parameter is REQUIRED for generate-consent
@@ -47,31 +49,25 @@ def generate_consent(dhan_client_id):
         response = client.post(full_url, headers=headers)
 
         logger.info(f"Generate consent response status: {response.status_code}")
-        logger.info("Generate consent response received")
+        logger.info(f"Generate consent response: {response.text}")
 
         if response.status_code == 200:
             data = response.json()
             if data.get("status") == "success":
                 consent_app_id = data.get("consentAppId")
-                logger.info(
-                    "Consent generated successfully; consent_id_present=%s",
-                    bool(consent_app_id),
-                )
+                logger.info(f"Consent generated successfully: {consent_app_id}")
                 return consent_app_id, None
             else:
                 error_msg = f"Failed to generate consent: {data}"
-                logger.error(
-                    "Failed to generate consent; status=%s",
-                    data.get("status", "unknown"),
-                )
+                logger.error(error_msg)
                 return None, error_msg
         else:
             error_msg = f"Failed to generate consent: HTTP {response.status_code} - {response.text}"
-            logger.error("Failed to generate consent; HTTP status=%s", response.status_code)
+            logger.error(error_msg)
             return None, error_msg
 
     except Exception as e:
-        logger.error("Exception in generate_consent; type=%s", type(e).__name__)
+        logger.error(f"Exception in generate_consent: {str(e)}")
         return None, f"An exception occurred: {str(e)}"
 
 
@@ -83,11 +79,11 @@ def get_login_url(consent_app_id):
     return f"{AUTH_BASE_URL}/login/consentApp-login?consentAppId={consent_app_id}"
 
 
-def consume_consent(token_id):
+def consume_consent(token_id, account_id=None):
     """Step 3: Consume consent to get access token"""
     try:
-        BROKER_API_KEY = os.getenv("BROKER_API_KEY")
-        BROKER_API_SECRET = os.getenv("BROKER_API_SECRET")
+        BROKER_API_KEY = get_broker_api_key(account_id)
+        BROKER_API_SECRET = get_broker_api_secret(account_id)
 
         # Extract client_id from API key if format is client_id:::api_key
         if ":::" in BROKER_API_KEY:
@@ -104,7 +100,7 @@ def consume_consent(token_id):
         url = f"{AUTH_BASE_URL}/app/consumeApp-consent"
         params = {"tokenId": token_id}
 
-        logger.debug("Consuming consent to obtain access token")
+        logger.debug(f"Consuming consent with tokenId: {token_id}")
         response = client.post(url, headers=headers, params=params)
 
         if response.status_code == 200:
@@ -119,11 +115,8 @@ def consume_consent(token_id):
                     "ddpi_status": data.get("givenPowerOfAttorney", False),
                     "token_expiry": data.get("expiryTime"),
                 }
-                logger.debug("Access token obtained")
-                logger.debug(
-                    "Additional authentication data fields: %s",
-                    list(additional_data.keys()),
-                )
+                logger.debug(f"Access Token obtained: {access_token}")
+                logger.debug(f"Additional Data: {additional_data}")
                 return access_token, additional_data
             else:
                 return None, "Access token not found in response"
@@ -131,7 +124,7 @@ def consume_consent(token_id):
             return None, f"Failed to consume consent: {response.status_code}"
 
     except Exception as e:
-        logger.error("Exception in consume_consent; type=%s", type(e).__name__)
+        logger.error(f"Exception in consume_consent: {str(e)}")
         return None, f"An exception occurred: {str(e)}"
 
 
@@ -145,11 +138,11 @@ def get_direct_access_token(access_token):
         logger.info("Using direct access token from Dhan web")
         return access_token, None
     except Exception as e:
-        logger.error("Exception in get_direct_access_token; type=%s", type(e).__name__)
+        logger.error(f"Exception in get_direct_access_token: {str(e)}")
         return None, f"An exception occurred: {str(e)}"
 
 
-def authenticate_broker(code):
+def authenticate_broker(code, account_id=None):
     """Main authentication function - handles direct token or OAuth flow"""
     try:
         # Check if code is actually a direct access token (for manual entry)
@@ -160,14 +153,14 @@ def authenticate_broker(code):
             return get_direct_access_token(code)
         # Otherwise, handle OAuth flow with tokenId
         elif code:
-            access_token, additional_data = consume_consent(code)
+            # Must use the SAME account's credentials consume_consent used in
+            # generate_consent (step 1, dhan_initiate_oauth) — Dhan validates
+            # app_id/app_secret consistency across the consent flow.
+            access_token, additional_data = consume_consent(code, account_id=account_id)
             if access_token and isinstance(additional_data, dict):
                 # Extract the dhanClientId to return as user_id
                 dhan_client_id = additional_data.get("dhan_client_id")
-                logger.debug(
-                    "Dhan authentication successful; client_id_present=%s",
-                    bool(dhan_client_id),
-                )
+                logger.debug(f"Dhan authentication successful, client_id: {dhan_client_id}")
                 # Return access_token, user_id (dhanClientId), error_message format
                 # This matches the format expected by brlogin.py for brokers with user_id
                 return access_token, dhan_client_id, None
@@ -178,5 +171,5 @@ def authenticate_broker(code):
             return None, None, "No token ID provided for authentication"
 
     except Exception as e:
-        logger.error("Exception in authenticate_broker; type=%s", type(e).__name__)
+        logger.error(f"Exception in authenticate_broker: {str(e)}")
         return None, None, f"An exception occurred: {str(e)}"

@@ -322,9 +322,7 @@ def purge_old_data_logs(days=7):
     Purge non-order endpoint latency logs older than specified days.
     Order execution logs (PLACE, SMART, MODIFY, CANCEL, etc.) are kept forever.
     """
-    # Order types to keep forever. Must stay in step with the set in
-    # utils.latency_monitor: a type present there but missing here is purged
-    # after a week despite being an order.
+    # Order types to keep forever
     ORDER_TYPES = {
         "PLACE",
         "SMART",
@@ -336,9 +334,6 @@ def purge_old_data_logs(days=7):
         "SPLIT",
         "OPTIONS",
         "OPTIONS_MULTI",
-        "GTT_PLACE",
-        "GTT_MODIFY",
-        "GTT_CANCEL",
     }
 
     try:

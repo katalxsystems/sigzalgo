@@ -41,17 +41,17 @@ function convertExpiryForAPI(expiry: string): string {
 
 export default function IVSmile() {
   const { mode, appMode } = useThemeStore()
-  const { toolsFnoExchanges, defaultToolsFnoExchange, defaultUnderlyings } = useSupportedExchanges()
+  const { fnoExchanges, defaultFnoExchange, defaultUnderlyings } = useSupportedExchanges()
   const isAnalyzer = appMode === 'analyzer'
   const isDark = mode === 'dark' || isAnalyzer
 
-  const [selectedExchange, setSelectedExchange] = useState(defaultToolsFnoExchange)
+  const [selectedExchange, setSelectedExchange] = useState(defaultFnoExchange)
   const [underlyings, setUnderlyings] = useState<string[]>(
-    defaultUnderlyings[defaultToolsFnoExchange] || []
+    defaultUnderlyings[defaultFnoExchange] || []
   )
   const [underlyingOpen, setUnderlyingOpen] = useState(false)
   const [selectedUnderlying, setSelectedUnderlying] = useState(
-    defaultUnderlyings[defaultToolsFnoExchange]?.[0] || ''
+    defaultUnderlyings[defaultFnoExchange]?.[0] || ''
   )
   const [expiries, setExpiries] = useState<string[]>([])
   const [selectedExpiry, setSelectedExpiry] = useState('')
@@ -64,9 +64,9 @@ export default function IVSmile() {
   // Re-sync exchange when broker capabilities load asynchronously
   useEffect(() => {
     setSelectedExchange((prev) =>
-      prev && toolsFnoExchanges.some((ex) => ex.value === prev) ? prev : defaultToolsFnoExchange
+      prev && fnoExchanges.some((ex) => ex.value === prev) ? prev : defaultFnoExchange
     )
-  }, [defaultToolsFnoExchange, toolsFnoExchanges])
+  }, [defaultFnoExchange, fnoExchanges])
 
   // Fetch underlyings when exchange changes
   useEffect(() => {
@@ -369,7 +369,7 @@ export default function IVSmile() {
               <SelectValue placeholder="Exchange" />
             </SelectTrigger>
             <SelectContent>
-              {toolsFnoExchanges.map((ex) => (
+              {fnoExchanges.map((ex) => (
                 <SelectItem key={ex.value} value={ex.value}>
                   {ex.label}
                 </SelectItem>

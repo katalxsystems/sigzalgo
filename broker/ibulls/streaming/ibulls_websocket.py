@@ -1,4 +1,5 @@
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -8,7 +9,6 @@ import requests
 import socketio
 
 from broker.ibulls.baseurl import BASE_URL, INTERACTIVE_URL, MARKET_DATA_URL
-from utils.logging import get_logger
 
 
 class IbullsWebSocketClient:
@@ -74,7 +74,7 @@ class IbullsWebSocketClient:
         self.on_message = None
 
         # Logger
-        self.logger = get_logger("ibulls_websocket")
+        self.logger = logging.getLogger("ibulls_websocket")
 
         # Subscriptions tracking
         self.subscriptions = {}

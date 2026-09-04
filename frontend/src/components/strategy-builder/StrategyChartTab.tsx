@@ -30,8 +30,6 @@ const CHART_HEIGHT = 480
 interface StrategyChartTabProps {
   underlying: string
   exchange: string
-  underlyingSymbol?: string
-  underlyingExchange?: string
   legs: StrategyLeg[]
   optionExchange: string
 }
@@ -79,8 +77,6 @@ function legsIdentity(legs: StrategyLeg[], optionExchange: string): string {
 export default function StrategyChartTab({
   underlying,
   exchange,
-  underlyingSymbol,
-  underlyingExchange,
   legs,
   optionExchange,
 }: StrategyChartTabProps) {
@@ -113,7 +109,6 @@ export default function StrategyChartTab({
   const watermarkRef = useRef<HTMLDivElement | null>(null)
   const chartDataRef = useRef<StrategyChartData | null>(null)
   const seriesMapRef = useRef<Map<number, StrategyChartPoint>>(new Map())
-  const requestGenerationRef = useRef(0)
 
   const colors = useMemo(() => {
     if (isAnalyzer) {
@@ -449,7 +444,6 @@ export default function StrategyChartTab({
   // calls — only add/remove/toggle/symbol changes (which change identity) refetch.
   // biome-ignore lint/correctness/useExhaustiveDependencies: depend on derived `identity` (not raw `legs`) to avoid over-fetching the broker history API
   const loadData = useCallback(async () => {
-    const generation = ++requestGenerationRef.current
     if (!underlying || !exchange) return
     const payloadLegs = legs
       .filter((l) => l.segment === 'OPTION' && l.active && l.symbol)
@@ -462,7 +456,6 @@ export default function StrategyChartTab({
         price: l.price,
       }))
     if (payloadLegs.length === 0) {
-      setIsLoading(false)
       setChartData(null)
       chartDataRef.current = null
       underlyingSeriesRef.current?.setData([])
@@ -475,13 +468,10 @@ export default function StrategyChartTab({
       const res = await strategyChartApi.getStrategyChart({
         underlying,
         exchange,
-        underlying_symbol: underlyingSymbol,
-        underlying_exchange: underlyingExchange,
         legs: payloadLegs,
         interval: selectedInterval,
         days: parseInt(selectedDays, 10),
       })
-      if (generation !== requestGenerationRef.current) return
       if (res.status === 'success' && res.data) {
         chartDataRef.current = res.data
         setChartData(res.data)
@@ -490,17 +480,14 @@ export default function StrategyChartTab({
         showToast.error(res.message || 'Failed to load strategy chart')
       }
     } catch (err) {
-      if (generation !== requestGenerationRef.current) return
       const msg = err instanceof Error ? err.message : 'Failed to load strategy chart'
       showToast.error(msg)
     } finally {
-      if (generation === requestGenerationRef.current) setIsLoading(false)
+      setIsLoading(false)
     }
   }, [
     underlying,
     exchange,
-    underlyingSymbol,
-    underlyingExchange,
     identity,
     selectedInterval,
     selectedDays,
@@ -515,10 +502,7 @@ export default function StrategyChartTab({
     const handle = setTimeout(() => {
       loadData()
     }, 300)
-    return () => {
-      clearTimeout(handle)
-      requestGenerationRef.current += 1
-    }
+    return () => clearTimeout(handle)
   }, [loadData])
 
   const latest = useMemo(() => {

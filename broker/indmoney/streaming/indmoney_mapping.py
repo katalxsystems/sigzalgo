@@ -4,17 +4,16 @@ import logging
 class IndmoneyExchangeMapper:
     """Maps OpenAlgo exchange codes to INDmoney-specific segment codes"""
 
-    # Exchange segment mapping for INDmoney broker.
-    # Format: SEGMENT:TOKEN (e.g., NSE:2885, BSE:500325).
-    # These six prefixes are the complete set the INDstocks WebSocket defines
-    # (docs 08-websockets / 16-glossary). MCX, NCDEX and currency are NOT
-    # supported by this broker - mapping them to invented prefixes only defers
-    # the failure to the server.
+    # Exchange segment mapping for INDmoney broker
+    # Format: SEGMENT:TOKEN (e.g., NSE:2885, BSE:500325)
     EXCHANGE_SEGMENTS = {
         "NSE": "NSE",  # NSE Cash Market
         "NFO": "NFO",  # NSE Futures & Options
         "BSE": "BSE",  # BSE Cash Market
         "BFO": "BFO",  # BSE F&O
+        "MCX": "MCX",  # MCX
+        "NCX": "NCX",  # NCDEX
+        "CDS": "CDS",  # Currency derivatives
         "NSE_INDEX": "NIDX",  # NSE Index
         "BSE_INDEX": "BIDX",  # BSE Index
     }
@@ -28,9 +27,9 @@ class IndmoneyExchangeMapper:
             exchange (str): Exchange code (e.g., 'NSE', 'BSE')
 
         Returns:
-            str | None: INDmoney segment code, or None if unsupported.
+            str: INDmoney-specific segment code
         """
-        return IndmoneyExchangeMapper.EXCHANGE_SEGMENTS.get(exchange)
+        return IndmoneyExchangeMapper.EXCHANGE_SEGMENTS.get(exchange, "NSE")  # Default to NSE
 
     @staticmethod
     def create_instrument_token(exchange, token):
@@ -42,12 +41,9 @@ class IndmoneyExchangeMapper:
             token (str): Token/symbol ID
 
         Returns:
-            str | None: Formatted instrument token (e.g., "NSE:2885"), or None
-            if the exchange is not supported by INDmoney.
+            str: Formatted instrument token (e.g., "NSE:2885")
         """
         segment = IndmoneyExchangeMapper.get_segment(exchange)
-        if not segment:
-            return None
         return f"{segment}:{token}"
 
 
@@ -96,10 +92,8 @@ class IndmoneyCapabilityRegistry:
     subscription modes, and market depth levels
     """
 
-    # INDmoney broker capabilities. Matches plugin.json and the six WebSocket
-    # prefixes the INDstocks docs define - the broker trades NSE/BSE cash and
-    # F&O only, with no commodity or currency segment.
-    exchanges = ["NSE", "BSE", "NFO", "BFO", "NSE_INDEX", "BSE_INDEX"]
+    # INDmoney broker capabilities
+    exchanges = ["NSE", "BSE", "NFO", "BFO", "MCX", "NCX", "CDS"]
 
     # INDmoney supports only 2 modes: ltp and quote
     # Mode 1: LTP, Mode 2: Quote
@@ -112,8 +106,9 @@ class IndmoneyCapabilityRegistry:
         "BSE": [1],
         "NFO": [1],
         "BFO": [1],
-        "NSE_INDEX": [1],
-        "BSE_INDEX": [1],
+        "MCX": [1],
+        "NCX": [1],
+        "CDS": [1],
     }
 
     @classmethod

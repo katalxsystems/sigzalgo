@@ -17,14 +17,8 @@ describe('Navigation Config', () => {
       expect(labels).toContain('Tools')
       expect(labels).toContain('Orderbook')
       expect(labels).toContain('Positions')
-      expect(labels).toContain('Platforms')
+      expect(labels).toContain('Strategy')
       expect(labels).toContain('Trading')
-      expect(labels).toContain('Strategies')
-
-      // Strategies sits directly after Platforms. Asserting the position, not
-      // just its presence, is the point: it is where the user expects to find
-      // it, and a later insertion that pushed it elsewhere should fail here.
-      expect(labels.indexOf('Strategies')).toBe(labels.indexOf('Platforms') + 1)
     })
 
     it('all items have required properties', () => {
@@ -39,13 +33,13 @@ describe('Navigation Config', () => {
   })
 
   describe('bottomNavItems', () => {
-    it('contains exactly 4 items for mobile bottom nav', () => {
-      expect(bottomNavItems).toHaveLength(4)
+    it('contains exactly 5 items for mobile bottom nav', () => {
+      expect(bottomNavItems).toHaveLength(5)
     })
 
-    it('has the correct order: Dashboard, Orderbook, Tradebook, Positions', () => {
+    it('has the correct order: Dashboard, Orderbook, Tradebook, Positions, Strategy', () => {
       const labels = bottomNavItems.map((item) => item.label)
-      expect(labels).toEqual(['Dashboard', 'Orderbook', 'Tradebook', 'Positions'])
+      expect(labels).toEqual(['Dashboard', 'Orderbook', 'Tradebook', 'Positions', 'Strategy'])
     })
   })
 
@@ -92,9 +86,16 @@ describe('Navigation Config', () => {
       expect(isActiveRoute('/positions', '/holdings')).toBe(false)
     })
 
-    it('does not prefix match', () => {
-      // No nav item owns nested pages, so neither a child path nor a longer
-      // name that merely starts with the href may light the tab up.
+    it('handles /strategy route with prefix matching', () => {
+      // Strategy route should match nested pages
+      expect(isActiveRoute('/strategy', '/strategy')).toBe(true)
+      expect(isActiveRoute('/strategy/new', '/strategy')).toBe(true)
+      expect(isActiveRoute('/strategy/123', '/strategy')).toBe(true)
+      expect(isActiveRoute('/strategy/123/configure', '/strategy')).toBe(true)
+    })
+
+    it('does not prefix match non-strategy routes', () => {
+      // Other routes should not prefix match
       expect(isActiveRoute('/dashboard/sub', '/dashboard')).toBe(false)
       expect(isActiveRoute('/orderbookextra', '/orderbook')).toBe(false)
     })

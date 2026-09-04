@@ -25,8 +25,8 @@ const INDEX_EXCHANGES = new Set([
   'GLOBAL_INDEX',
 ])
 
-/** F&O exchange codes (intersected with each broker's reported capabilities below). */
-const FNO_CODES = new Set(['NFO', 'BFO', 'MCX', 'CDS', 'BCD', 'NCO', 'NCDEX', 'CRYPTO'])
+/** F&O exchange codes (includes MCX/CDS/NCO which also have options) */
+const FNO_CODES = new Set(['NFO', 'BFO', 'MCX', 'CDS', 'NCO', 'CRYPTO'])
 
 /** Fallback exchanges when capabilities haven't loaded yet (backward compatible) */
 const FALLBACK_EXCHANGES = ['NSE', 'BSE', 'NFO', 'BFO', 'CDS', 'MCX', 'CRYPTO']
@@ -59,32 +59,23 @@ export function useSupportedExchanges() {
       .filter((e) => !INDEX_EXCHANGES.has(e))
       .map((e) => ({ value: e, label: e }))
 
-    // F&O exchanges (only those the broker reports as supported).
+    // F&O exchanges: NFO, BFO, or CRYPTO (only those the broker supports)
     const fnoExchanges: ExchangeOption[] = supported
       .filter((e) => FNO_CODES.has(e))
       .map((e) => ({ value: e, label: e }))
 
-    // Exchanges shown by general /tools pages (Option Chain, OI Tracker,
-    // Straddle Chart, Custom Straddle etc.). Strategy Builder uses its own
-    // broader derivative list below.
-    //
-    // MCX is now included: commodity options have no tradable spot, and the
-    // backend resolves the near-month future as the pricing reference instead,
-    // so chains, quotes and expiries all work. CDS, BCD and NCDEX remain out of
-    // the general tools until those routes implement their venue-specific flows.
+    // Exchanges shown inside /tools pages (Strategy Builder, Option Chain,
+    // OI Tracker, Straddle Chart, Custom Straddle etc.). MCX and CDS are
+    // temporarily excluded — the option chain + quotes plumbing doesn't
+    // fully support them yet. CRYPTO is retained for crypto-only brokers.
     const toolsFnoExchanges: ExchangeOption[] = fnoExchanges.filter(
-      (e) => !['CDS', 'BCD', 'NCDEX'].includes(e.value)
-    )
-    const strategyBuilderExchanges: ExchangeOption[] = fnoExchanges.filter(
-      (e) => e.value !== 'CDS'
+      (e) => e.value !== 'MCX' && e.value !== 'CDS'
     )
 
     // Defaults
     const defaultExchange = tradingExchanges[0]?.value ?? (isCrypto ? 'CRYPTO' : 'NSE')
     const defaultFnoExchange = fnoExchanges[0]?.value ?? (isCrypto ? 'CRYPTO' : 'NFO')
     const defaultToolsFnoExchange = toolsFnoExchanges[0]?.value ?? (isCrypto ? 'CRYPTO' : 'NFO')
-    const defaultStrategyBuilderExchange =
-      strategyBuilderExchanges[0]?.value ?? (isCrypto ? 'CRYPTO' : 'NFO')
 
     // Underlyings filtered to only supported FNO exchanges
     const defaultUnderlyings: Record<string, string[]> = {}
@@ -99,23 +90,19 @@ export function useSupportedExchanges() {
       allExchanges,
       /** Trading exchanges (no _INDEX) — for TradingView, GoCharting, Search */
       tradingExchanges,
-      /** Broker-reported F&O exchanges, including commodity/currency derivatives. */
+      /** Broker-reported F&O exchanges (NFO, BFO, MCX, CDS, CRYPTO). */
       fnoExchanges,
       /**
-       * F&O exchanges shown in general /tools pages. Strategy Builder uses
-       * `strategyBuilderExchanges` because it supports BCD and NCDEX too.
+       * F&O exchanges allowed in /tools pages today — NFO, BFO, CRYPTO only.
+       * Prefer this over `fnoExchanges` in every route under /tools/* .
        */
       toolsFnoExchanges,
-      /** Broker-reported derivative venues supported specifically by Strategy Builder. */
-      strategyBuilderExchanges,
       /** First trading exchange */
       defaultExchange,
       /** First F&O exchange */
       defaultFnoExchange,
       /** First tools-supported F&O exchange */
       defaultToolsFnoExchange,
-      /** First Strategy Builder-supported derivative exchange. */
-      defaultStrategyBuilderExchange,
       /** Underlyings map filtered to supported F&O exchanges */
       defaultUnderlyings,
       /** Quick check: is this a crypto broker? */

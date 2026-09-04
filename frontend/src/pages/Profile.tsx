@@ -20,6 +20,7 @@ import {
   Shield,
   Sun,
   User,
+  Users,
   Volume2,
   VolumeX,
   Wrench,
@@ -30,6 +31,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { webClient } from '@/api/client'
 import TwoFactorEnforcement from '@/components/auth/TwoFactorEnforcement'
+import BrokerAccountsTab from '@/components/profile/BrokerAccountsTab'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import {
   AlertDialog,
@@ -205,6 +207,11 @@ const ALERT_CATEGORIES_TRADING: {
     key: 'positions',
     label: 'Positions',
     description: 'Position close/update operations and P&L notifications',
+  },
+  {
+    key: 'strategy',
+    label: 'Strategy Management',
+    description: 'Strategy creation, symbol configuration, and webhook operations',
   },
   {
     key: 'chartink',
@@ -451,7 +458,9 @@ export default function ProfilePage() {
 
       if (response.data.status === 'success') {
         showToast.success(response.data.message, 'admin')
-        // Update local state to reflect saved values (don't re-fetch since env vars won't update until restart)
+        // Update local state to reflect saved values directly rather than
+        // re-fetching (the masked display value is derived client-side
+        // from what was just typed, same result either way)
         if (brokerCredentials) {
           setBrokerCredentials({
             ...brokerCredentials,
@@ -483,8 +492,12 @@ export default function ProfilePage() {
         setBrokerApiSecret('')
         setBrokerApiKeyMarket('')
         setBrokerApiSecretMarket('')
-        // Show restart dialog
-        setShowRestartDialog(true)
+        // Broker-identity fields are DB-backed now and take effect
+        // immediately -- only show the restart dialog if an infra field
+        // (host/websocket URL) was also touched in this save.
+        if (response.data.restart_required) {
+          setShowRestartDialog(true)
+        }
       } else {
         showToast.error(response.data.message || 'Failed to save credentials', 'admin')
       }
@@ -787,7 +800,7 @@ export default function ProfilePage() {
           }
         }}
       >
-        <TabsList className="grid w-full grid-cols-7">
+        <TabsList className="grid w-full grid-cols-8">
           <TabsTrigger value="account" className="gap-1">
             <Lock className="h-4 w-4" />
             <span className="hidden sm:inline">Account</span>
@@ -795,6 +808,10 @@ export default function ProfilePage() {
           <TabsTrigger value="broker" className="gap-1">
             <Key className="h-4 w-4" />
             <span className="hidden sm:inline">Broker</span>
+          </TabsTrigger>
+          <TabsTrigger value="accounts" className="gap-1">
+            <Users className="h-4 w-4" />
+            <span className="hidden sm:inline">Accounts</span>
           </TabsTrigger>
           <TabsTrigger value="alerts" className="gap-1">
             <Bell className="h-4 w-4" />
@@ -1133,23 +1150,6 @@ export default function ProfilePage() {
                   </AlertDescription>
                 </Alert>
               )}
-              {selectedBroker === 'indmoney' && (
-                <Alert className="bg-blue-50 dark:bg-blue-950 border-blue-200">
-                  <AlertCircle className="h-4 w-4" />
-                  <AlertTitle>IndMoney Credentials</AlertTitle>
-                  <AlertDescription>
-                    <p>
-                      <strong>API Key</strong>: the <code>Client ID</code> shown at indstocks.com
-                      &gt; API Trading &gt; Access Tokens after you set up TOTP.
-                    </p>
-                    <p className="mt-1">
-                      <strong>API Secret</strong>: leave blank to log in with MPIN + TOTP
-                      (recommended). If you paste an access token here instead, it is used as-is and
-                      the TOTP flow is skipped - you must regenerate it every 24 hours.
-                    </p>
-                  </AlertDescription>
-                </Alert>
-              )}
 
               {/* Save Button */}
               <Button
@@ -1293,6 +1293,11 @@ export default function ProfilePage() {
               </Button>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Broker Accounts Tab (multi-account) */}
+        <TabsContent value="accounts" className="space-y-6">
+          <BrokerAccountsTab />
         </TabsContent>
 
         {/* Alerts Tab */}
@@ -1636,6 +1641,9 @@ export default function ProfilePage() {
                 <ul className="list-disc list-inside space-y-1 ml-2">
                   <li>
                     <strong>Positions:</strong> Position close/update notifications
+                  </li>
+                  <li>
+                    <strong>Strategy:</strong> Strategy CRUD, symbol configuration, webhooks
                   </li>
                   <li>
                     <strong>Chartink:</strong> Chartink scanner and strategy integrations

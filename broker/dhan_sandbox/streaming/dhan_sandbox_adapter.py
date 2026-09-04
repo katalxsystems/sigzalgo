@@ -1,4 +1,5 @@
 import json
+import logging
 import random
 import threading
 import time
@@ -6,10 +7,9 @@ import re
 import hashlib
 from typing import Any, Dict
 
-from utils.logging import get_logger
 from websocket_proxy.base_adapter import BaseBrokerWebSocketAdapter
 
-logger = get_logger("dhan_sandbox_websocket")
+logger = logging.getLogger("dhan_sandbox_websocket")
 
 
 class Dhan_sandboxWebSocketAdapter(BaseBrokerWebSocketAdapter):

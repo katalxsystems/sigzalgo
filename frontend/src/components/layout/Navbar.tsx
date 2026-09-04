@@ -27,21 +27,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { useThemeStore } from '@/stores/themeStore'
 import { showToast } from '@/utils/toast'
 
-interface NavbarProps {
-  /**
-   * Span the full viewport instead of the centred, width-capped container.
-   *
-   * Pages rendered inside Layout share its `container mx-auto`, so the nav
-   * lines up with the content below it and this stays false. Full-bleed pages
-   * under FullWidthLayout render this navbar themselves and have no such
-   * container, so a capped nav floats inset above edge-to-edge content -- on a
-   * 1920px screen Tailwind caps `container` at 1536px, leaving ~192px of gutter
-   * each side while the page fills the width.
-   */
-  fluid?: boolean
-}
-
-export function Navbar({ fluid = false }: NavbarProps = {}) {
+export function Navbar() {
   const location = useLocation()
   const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -87,12 +73,7 @@ export function Navbar({ fluid = false }: NavbarProps = {}) {
 
   return (
     <nav className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div
-        className={cn(
-          'px-4 flex h-14 items-center',
-          fluid ? 'w-full' : 'container mx-auto'
-        )}
-      >
+      <div className="container mx-auto px-4 flex h-14 items-center">
         {/* Mobile Menu */}
         <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
           <SheetTrigger asChild className="md:hidden">
@@ -123,10 +104,9 @@ export function Navbar({ fluid = false }: NavbarProps = {}) {
                   Navigation
                 </div>
                 {mobileSheetItems.map((item) => {
-                  const active = isActive(item.href)
                   const cls = cn(
                     'flex items-center gap-3 rounded-lg px-3 py-3 text-sm transition-colors min-h-[44px] touch-manipulation',
-                    active
+                    isActive(item.href)
                       ? 'bg-primary text-primary-foreground'
                       : 'hover:bg-muted active:bg-muted'
                   )
@@ -142,7 +122,6 @@ export function Navbar({ fluid = false }: NavbarProps = {}) {
                       href={item.href}
                       onClick={() => setMobileOpen(false)}
                       className={cls}
-                      aria-current={active ? 'page' : undefined}
                     >
                       {inner}
                     </a>
@@ -152,7 +131,6 @@ export function Navbar({ fluid = false }: NavbarProps = {}) {
                       to={item.href}
                       onClick={() => setMobileOpen(false)}
                       className={cls}
-                      aria-current={active ? 'page' : undefined}
                     >
                       {inner}
                     </Link>
@@ -165,26 +143,22 @@ export function Navbar({ fluid = false }: NavbarProps = {}) {
                 <div className="px-3 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wider">
                   Quick Access
                 </div>
-                {filteredProfileMenuItems.map((item) => {
-                  const active = isActive(item.href)
-                  return (
-                    <Link
-                      key={item.href}
-                      to={item.href}
-                      onClick={() => setMobileOpen(false)}
-                      className={cn(
-                        'flex items-center gap-3 rounded-lg px-3 py-3 text-sm transition-colors min-h-[44px] touch-manipulation',
-                        active
-                          ? 'bg-primary text-primary-foreground'
-                          : 'hover:bg-muted active:bg-muted'
-                      )}
-                      aria-current={active ? 'page' : undefined}
-                    >
-                      <item.icon className="h-4 w-4" />
-                      {item.label}
-                    </Link>
-                  )
-                })}
+                {filteredProfileMenuItems.map((item) => (
+                  <Link
+                    key={item.href}
+                    to={item.href}
+                    onClick={() => setMobileOpen(false)}
+                    className={cn(
+                      'flex items-center gap-3 rounded-lg px-3 py-3 text-sm transition-colors min-h-[44px] touch-manipulation',
+                      isActive(item.href)
+                        ? 'bg-primary text-primary-foreground'
+                        : 'hover:bg-muted active:bg-muted'
+                    )}
+                  >
+                    <item.icon className="h-4 w-4" />
+                    {item.label}
+                  </Link>
+                ))}
                 <a
                   href="https://docs.openalgo.in"
                   target="_blank"
@@ -212,10 +186,9 @@ export function Navbar({ fluid = false }: NavbarProps = {}) {
             the profile menu off-screen; full labels from xl up (issue #1384). */}
         <nav className="hidden md:flex items-center gap-1">
           {navItems.map((item) => {
-            const active = isActive(item.href)
             const className = cn(
               'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-              active
+              isActive(item.href)
                 ? 'bg-primary text-primary-foreground'
                 : 'text-muted-foreground hover:bg-muted hover:text-foreground'
             )
@@ -228,23 +201,11 @@ export function Navbar({ fluid = false }: NavbarProps = {}) {
             // Flask-served pages (e.g. /trading) need a full page load,
             // not client-side routing.
             return item.external ? (
-              <a
-                key={item.href}
-                href={item.href}
-                title={item.label}
-                className={className}
-                aria-current={active ? 'page' : undefined}
-              >
+              <a key={item.href} href={item.href} title={item.label} className={className}>
                 {content}
               </a>
             ) : (
-              <Link
-                key={item.href}
-                to={item.href}
-                title={item.label}
-                className={className}
-                aria-current={active ? 'page' : undefined}
-              >
+              <Link key={item.href} to={item.href} title={item.label} className={className}>
                 {content}
               </Link>
             )

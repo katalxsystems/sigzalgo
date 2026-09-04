@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import threading
@@ -11,7 +12,6 @@ from database.auth_db import (
     get_feed_token,
     get_feed_token_dbquery,
 )
-from utils.logging import get_logger
 
 # Add parent directory to path to allow imports
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../"))
@@ -23,60 +23,55 @@ from .definedge_mapping import DefinedgeCapabilityRegistry, DefinedgeExchangeMap
 
 
 class MarketDataCache:
-    """Manages market data caching with thread safety for DefinEdge.
-
-    Keyed by scrip (``"NFO|65872"``), never by the bare token. Noren tokens are
-    unique only within an exchange, so a token-keyed cache merges two different
-    instruments into one slot - see issue #1732.
-    """
+    """Manages market data caching with thread safety for DefinEdge"""
 
     def __init__(self):
         self._cache = {}
-        self._initialized_scrips = set()
+        self._initialized_tokens = set()
         self._lock = threading.Lock()
-        self.logger = get_logger("market_cache")
+        self.logger = logging.getLogger("market_cache")
 
-    def get(self, scrip: str) -> dict[str, Any]:
-        """Get cached data for a scrip"""
+    def get(self, token: str) -> dict[str, Any]:
+        """Get cached data for a token"""
         with self._lock:
-            return self._cache.get(scrip, {}).copy()
+            return self._cache.get(token, {}).copy()
 
-    def update(self, scrip: str, data: dict[str, Any]) -> dict[str, Any]:
+    def update(self, token: str, data: dict[str, Any]) -> dict[str, Any]:
         """Update cache with new data and return merged result"""
         with self._lock:
-            cached_data = self._cache.get(scrip, {})
-            merged_data = self._merge_data(cached_data, data, scrip)
-            self._cache[scrip] = merged_data
+            cached_data = self._cache.get(token, {})
+            merged_data = self._merge_data(cached_data, data, token)
+            self._cache[token] = merged_data
 
-            if scrip not in self._initialized_scrips:
-                self._initialized_scrips.add(scrip)
-                self._log_cache_initialization(scrip, data)
+            if token not in self._initialized_tokens:
+                self._initialized_tokens.add(token)
+                self._log_cache_initialization(token, data)
 
             return merged_data.copy()
 
-    def clear(self, scrip: str = None) -> None:
-        """Clear cache for specific scrip or all scrips"""
+    def clear(self, token: str = None) -> None:
+        """Clear cache for specific token or all tokens"""
         with self._lock:
-            if scrip:
-                self._cache.pop(scrip, None)
-                self._initialized_scrips.discard(scrip)
-                self.logger.info(f"Cleared cache for scrip {scrip}")
+            if token:
+                self._cache.pop(token, None)
+                self._initialized_tokens.discard(token)
+                self.logger.info(f"Cleared cache for token {token}")
             else:
                 cache_size = len(self._cache)
                 self._cache.clear()
-                self._initialized_scrips.clear()
-                self.logger.info(f"Cleared all cached market data ({cache_size} scrips)")
+                self._initialized_tokens.clear()
+                self.logger.info(f"Cleared all cached market data ({cache_size} tokens)")
 
     def get_stats(self) -> dict[str, Any]:
         """Get cache statistics"""
         with self._lock:
             return {
-                "total_scrips": len(self._cache),
-                "initialized_scrips": len(self._initialized_scrips),
-                "scrips": list(self._cache.keys()),
+                "total_tokens": len(self._cache),
+                "initialized_tokens": len(self._initialized_tokens),
+                "tokens": list(self._cache.keys()),
             }
 
-    def _merge_data(self, cached: dict, new: dict, scrip: str) -> dict:
+    def _merge_data(self, cached: dict, new: dict, token: str) -> dict:
         """Smart merge logic for market data - similar to Shoonya"""
         merged = cached.copy()
 
@@ -106,7 +101,7 @@ class MarketDataCache:
         """Check if value represents zero - same as Shoonya line 130-132"""
         return value in [None, "", "0", 0, "0.0", 0.0]
 
-    def _log_cache_initialization(self, scrip: str, data: dict) -> None:
+    def _log_cache_initialization(self, token: str, data: dict) -> None:
         """Log cache initialization details - same as Shoonya"""
         # Use raw field names like Shoonya
         basic_fields = ["lp", "o", "h", "l", "c", "v", "ap", "pc", "ltq", "ltt", "tbq", "tsq"]
@@ -119,11 +114,11 @@ class MarketDataCache:
         )
         if has_ohlc:
             self.logger.debug(
-                f"OHLC snapshot cached for {scrip}: o={data.get('o')}, h={data.get('h')}, l={data.get('l')}, c={data.get('c')}"
+                f"OHLC snapshot cached for {token}: o={data.get('o')}, h={data.get('h')}, l={data.get('l')}, c={data.get('c')}"
             )
 
         self.logger.debug(
-            f"Initializing cache for scrip {scrip} - "
+            f"Initializing cache for token {token} - "
             f"{present_fields}/{len(basic_fields)} fields present ({completeness:.1%})"
         )
 
@@ -133,7 +128,7 @@ class DefinedgeWebSocketAdapter(BaseBrokerWebSocketAdapter):
 
     def __init__(self):
         super().__init__()
-        self.logger = get_logger("definedge_websocket")
+        self.logger = logging.getLogger("definedge_websocket")
         self.ws_client = None
         self.user_id = None
         self.broker_name = "definedge"
@@ -144,10 +139,7 @@ class DefinedgeWebSocketAdapter(BaseBrokerWebSocketAdapter):
         self.running = False
         self.lock = threading.Lock()
         self.market_cache = MarketDataCache()  # Initialize market data cache
-        # Keyed by scrip ("NFO|65872"), not by the bare token: Noren tokens are
-        # unique only within an exchange and the live master carries thousands of
-        # cross-exchange duplicates (NSE/CDS, BSE_INDEX/NSE, BSE/MCX) - see #1732
-        self.scrip_to_symbol = {}  # Map scrips to symbols for cache management
+        self.token_to_symbol = {}  # Map tokens to symbols for cache management
         self.ws_subscription_refs = {}  # Reference counting for WebSocket subscriptions
         self._reconnecting = False  # Single-flight guard for _connect_with_retry
 
@@ -360,10 +352,10 @@ class DefinedgeWebSocketAdapter(BaseBrokerWebSocketAdapter):
             self.market_cache.clear()
             self.logger.info("Cleared market data cache")
 
-        # Clean up scrip mappings
-        if hasattr(self, "scrip_to_symbol"):
-            self.scrip_to_symbol.clear()
-            self.logger.info("Cleared scrip mappings")
+        # Clean up token mappings
+        if hasattr(self, "token_to_symbol"):
+            self.token_to_symbol.clear()
+            self.logger.info("Cleared token mappings")
 
         # Reset connection state
         self.connected = False
@@ -466,7 +458,6 @@ class DefinedgeWebSocketAdapter(BaseBrokerWebSocketAdapter):
             self.logger.info(f"[SUBSCRIBE] New WebSocket subscription needed for {correlation_id}")
 
         # Store subscription for reconnection
-        subscription_scrip = f"{definedge_exchange}|{token}"
         with self.lock:
             self.subscriptions[correlation_id] = {
                 "symbol": symbol,
@@ -474,15 +465,14 @@ class DefinedgeWebSocketAdapter(BaseBrokerWebSocketAdapter):
                 "brexchange": brexchange,
                 "definedge_exchange": definedge_exchange,
                 "token": token,
-                "scrip": subscription_scrip,
                 "mode": mode,
                 "depth_level": depth_level,
                 "actual_depth": actual_depth,
                 "tokens": tokens,
                 "is_fallback": is_fallback,
             }
-            # Track scrip to symbol mapping for cache management
-            self.scrip_to_symbol[subscription_scrip] = (symbol, exchange)
+            # Track token to symbol mapping for cache management
+            self.token_to_symbol[token] = (symbol, exchange)
 
         # Subscribe via WebSocket (reference counting will handle duplicates)
         if self.connected and self.ws_client:
@@ -588,16 +578,14 @@ class DefinedgeWebSocketAdapter(BaseBrokerWebSocketAdapter):
             # Remove the subscription
             del self.subscriptions[correlation_id]
 
-            # Clean up scrip mapping and cache if no other subscriptions use this
-            # scrip. Keyed on scrip, not token: a token still subscribed on another
-            # exchange must keep its own cache slot and mapping intact (#1732)
-            scrip = f"{definedge_exchange}|{token}"
-            if not any(sub["scrip"] == scrip for sub in self.subscriptions.values()):
-                self.scrip_to_symbol.pop(scrip, None)
-                self.market_cache.clear(scrip)
+            # Clean up token mapping and cache if no other subscriptions use this token
+            if not any(sub["token"] == token for sub in self.subscriptions.values()):
+                self.token_to_symbol.pop(token, None)
+                self.market_cache.clear(token)
 
             # Only unsubscribe from WebSocket if this was the last subscription
             if is_last:
+                scrip = f"{definedge_exchange}|{token}"
                 if self._should_ws_unsubscribe(scrip, subscription["mode"]):
                     # Unsubscribe if connected
                     if self.connected and self.ws_client:
@@ -839,10 +827,8 @@ class DefinedgeWebSocketAdapter(BaseBrokerWebSocketAdapter):
             topic = f"{orig_exchange}_{symbol}_{mode_str}"
 
             # Use cache BEFORE normalization (like Shoonya does)
-            # This preserves raw field names for cache logic. Keyed on the full
-            # scrip so a token shared across exchanges does not merge two
-            # different instruments into one cache slot (#1732)
-            cached_data = self.market_cache.update(subscription["scrip"], message)
+            # This preserves raw field names for cache logic
+            cached_data = self.market_cache.update(token, message)
 
             # Now normalize the cached data for output
             market_data = self._normalize_raw_data(cached_data, mode)
@@ -867,21 +853,17 @@ class DefinedgeWebSocketAdapter(BaseBrokerWebSocketAdapter):
             self.logger.error(f"Error processing market data: {e}", exc_info=True)
 
     def _publish_for_other_modes(
-        self, scrip: str, symbol: str, exchange: str, market_data: dict
+        self, token: str, symbol: str, exchange: str, market_data: dict
     ) -> None:
         """
         Publish market data for other subscription modes (Quote/LTP) when depth data is available.
         This allows Quote mode to get OHLC values from Depth subscriptions.
-
-        Matched on the full scrip rather than the bare token: an instrument that
-        merely shares a token on another exchange is a different instrument, and
-        letting it match here published spurious ticks (#1732).
         """
         try:
-            # Check if there are Quote or LTP subscriptions for this scrip
+            # Check if there are Quote or LTP subscriptions for this token
             with self.lock:
                 for correlation_id, sub in self.subscriptions.items():
-                    if sub["scrip"] == scrip and sub["mode"] in [1, 2]:  # LTP or Quote mode
+                    if sub["token"] == token and sub["mode"] in [1, 2]:  # LTP or Quote mode
                         mode = sub["mode"]
                         mode_str = {1: "LTP", 2: "QUOTE"}[mode]
                         topic = f"{exchange}_{symbol}_{mode_str}"
@@ -992,10 +974,8 @@ class DefinedgeWebSocketAdapter(BaseBrokerWebSocketAdapter):
 
             topic = f"{orig_exchange}_{symbol}_DEPTH"
 
-            # Use cache BEFORE normalization (like Shoonya). Keyed on the full
-            # scrip so a token shared across exchanges does not merge two
-            # different instruments into one cache slot (#1732)
-            cached_data = self.market_cache.update(subscription["scrip"], message)
+            # Use cache BEFORE normalization (like Shoonya)
+            cached_data = self.market_cache.update(token, message)
 
             # Now normalize the cached data for output
             market_data = self._normalize_raw_depth_data(cached_data)
@@ -1016,9 +996,7 @@ class DefinedgeWebSocketAdapter(BaseBrokerWebSocketAdapter):
 
             # IMPORTANT: Also publish OHLC data for any Quote mode subscriptions
             # This allows Quote mode to get OHLC from Depth data
-            self._publish_for_other_modes(
-                subscription["scrip"], symbol, orig_exchange, market_data
-            )
+            self._publish_for_other_modes(token, symbol, orig_exchange, market_data)
 
         except Exception as e:
             self.logger.error(f"Error processing depth data: {e}", exc_info=True)

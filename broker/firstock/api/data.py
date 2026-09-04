@@ -45,8 +45,7 @@ def get_api_response(endpoint, auth, method="POST", payload=None, custom_timeout
 
         # Debug print
         logger.debug(f"Endpoint: {endpoint}")
-        safe_data = {k: v for k, v in data.items() if k != "jKey"}
-        logger.debug(f"Payload: {json.dumps(safe_data, indent=2)}")
+        logger.debug(f"Payload: {json.dumps(data, indent=2)}")
 
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
 

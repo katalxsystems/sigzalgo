@@ -35,6 +35,7 @@ Examples of routes that may need a public base URL include:
 
 | Integration | Route shape |
 |---|---|
+| Strategy | `POST /strategy/webhook/<webhook_id>` |
 | Chartink | `POST /chartink/webhook/<webhook_id>` |
 | Flow | `POST /flow/webhook/<token>` or `/flow/webhook/<token>/<symbol>` |
 | TradingView / GoCharting | Their registered JSON automation routes |

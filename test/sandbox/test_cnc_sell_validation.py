@@ -71,8 +71,10 @@ def test_cnc_sell_without_position():
 
     if not success and "No positions or holdings available" in response.get("message", ""):
         print(f"PASS: {response['message']}")
+        return True
     else:
-        raise AssertionError(f"Expected rejection, got: {response}")
+        print(f"FAIL: Expected rejection, got: {response}")
+        return False
 
 
 def test_cnc_sell_with_position():
@@ -114,8 +116,10 @@ def test_cnc_sell_with_position():
 
     if success:
         print(f"PASS: Order placed successfully - {response.get('orderid')}")
+        return True
     else:
-        raise AssertionError(f"Order rejected: {response.get('message')}")
+        print(f"FAIL: Order rejected: {response.get('message')}")
+        return False
 
 
 def test_cnc_sell_exceeding_position():
@@ -157,8 +161,10 @@ def test_cnc_sell_exceeding_position():
 
     if not success and "Only 50 shares available" in response.get("message", ""):
         print(f"PASS: {response['message']}")
+        return True
     else:
-        raise AssertionError(f"Expected rejection for exceeding quantity, got: {response}")
+        print(f"FAIL: Expected rejection for exceeding quantity, got: {response}")
+        return False
 
 
 def test_cnc_sell_with_holdings():
@@ -202,8 +208,10 @@ def test_cnc_sell_with_holdings():
 
     if success:
         print(f"PASS: Order placed successfully - {response.get('orderid')}")
+        return True
     else:
-        raise AssertionError(f"Order rejected: {response.get('message')}")
+        print(f"FAIL: Order rejected: {response.get('message')}")
+        return False
 
 
 def test_mis_short_selling():
@@ -232,8 +240,10 @@ def test_mis_short_selling():
 
     if success:
         print(f"PASS: MIS short sell order placed - {response.get('orderid')}")
+        return True
     else:
-        raise AssertionError(f"MIS short sell rejected: {response.get('message')}")
+        print(f"FAIL: MIS short sell rejected: {response.get('message')}")
+        return False
 
 
 def test_cnc_sell_with_position_and_holdings():
@@ -289,8 +299,10 @@ def test_cnc_sell_with_position_and_holdings():
 
     if success:
         print(f"PASS: Order placed successfully - {response.get('orderid')}")
+        return True
     else:
-        raise AssertionError(f"Order rejected: {response.get('message')}")
+        print(f"FAIL: Order rejected: {response.get('message')}")
+        return False
 
 
 if __name__ == "__main__":

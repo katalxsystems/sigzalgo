@@ -73,17 +73,17 @@ function formatCandleTime(candle: CandleData): string {
 
 export default function OIProfile() {
   const { mode, appMode } = useThemeStore()
-  const { toolsFnoExchanges, defaultToolsFnoExchange, defaultUnderlyings } = useSupportedExchanges()
+  const { fnoExchanges, defaultFnoExchange, defaultUnderlyings } = useSupportedExchanges()
   const isAnalyzer = appMode === 'analyzer'
   const isDark = mode === 'dark' || isAnalyzer
 
-  const [selectedExchange, setSelectedExchange] = useState(defaultToolsFnoExchange)
+  const [selectedExchange, setSelectedExchange] = useState(defaultFnoExchange)
   const [underlyings, setUnderlyings] = useState<string[]>(
-    defaultUnderlyings[defaultToolsFnoExchange] || []
+    defaultUnderlyings[defaultFnoExchange] || []
   )
   const [underlyingOpen, setUnderlyingOpen] = useState(false)
   const [selectedUnderlying, setSelectedUnderlying] = useState(
-    defaultUnderlyings[defaultToolsFnoExchange]?.[0] || ''
+    defaultUnderlyings[defaultFnoExchange]?.[0] || ''
   )
   const [expiries, setExpiries] = useState<string[]>([])
   const [selectedExpiry, setSelectedExpiry] = useState('')
@@ -96,9 +96,9 @@ export default function OIProfile() {
   // Re-sync exchange when broker capabilities load asynchronously
   useEffect(() => {
     setSelectedExchange((prev) =>
-      prev && toolsFnoExchanges.some((ex) => ex.value === prev) ? prev : defaultToolsFnoExchange
+      prev && fnoExchanges.some((ex) => ex.value === prev) ? prev : defaultFnoExchange
     )
-  }, [defaultToolsFnoExchange, toolsFnoExchanges])
+  }, [defaultFnoExchange, fnoExchanges])
 
   // Fetch supported intervals on mount
   // biome-ignore lint/correctness/useExhaustiveDependencies: intervals are fetched once on mount; selectedInterval is only read to validate the initial default, not to re-trigger the fetch
@@ -475,7 +475,7 @@ export default function OIProfile() {
               <SelectValue placeholder="Exchange" />
             </SelectTrigger>
             <SelectContent>
-              {toolsFnoExchanges.map((ex) => (
+              {fnoExchanges.map((ex) => (
                 <SelectItem key={ex.value} value={ex.value}>
                   {ex.label}
                 </SelectItem>

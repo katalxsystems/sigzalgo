@@ -1,14 +1,12 @@
-import os
-
 from broker.deltaexchange.api.baseurl import BASE_URL, get_auth_headers, get_url
-from broker.deltaexchange.api.rate_limiter import PRIVATE, consume
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def authenticate_broker(code):
+def authenticate_broker(code, account_id=None):
     """
     Authenticate with Delta Exchange using API Key + Secret (HMAC-SHA256).
 
@@ -25,8 +23,8 @@ def authenticate_broker(code):
         (None, error_message)   on failure
     """
     try:
-        api_key = os.getenv("BROKER_API_KEY", "").strip()
-        api_secret = os.getenv("BROKER_API_SECRET", "").strip()
+        api_key = (get_broker_api_key(account_id) or "").strip()
+        api_secret = (get_broker_api_secret(account_id) or "").strip()
 
         if not api_key:
             return None, "BROKER_API_KEY is not set in environment variables"
@@ -35,9 +33,6 @@ def authenticate_broker(code):
 
         # Verify credentials with a live signed request to GET /v2/profile
         path = "/v2/profile"
-        # consume() before signing: it can block on the quota window and Delta
-        # rejects signatures older than 5 seconds ("SignatureExpired").
-        consume(path, method="GET", bucket=PRIVATE)
         headers = get_auth_headers(
             method="GET",
             path=path,

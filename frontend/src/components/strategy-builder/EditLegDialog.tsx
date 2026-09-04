@@ -1,5 +1,6 @@
 import { Minus, Plus, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { apiClient } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -17,10 +18,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import type { ResolveLegContract } from '@/components/strategy-builder/ManualLegBuilder'
-import { parseFinitePrice, type ResolvedLegMarket } from '@/lib/strategyContracts'
 import type { StrategyLeg } from '@/lib/strategyMath'
-import { strikeMoneyness } from '@/lib/strategyMath'
+import { buildFutureSymbol, buildOptionSymbol, strikeMoneyness } from '@/lib/strategyMath'
 import { cn } from '@/lib/utils'
 import type { OptionStrike } from '@/types/option-chain'
 
@@ -31,13 +30,36 @@ export interface EditLegDialogProps {
   optionExpiries: string[]
   futureExpiries: string[]
   chain: OptionStrike[] | null
+  /**
+   * Expiry the `chain` corresponds to. If the user picks a different expiry
+   * in this dialog we fall back to a live /quotes fetch for the freshly-
+   * constructed option symbol.
+   */
+  chainExpiry: string
+  /** Underlying base symbol (e.g. "NIFTY"), used to rebuild option symbols. */
+  underlying: string
+  /** F&O exchange (NFO / BFO / MCX / CDS) for the /quotes call. */
+  optionExchange: string
+  /** OpenAlgo API key for /quotes. */
+  apiKey: string
   /** ATM strike from the live chain — used to show moneyness next to the Strike field. */
   atmStrike?: number | null
   /** Common strike increment (e.g. 50 for NIFTY) — drives the moneyness step count. */
   strikeStep?: number
-  resolveContract: ResolveLegContract
   onSave: (updated: StrategyLeg) => void
   onDelete: (id: string) => void
+}
+
+export function invalidateIvWhenContractChanges(
+  original: StrategyLeg,
+  updated: StrategyLeg
+): StrategyLeg {
+  const contractChanged =
+    original.expiry !== updated.expiry ||
+    original.segment !== updated.segment ||
+    original.strike !== updated.strike ||
+    original.optionType !== updated.optionType
+  return contractChanged ? { ...updated, iv: 0 } : updated
 }
 
 export function EditLegDialog({
@@ -47,9 +69,12 @@ export function EditLegDialog({
   optionExpiries,
   futureExpiries,
   chain,
+  chainExpiry,
+  underlying,
+  optionExchange,
+  apiKey,
   atmStrike = null,
   strikeStep = 0,
-  resolveContract,
   onSave,
   onDelete,
 }: EditLegDialogProps) {
@@ -60,109 +85,82 @@ export function EditLegDialog({
   const [lots, setLots] = useState(1)
   const [entryPrice, setEntryPrice] = useState('')
   const [exitPrice, setExitPrice] = useState('')
-  const [entryPriceError, setEntryPriceError] = useState<string | null>(null)
-  const [exitPriceError, setExitPriceError] = useState<string | null>(null)
-  const [resolvedContract, setResolvedContract] = useState<ResolvedLegMarket | null>(null)
-  const [contractError, setContractError] = useState<string | null>(null)
-  const [isPriceLoading, setIsPriceLoading] = useState(false)
-  const resolveGenerationRef = useRef(0)
-  const legRef = useRef(leg)
-  legRef.current = leg
-  const openLegSelectionKey = leg
-    ? [leg.id, leg.segment, leg.expiry, leg.strike ?? '', leg.optionType ?? ''].join(':')
-    : ''
 
-  // Hydrate the editable values, but never trust the persisted symbol or
-  // market metadata as proof that the contract is still listed. Resolve the
-  // exact stored selection on every open/leg identity change and keep Modify
-  // disabled until that validation completes.
+  // When the dialog opens for a leg, hydrate local state from it.
   useEffect(() => {
-    const currentLeg = legRef.current
-    const generation = ++resolveGenerationRef.current
-    if (!open || !currentLeg || openLegSelectionKey === '') {
-      setResolvedContract(null)
-      setIsPriceLoading(false)
-      return
-    }
-    const currentType = currentLeg.optionType ?? 'CE'
-    setSide(currentLeg.side)
-    setExpiry(currentLeg.expiry)
-    setStrike(currentLeg.strike)
-    setOptionType(currentType)
-    setLots(currentLeg.lots)
-    setEntryPrice(currentLeg.price.toString())
-    setExitPrice(currentLeg.exitPrice !== undefined ? currentLeg.exitPrice.toString() : '')
-    setEntryPriceError(null)
-    setExitPriceError(null)
-    setContractError(null)
-    setResolvedContract(null)
-    setIsPriceLoading(true)
-    void resolveContract(
-      currentLeg.expiry,
-      currentLeg.segment,
-      currentLeg.strike,
-      currentLeg.segment === 'OPTION' ? currentType : undefined
-    )
-      .then((contract) => {
-        if (generation !== resolveGenerationRef.current) return
-        if (contract === null) {
-          setContractError('Contract is not listed for this selection')
-          return
-        }
-        setResolvedContract(contract)
-      })
-      .catch(() => {
-        if (generation === resolveGenerationRef.current) {
-          setContractError('Unable to resolve this contract')
-        }
-      })
-      .finally(() => {
-        if (generation === resolveGenerationRef.current) setIsPriceLoading(false)
-      })
-  }, [open, openLegSelectionKey, resolveContract])
+    if (!leg) return
+    setSide(leg.side)
+    setExpiry(leg.expiry)
+    setStrike(leg.strike)
+    setOptionType(leg.optionType ?? 'CE')
+    setLots(leg.lots)
+    setEntryPrice(leg.price.toString())
+    setExitPrice(leg.exitPrice !== undefined && leg.exitPrice > 0 ? leg.exitPrice.toString() : '')
+  }, [leg])
 
-  const isClosed = exitPrice.trim() !== '' && parseFinitePrice(exitPrice).value !== null
+  const isClosed = exitPrice.trim() !== '' && Number(exitPrice) > 0
 
-  /** Resolve the exact listed selection; only the latest request may update the form. */
-  const resolveSelection = (
+  const [isPriceLoading, setIsPriceLoading] = useState(false)
+
+  /**
+   * Look up live LTP for the leg's current (strike, optionType, expiry) —
+   * or for futures, just (expiry) — and write it into the Entry Price field.
+   * Called explicitly from the Strike / Type / Expiry onChange handlers.
+   *
+   * Fast path: for option legs on the same expiry as the loaded chain, read
+   * LTP from chain (synchronous, no network).
+   * Slow path: for cross-expiry option legs OR any futures leg, build the
+   * symbol and fetch /quotes for it.
+   */
+  const syncEntryPriceFromChain = async (
     nextStrike: number | undefined,
     nextType: 'CE' | 'PE',
     nextExpiry: string
   ) => {
-    const generation = ++resolveGenerationRef.current
-    setResolvedContract(null)
-    setEntryPrice('')
-    setEntryPriceError(null)
-    setContractError(null)
-    const currentLeg = legRef.current
-    if (
-      !currentLeg ||
-      !nextExpiry ||
-      (currentLeg.segment === 'OPTION' && nextStrike === undefined)
-    ) {
-      setIsPriceLoading(false)
+    if (!leg || isClosed || !nextExpiry) return
+
+    // ── Options: try the chain first, fall back to /quotes ──
+    if (leg.segment === 'OPTION') {
+      if (nextStrike === undefined) return
+
+      if (chain && nextExpiry === chainExpiry) {
+        const row = chain.find((s) => s.strike === nextStrike)
+        const sideRow = nextType === 'CE' ? row?.ce : row?.pe
+        if (sideRow && sideRow.ltp > 0) {
+          setEntryPrice(sideRow.ltp.toString())
+        }
+        return
+      }
+
+      if (!apiKey || !underlying || !optionExchange) return
+      const symbol = buildOptionSymbol(underlying, nextExpiry, nextStrike, nextType)
+      await fetchAndSetLtp(symbol, optionExchange)
       return
     }
 
+    // ── Futures: only expiry matters ──
+    if (leg.segment === 'FUTURE') {
+      if (!apiKey || !underlying || !optionExchange) return
+      const symbol = buildFutureSymbol(underlying, nextExpiry)
+      await fetchAndSetLtp(symbol, optionExchange)
+    }
+  }
+
+  const fetchAndSetLtp = async (symbol: string, exchange: string) => {
     setIsPriceLoading(true)
-    void resolveContract(nextExpiry, currentLeg.segment, nextStrike, nextType)
-      .then((contract) => {
-        if (generation !== resolveGenerationRef.current) return
-        if (contract === null) {
-          setContractError('Contract is not listed for this selection')
-          return
-        }
-        setResolvedContract(contract)
-        setEntryPrice(String(contract.marketPrice))
-      })
-      .catch(() => {
-        if (generation === resolveGenerationRef.current) {
-          setContractError('Unable to resolve this contract')
-        }
-      })
-      .finally(() => {
-        if (generation === resolveGenerationRef.current) setIsPriceLoading(false)
-      })
+    try {
+      const res = await apiClient.post<{
+        status: string
+        data?: { ltp?: number }
+      }>('/quotes', { apikey: apiKey, symbol, exchange }, { validateStatus: () => true })
+      if (res.data.status === 'success' && res.data.data?.ltp) {
+        setEntryPrice(String(res.data.data.ltp))
+      }
+    } catch {
+      /* non-fatal — user can enter the price manually */
+    } finally {
+      setIsPriceLoading(false)
+    }
   }
 
   const availableExpiries = useMemo(
@@ -175,39 +173,19 @@ export function EditLegDialog({
   if (!leg) return null
 
   const handleSave = () => {
-    const parsedEntry = parseFinitePrice(entryPrice)
-    const parsedExit =
-      exitPrice.trim() === '' ? { value: null, error: null } : parseFinitePrice(exitPrice)
-    setEntryPriceError(parsedEntry.error)
-    setExitPriceError(parsedExit.error)
-    if (parsedEntry.error || parsedEntry.value === null || parsedExit.error || !resolvedContract) {
-      return
-    }
-
     const updated: StrategyLeg = {
       ...leg,
       side,
       expiry,
       lots: Math.max(1, lots),
-      price: parsedEntry.value,
-      exitPrice: parsedExit.value ?? undefined,
-      symbol: resolvedContract.symbol,
-      exchange: resolvedContract.exchange,
-      expiryTs: resolvedContract.expiryTs,
-      lotSize: resolvedContract.lotSize,
-      tickSize: resolvedContract.tickSize,
-      contractValid: resolvedContract.contractValid,
-      marketPrice: resolvedContract.marketPrice,
-      iv: resolvedContract.iv,
-      referenceUnderlying: resolvedContract.referenceUnderlying,
-      forwardPrice: resolvedContract.forwardPrice ?? undefined,
-      marketGreeks: resolvedContract.greeks,
+      price: Number(entryPrice) || leg.price,
+      exitPrice: exitPrice.trim() === '' ? undefined : Number(exitPrice) || undefined,
     }
     if (leg.segment === 'OPTION') {
       updated.strike = strike ?? leg.strike
       updated.optionType = optionType
     }
-    onSave(updated)
+    onSave(invalidateIvWhenContractChanges(leg, updated))
   }
 
   return (
@@ -228,10 +206,10 @@ export function EditLegDialog({
               value={expiry}
               onValueChange={(v) => {
                 setExpiry(v)
-                resolveSelection(strike, optionType, v)
+                syncEntryPriceFromChain(strike, optionType, v)
               }}
             >
-              <SelectTrigger aria-label="Expiry" className="h-10 text-sm font-semibold">
+              <SelectTrigger className="h-10 text-sm font-semibold">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -254,10 +232,10 @@ export function EditLegDialog({
                   onValueChange={(v) => {
                     const nextStrike = Number(v)
                     setStrike(nextStrike)
-                    resolveSelection(nextStrike, optionType, expiry)
+                    syncEntryPriceFromChain(nextStrike, optionType, expiry)
                   }}
                 >
-                  <SelectTrigger aria-label="Strike" className="h-10 text-sm font-semibold">
+                  <SelectTrigger className="h-10 text-sm font-semibold">
                     <SelectValue placeholder="Strike" />
                   </SelectTrigger>
                   <SelectContent>
@@ -296,10 +274,10 @@ export function EditLegDialog({
                   onValueChange={(v) => {
                     const nextType = v as 'CE' | 'PE'
                     setOptionType(nextType)
-                    resolveSelection(strike, nextType, expiry)
+                    syncEntryPriceFromChain(strike, nextType, expiry)
                   }}
                 >
-                  <SelectTrigger aria-label="Option type" className="h-10 text-sm font-semibold">
+                  <SelectTrigger className="h-10 text-sm font-semibold">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -369,73 +347,37 @@ export function EditLegDialog({
           {/* Entry Price */}
           <div className="space-y-1">
             <Input
-              aria-label="Entry price"
-              aria-invalid={entryPriceError !== null}
-              aria-describedby={entryPriceError ? 'entry-price-error' : undefined}
-              type="text"
-              inputMode="decimal"
+              type="number"
+              step="0.05"
               value={entryPrice}
-              onChange={(e) => {
-                setEntryPrice(e.target.value)
-                setEntryPriceError(null)
-              }}
+              onChange={(e) => setEntryPrice(e.target.value)}
               disabled={isPriceLoading}
               className="h-10 text-base font-semibold"
             />
-            {entryPriceError ? (
-              <p id="entry-price-error" role="alert" className="text-[11px] text-destructive">
-                {entryPriceError}
-              </p>
-            ) : (
-              <p className="text-[11px] text-muted-foreground">
-                {isPriceLoading
-                  ? 'Resolving listed contract…'
-                  : `Modify ${leg.segment === 'FUTURE' ? 'Futures' : 'Option'} Entry Price`}
-              </p>
-            )}
+            <p className="text-[11px] text-muted-foreground">
+              {isPriceLoading
+                ? 'Fetching live LTP…'
+                : `Modify ${leg.segment === 'FUTURE' ? 'Futures' : 'Option'} Entry Price`}
+            </p>
           </div>
 
           {/* Exit Price */}
           <div className="space-y-1">
             <Input
-              aria-label="Exit price"
-              aria-invalid={exitPriceError !== null}
-              aria-describedby={exitPriceError ? 'exit-price-error' : undefined}
-              type="text"
-              inputMode="decimal"
+              type="number"
+              step="0.05"
               value={exitPrice}
-              onChange={(e) => {
-                setExitPrice(e.target.value)
-                setExitPriceError(null)
-              }}
+              onChange={(e) => setExitPrice(e.target.value)}
               placeholder="0"
               className={cn(
                 'h-10 text-base font-semibold',
                 isClosed && 'border-rose-400 text-rose-600 dark:text-rose-400'
               )}
             />
-            {exitPriceError ? (
-              <p id="exit-price-error" role="alert" className="text-[11px] text-destructive">
-                {exitPriceError}
-              </p>
-            ) : (
-              <p className="text-[11px] text-muted-foreground">
-                Enter Exit Price {isClosed && '— leg will be marked as closed'}
-              </p>
-            )}
-          </div>
-
-          {(resolvedContract || contractError) && (
-            <p
-              className={cn(
-                'font-mono text-[11px]',
-                contractError ? 'text-destructive' : 'text-muted-foreground'
-              )}
-              role={contractError ? 'alert' : undefined}
-            >
-              {contractError ?? resolvedContract?.symbol}
+            <p className="text-[11px] text-muted-foreground">
+              Enter Exit Price {isClosed && '— leg will be marked as closed'}
             </p>
-          )}
+          </div>
         </div>
 
         <DialogFooter className="flex-row items-center justify-between gap-2 sm:justify-between">
@@ -443,11 +385,7 @@ export function EditLegDialog({
             Close
           </Button>
           <div className="ml-auto flex items-center gap-2">
-            <Button
-              size="sm"
-              onClick={handleSave}
-              disabled={isPriceLoading || resolvedContract === null}
-            >
+            <Button size="sm" onClick={handleSave}>
               Modify
             </Button>
             <Button

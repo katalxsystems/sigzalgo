@@ -18,11 +18,6 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# MCX index derivatives. Dhan classifies these as FUTIDX / OPTIDX, not the
-# FUTCOM / OPTFUT used by the commodity contracts, so the history API needs the
-# index instrument type for them.
-MCX_INDEX_UNDERLYINGS = ("MCXBULLDEX", "MCXMETLDEX", "MCXENRGDEX")
-
 
 def _get_dhan_client_id() -> str | None:
     """Extract Dhan client-id from BROKER_API_KEY env value."""
@@ -216,7 +211,6 @@ class BrokerData:
             "NFO": "NSE_FNO",  # NSE F&O
             "BFO": "BSE_FNO",  # BSE F&O
             "MCX": "MCX_COMM",  # MCX Commodity
-            "NCO": "NSE_COMM",  # NSE Commodity
             "CDS": "NSE_CURRENCY",  # NSE Currency
             "BCD": "BSE_CURRENCY",  # BSE Currency
             "NSE_INDEX": "IDX_I",  # NSE Index
@@ -276,20 +270,13 @@ class BrokerData:
                 # For stock futures
                 return "FUTSTK"
 
-        # NSE commodity derivatives, listed by Dhan as OPTFUT like MCX.
-        elif exchange == "NCO":
-            if symbol.endswith("CE") or symbol.endswith("PE"):
-                return "OPTFUT"
-            return "FUTCOM"
-
         # For commodity market (MCX)
         elif exchange == "MCX":
-            is_index = symbol.startswith(MCX_INDEX_UNDERLYINGS)
-            # For commodity options on futures, or options on an MCX index
+            # For commodity options on futures
             if symbol.endswith("CE") or symbol.endswith("PE"):
-                return "OPTIDX" if is_index else "OPTFUT"
-            # For commodity futures, or an MCX index future
-            return "FUTIDX" if is_index else "FUTCOM"
+                return "OPTFUT"
+            # For commodity futures
+            return "FUTCOM"
 
         # For currency market (CDS, BCD)
         elif exchange in ["CDS", "BCD"]:

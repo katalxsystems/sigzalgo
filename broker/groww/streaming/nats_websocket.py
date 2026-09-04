@@ -4,6 +4,7 @@ WebSocket implementation for Groww using minimal NATS authentication
 
 import base64
 import json
+import logging
 import os
 import ssl
 import threading
@@ -15,12 +16,10 @@ import certifi
 import requests
 import websocket
 
-from utils.logging import get_logger
-
 # Import our minimal implementations
 from . import groww_nats, groww_nkeys, groww_protobuf
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class GrowwNATSWebSocket:

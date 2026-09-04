@@ -16,9 +16,11 @@ Lifecycle:
   credentials; on revoke -> stop. Unchanged-token multi-session resumes never
   touch the adapter (issue #1591 invariant).
 
-FD hygiene: the registry holds at most one adapter per user; the previous
-adapter is always disconnect()ed (socket closed, threads exit) before a new
-one starts.
+FD hygiene: the registry holds at most one adapter per broker account_id
+(database.auth_db.Auth.name — a platform user may own several, e.g. two
+Zerodha accounts, each getting its own adapter slot here); the previous
+adapter for that same account_id is always disconnect()ed (socket closed,
+threads exit) before a new one starts.
 
 Disable with ORDER_UPDATES_ENABLED=FALSE in .env.
 """
@@ -54,10 +56,6 @@ _BROKER_FACTORIES: dict[str, tuple[str, str]] = {
     "nubra": ("broker.nubra.streaming.nubra_order_adapter", "create_nubra_order_adapter"),
     "arrow": ("broker.arrow.streaming.arrow_order_adapter", "create_arrow_order_adapter"),
     "kotak": ("broker.kotak.streaming.kotak_order_adapter", "create_kotak_order_adapter"),
-    "motilal": (
-        "broker.motilal.streaming.motilal_order_adapter",
-        "create_motilal_order_adapter",
-    ),
     "iiflcapital": (
         "broker.iiflcapital.streaming.iiflcapital_order_adapter",
         "create_iiflcapital_order_adapter",
@@ -77,27 +75,11 @@ _BROKER_FACTORIES: dict[str, tuple[str, str]] = {
     ),
 }
 
-# Brokers with no *usable* push mechanism fall back to REST-orderbook polling.
-#
-# groww: no push feed at all (its public API documents only REST live data).
-#
-# samco: same — Trade API v3.2 exposes exactly one socket (wss://stream.samco.in)
-# and it carries market data only. The documented streaming_type values are
-# "quote" and "quote2"; there is no order/trade confirmation stream, postback or
-# webhook anywhere in the v3.2 reference.
-#
-# fivepaisa: it does document an OrderTradeConfirmations WebSocket, but 5Paisa
-# permits only ONE feed connection per {access_token, client_code} and a new
-# connection evicts the existing one. A dedicated order socket therefore fights
-# the market-data adapter: each evicts the other ~150ms after connecting, and
-# both flap forever (verified live 2026-08-07 — see the header of
-# broker/fivepaisa/streaming/fivepaisa_order_adapter.py). Multiplexing order
-# updates onto the market-data socket instead is not viable either: that adapter
-# runs in the websocket_proxy *subprocess* under gunicorn+eventlet and Docker, so
-# the OrderUpdateEvent would be published on the wrong process's event bus.
-_POLLING_BROKERS = {"groww", "fivepaisa", "samco"}
+# Brokers with no push mechanism fall back to REST-orderbook polling.
+_POLLING_BROKERS = {"groww"}
 
-# user_id -> live adapter (BaseOrderUpdateAdapter or PollingOrderUpdateAdapter)
+# account_id (database.auth_db.Auth.name) -> live adapter
+# (BaseOrderUpdateAdapter or PollingOrderUpdateAdapter)
 _ADAPTERS: dict[str, object] = {}
 _LOCK = threading.Lock()
 
@@ -106,13 +88,15 @@ def _order_updates_enabled() -> bool:
     return os.getenv("ORDER_UPDATES_ENABLED", "TRUE").upper() != "FALSE"
 
 
-def _build_adapter(user_id: str, broker: str):
+def _build_adapter(account_id: str, broker: str):
     broker = (broker or "").lower()
 
     if broker in _POLLING_BROKERS:
         from websocket_proxy.order_adapter import PollingOrderUpdateAdapter
 
-        return PollingOrderUpdateAdapter(broker_name=broker, user_id=user_id)
+        # user_id= is the adapter class's own constructor parameter name
+        # (unrelated interface) — it receives our account_id value.
+        return PollingOrderUpdateAdapter(broker_name=broker, user_id=account_id)
 
     entry = _BROKER_FACTORIES.get(broker)
     if entry is None:
@@ -132,58 +116,59 @@ def _build_adapter(user_id: str, broker: str):
         logger.warning(f"Could not load order-update adapter for {broker}: {e}")
         return None
 
-    return factory(user_id)
+    return factory(account_id)
 
 
-def start_order_update_adapter(user_id: str, broker: str) -> bool:
+def start_order_update_adapter(account_id: str, broker: str) -> bool:
     """Start (or restart with fresh credentials) the order-update adapter for
-    a user's broker session. Any previous adapter is disconnected first."""
+    a broker account. Any previous adapter for the same account_id is
+    disconnected first."""
     if not _order_updates_enabled():
         return False
-    if not user_id or not broker:
+    if not account_id or not broker:
         return False
 
     with _LOCK:
-        _stop_locked(user_id)
+        _stop_locked(account_id)
         try:
-            adapter = _build_adapter(user_id, broker)
+            adapter = _build_adapter(account_id, broker)
         except Exception:
-            logger.exception(f"Failed to build order-update adapter for {broker}/{user_id}")
+            logger.exception(f"Failed to build order-update adapter for {broker}/{account_id}")
             return False
         if adapter is None:
             return False
         try:
             adapter.connect()
         except Exception:
-            logger.exception(f"Failed to start order-update adapter for {broker}/{user_id}")
+            logger.exception(f"Failed to start order-update adapter for {broker}/{account_id}")
             return False
-        _ADAPTERS[user_id] = adapter
-        logger.debug(f"Order-update adapter started for {broker}/{user_id}")
+        _ADAPTERS[account_id] = adapter
+        logger.debug(f"Order-update adapter started for {broker}/{account_id}")
         return True
 
 
-def stop_order_update_adapter(user_id: str) -> None:
-    """Stop and discard the order-update adapter for a user (logout/revoke)."""
+def stop_order_update_adapter(account_id: str) -> None:
+    """Stop and discard the order-update adapter for an account (logout/revoke)."""
     with _LOCK:
-        _stop_locked(user_id)
+        _stop_locked(account_id)
 
 
-def _stop_locked(user_id: str) -> None:
-    adapter = _ADAPTERS.pop(user_id, None)
+def _stop_locked(account_id: str) -> None:
+    adapter = _ADAPTERS.pop(account_id, None)
     if adapter is None:
         return
     try:
         adapter.disconnect()
-        logger.info(f"Order-update adapter stopped for user {user_id}")
+        logger.info(f"Order-update adapter stopped for account {account_id}")
     except Exception:
-        logger.exception(f"Error stopping order-update adapter for user {user_id}")
+        logger.exception(f"Error stopping order-update adapter for account {account_id}")
 
 
 def stop_all_order_update_adapters() -> None:
     """Disconnect every adapter (app shutdown)."""
     with _LOCK:
-        for user_id in list(_ADAPTERS.keys()):
-            _stop_locked(user_id)
+        for account_id in list(_ADAPTERS.keys()):
+            _stop_locked(account_id)
 
 
 def start_order_update_adapters_on_boot(db_ready=None) -> None:
@@ -201,7 +186,7 @@ def start_order_update_adapters_on_boot(db_ready=None) -> None:
             know the schema exists.
     """
     if not _order_updates_enabled():
-        logger.debug("Order-update adapters disabled via ORDER_UPDATES_ENABLED")
+        logger.info("Order-update adapters disabled via ORDER_UPDATES_ENABLED")
         return
 
     def _boot():
@@ -235,28 +220,11 @@ def start_order_update_adapters_on_boot(db_ready=None) -> None:
 
         try:
             from database.auth_db import Auth
-            from utils.session import has_login_this_trading_session
 
             sessions = Auth.query.filter_by(is_revoked=False).all()
             for auth_obj in sessions:
-                if not (auth_obj.name and auth_obj.broker):
-                    continue
-                # is_revoked alone is not proof the token still works. Indian
-                # broker tokens die at the daily rollover (~03:00 IST), but the
-                # row is only flagged revoked by the auto-expiry sweep, which
-                # runs from a before_request hook and therefore needs a browser
-                # request to fire. Between the rollover and the first request,
-                # a restart would otherwise start an adapter on a token the
-                # broker killed hours ago and sit in a 401 reconnect loop.
-                if not has_login_this_trading_session(auth_obj.name):
-                    logger.info(
-                        f"Order-update adapter not started for "
-                        f"{auth_obj.broker}/{auth_obj.name}: no login since today's "
-                        "session rollover, so the stored broker token is stale. "
-                        "It starts on the next broker login."
-                    )
-                    continue
-                start_order_update_adapter(auth_obj.name, auth_obj.broker)
+                if auth_obj.name and auth_obj.broker:
+                    start_order_update_adapter(auth_obj.name, auth_obj.broker)
             if not sessions:
                 logger.debug("No active broker sessions found; no order-update adapters started")
         except Exception:
@@ -282,9 +250,9 @@ def get_order_update_status() -> dict:
     """Diagnostics: which adapters are running and their connected state."""
     with _LOCK:
         return {
-            user_id: {
+            account_id: {
                 "broker": getattr(adapter, "broker_name", "unknown"),
                 "connected": bool(getattr(adapter, "connected", False)),
             }
-            for user_id, adapter in _ADAPTERS.items()
+            for account_id, adapter in _ADAPTERS.items()
         }

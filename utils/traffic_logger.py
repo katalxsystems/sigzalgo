@@ -6,7 +6,6 @@ from flask import g, has_request_context, request
 from database.traffic_db import TrafficLog, logs_session
 from utils.ip_helper import get_real_ip
 from utils.logging import get_logger
-from utils.url_redaction import redact_url_credentials
 
 logger = get_logger(__name__)
 
@@ -60,7 +59,7 @@ class TrafficLoggerMiddleware:
                 payload = {
                     "client_ip": get_real_ip(),
                     "method": request.method,
-                    "path": redact_url_credentials(request.path),
+                    "path": request.path,
                     "status_code": status_code,
                     "duration_ms": duration_ms,
                     "host": request.host,

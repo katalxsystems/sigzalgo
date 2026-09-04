@@ -1,15 +1,16 @@
 import hashlib
 import json
-import os
 
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 
 
-def authenticate_broker(request_token):
+def authenticate_broker(request_token, account_id=None):
     try:
-        # Fetching the necessary credentials from environment variables
-        BROKER_API_KEY = os.getenv("BROKER_API_KEY")
-        BROKER_API_SECRET = os.getenv("BROKER_API_SECRET")
+        # DB-first (per broker account), falling back to .env when no
+        # account_id is given or the account has no stored credentials.
+        BROKER_API_KEY = get_broker_api_key(account_id)
+        BROKER_API_SECRET = get_broker_api_secret(account_id)
 
         # Zerodha's endpoint for session token exchange
         url = "https://api.kite.trade/session/token"

@@ -1,7 +1,6 @@
 import { BookOpen, ExternalLink, Info, Loader2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { BrokerAuthSignOut } from '@/components/auth/BrokerAuthSignOut'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
@@ -32,7 +31,6 @@ const allBrokers = [
   { id: 'motilal', name: 'Motilal Oswal', authType: 'totp' },
   { id: 'fyers', name: 'Fyers', authType: 'oauth' },
   { id: 'groww', name: 'Groww', authType: 'totp' },
-  { id: 'hdfcsecurities', name: 'HDFC Securities', authType: 'oauth' },
   { id: 'hdfcsky', name: 'HDFC Sky', authType: 'oauth' },
   { id: 'ibulls', name: 'Ibulls', authType: 'totp' },
   { id: 'iifl', name: 'IIFL', authType: 'totp' },
@@ -56,27 +54,25 @@ const allBrokers = [
 
 interface BrokerConfig {
   broker_name: string
-  broker_api_key: string
-  redirect_url: string
 }
 
-// Helper function to get Flattrade API key
-function getFlattradeApiKey(fullKey: string): string {
-  if (!fullKey) return ''
-  const parts = fullKey.split(':::')
-  return parts.length > 1 ? parts[1] : fullKey
-}
-
-// Generate random state for OAuth
-function generateRandomState(): string {
-  const length = 16
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-  let result = ''
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length))
-  }
-  return result
-}
+// Brokers whose login is real external OAuth, handled by a server-side
+// /<broker>/initiate-oauth redirect (blueprints/brlogin.py) that resolves
+// the account's own API key and builds the broker's login URL. Every other
+// broker goes straight to its /<broker>/callback credential-entry route.
+// Mirrors utils/config.py's OAUTH_INITIATE_BROKERS — keep both in sync.
+const OAUTH_INITIATE_BROKERS = new Set([
+  'arrow',
+  'compositedge',
+  'dhan',
+  'flattrade',
+  'fyers',
+  'hdfcsky',
+  'paytm',
+  'pocketful',
+  'upstox',
+  'zerodha',
+])
 
 export default function BrokerSelect() {
   const { user } = useAuthStore()
@@ -120,113 +116,14 @@ export default function BrokerSelect() {
       return
     }
 
-    if (!brokerConfig) {
-      setError('Broker configuration not loaded')
-      return
-    }
-
     setIsSubmitting(true)
-    let loginUrl = ''
 
-    const { broker_api_key, redirect_url } = brokerConfig
-
-    // Build login URL based on broker type (matching original broker.html logic)
-    switch (selectedBroker) {
-      case 'fivepaisa':
-      case 'fivepaisaxts':
-      case 'aliceblue':
-      case 'angel':
-      case 'mstock':
-      case 'indmoney':
-      case 'deltaexchange':
-      case 'jainamxts':
-      case 'dhan_sandbox':
-      case 'definedge':
-      case 'firstock':
-      case 'samco':
-      case 'motilal':
-      case 'nubra':
-      case 'groww':
-      case 'ibulls':
-      case 'iifl':
-      case 'kotak':
-      case 'rmoney':
-      case 'shoonya':
-      case 'tradejini':
-      case 'tradesmart':
-      case 'wisdom':
-      case 'zebu':
-        // Brokers using callback route (form-based or redirect-based)
-        loginUrl = `/${selectedBroker}/callback`
-        break
-
-      case 'iiflcapital':
-        // Route via backend callback endpoint to centralize URL generation and
-        // avoid provider-specific redirect parameter parsing differences.
-        loginUrl = '/iiflcapital/callback'
-        break
-
-      case 'dhan':
-        loginUrl = '/dhan/initiate-oauth'
-        break
-
-      case 'compositedge':
-        loginUrl = `https://xts.compositedge.com/interactive/thirdparty?appKey=${broker_api_key}&returnURL=${redirect_url}`
-        break
-
-      case 'flattrade': {
-        const flattradeApiKey = getFlattradeApiKey(broker_api_key)
-        loginUrl = `https://auth.flattrade.in/?app_key=${flattradeApiKey}`
-        break
-      }
-
-      case 'fyers':
-        loginUrl = `https://api-t1.fyers.in/api/v3/generate-authcode?client_id=${broker_api_key}&redirect_uri=${redirect_url}&response_type=code&state=2e9b44629ebb28226224d09db3ffb47c`
-        break
-
-      case 'upstox':
-        loginUrl = `https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id=${broker_api_key}&redirect_uri=${redirect_url}`
-        break
-
-      case 'zerodha':
-        loginUrl = `https://kite.trade/connect/login?api_key=${broker_api_key}`
-        break
-
-      case 'arrow':
-        // Arrow hosted login; redirects back to /arrow/callback with request-token.
-        loginUrl = `https://app.arrow.trade/app/login?appID=${broker_api_key}`
-        break
-
-      case 'hdfcsecurities':
-        // HDFC Securities InvestRight hosted login (credentials + 2FA +
-        // consent); redirects back to the app's registered callback with a
-        // request token.
-        loginUrl = `https://developer.hdfcsec.com/oapi/v1/login?api_key=${broker_api_key}`
-        break
-
-      case 'hdfcsky':
-        // HDFC Sky hosted login (credentials + 2FA + consent); redirects back
-        // to the app's registered callback with a request token.
-        loginUrl = `https://developer.hdfcsky.com/oapi/v1/login?api_key=${broker_api_key}`
-        break
-
-      case 'paytm':
-        loginUrl = `https://login.paytmmoney.com/merchant-login?apiKey=${broker_api_key}&state={default}`
-        break
-
-      case 'pocketful': {
-        const state = generateRandomState()
-        localStorage.setItem('pocketful_oauth_state', state)
-        const scope = 'orders holdings'
-        loginUrl = `https://trade.pocketful.in/oauth2/auth?client_id=${broker_api_key}&redirect_uri=${redirect_url}&response_type=code&scope=${encodeURIComponent(scope)}&state=${encodeURIComponent(state)}`
-        break
-      }
-
-      default:
-        setError('Please select a broker')
-        setIsSubmitting(false)
-        return
-    }
+    // The backend resolves this account's own API key (DB-first, .env
+    // fallback) and builds the broker-specific login URL server-side — see
+    // blueprints/brlogin.py's /<broker>/initiate-oauth routes.
+    const loginUrl = OAUTH_INITIATE_BROKERS.has(selectedBroker)
+      ? `/${selectedBroker}/initiate-oauth`
+      : `/${selectedBroker}/callback`
 
     // Use setTimeout to ensure state updates complete before navigation
     setTimeout(() => {
@@ -314,10 +211,6 @@ export default function BrokerSelect() {
                   )}
                 </Button>
               </form>
-
-              <div className="mt-6 text-center text-sm">
-                <BrokerAuthSignOut />
-              </div>
             </CardContent>
           </Card>
 

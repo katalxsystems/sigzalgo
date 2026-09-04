@@ -2,10 +2,10 @@ import json
 import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
 
+from database.auth_db import list_broker_accounts
 from database.market_calendar_db import (
     DEFAULT_MARKET_TIMINGS,
     SUPPORTED_EXCHANGES,
@@ -26,9 +26,10 @@ from database.qty_freeze_db import (
     load_freeze_qty_from_csv,
 )
 from database.qty_freeze_db import db_session as freeze_db_session
+from database.user_db import list_users
 from limiter import limiter
 from utils.logging import get_logger
-from utils.session import check_session_validity
+from utils.session import admin_required
 
 logger = get_logger(__name__)
 
@@ -53,7 +54,7 @@ def ratelimit_handler(e):
 # React routes are defined in react_app.py
 
 # @admin_bp.route('/')
-# @check_session_validity
+# @admin_required
 # @limiter.limit(API_RATE_LIMIT)
 # def index():
 #     """Admin dashboard with links to all admin functions"""
@@ -64,7 +65,7 @@ def ratelimit_handler(e):
 #                           holiday_count=holiday_count)
 
 # @admin_bp.route('/freeze')
-# @check_session_validity
+# @admin_required
 # @limiter.limit(API_RATE_LIMIT)
 # def freeze_qty():
 #     """View freeze quantities"""
@@ -108,7 +109,7 @@ def ratelimit_handler(e):
 
 
 @admin_bp.route("/api/stats")
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_stats():
     """Get admin dashboard stats"""
@@ -123,13 +124,29 @@ def api_stats():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@admin_bp.route("/api/users")
+@admin_required
+@limiter.limit(API_RATE_LIMIT)
+def api_users():
+    """List every platform user (admin only). Never returns password_hash
+    or totp_secret -- database.user_db.list_users() already excludes them."""
+    try:
+        users = list_users()
+        for user in users:
+            user["broker_account_count"] = len(list_broker_accounts(user["username"]))
+        return jsonify({"status": "success", "data": users})
+    except Exception as e:
+        logger.exception(f"Error listing users: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 # ============================================================================
 # Freeze Quantity API Endpoints
 # ============================================================================
 
 
 @admin_bp.route("/api/freeze")
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_freeze_list():
     """Get all freeze quantities"""
@@ -155,7 +172,7 @@ def api_freeze_list():
 
 
 @admin_bp.route("/api/freeze", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_freeze_add():
     """Add a new freeze quantity entry"""
@@ -201,7 +218,7 @@ def api_freeze_add():
 
 
 @admin_bp.route("/api/freeze/<int:id>", methods=["PUT"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_freeze_edit(id):
     """Edit a freeze quantity entry"""
@@ -239,7 +256,7 @@ def api_freeze_edit(id):
 
 
 @admin_bp.route("/api/freeze/<int:id>", methods=["DELETE"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_freeze_delete(id):
     """Delete a freeze quantity entry"""
@@ -261,7 +278,7 @@ def api_freeze_delete(id):
 
 
 @admin_bp.route("/api/freeze/upload", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit("10/minute")
 def api_freeze_upload():
     """Upload CSV file to update freeze quantities"""
@@ -310,7 +327,7 @@ def api_freeze_upload():
 
 
 @admin_bp.route("/api/holidays")
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_holidays_list():
     """Get holidays for a specific year"""
@@ -367,7 +384,7 @@ def api_holidays_list():
 
 
 @admin_bp.route("/api/holidays", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_holiday_add():
     """Add a new holiday"""
@@ -446,7 +463,7 @@ def api_holiday_add():
 
 
 @admin_bp.route("/api/holidays/<int:id>", methods=["DELETE"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_holiday_delete(id):
     """Delete a holiday"""
@@ -474,7 +491,7 @@ def api_holiday_delete(id):
 
 
 @admin_bp.route("/api/timings")
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_timings_list():
     """Get all market timings"""
@@ -515,7 +532,7 @@ def api_timings_list():
 
 
 @admin_bp.route("/api/timings/<exchange>", methods=["PUT"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_timings_edit(exchange):
     """Edit market timing for an exchange"""
@@ -554,7 +571,7 @@ def api_timings_edit(exchange):
 
 
 @admin_bp.route("/api/timings/check", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_timings_check():
     """Check market timings for a specific date"""
@@ -592,7 +609,7 @@ def api_timings_check():
 # ============================================================================
 #
 # Security model for this section:
-#   - All endpoints require a valid admin session (@check_session_validity).
+#   - All endpoints require a valid admin session (@admin_required).
 #   - All endpoints are rate-limited.
 #   - Inputs from the client are validated against allowlists; ints are clamped.
 #   - File reads are restricted to a fixed log directory resolved at call time
@@ -785,7 +802,7 @@ def _parse_jsonl_lines(raw_lines):
 
 
 @admin_bp.route("/api/errors")
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_errors_list():
     """Return recent entries from log/errors.jsonl (read-only, sandboxed)."""
@@ -856,27 +873,6 @@ _MAX_CLIENT_URL_LEN = 2000
 _MAX_CLIENT_COMPONENT_STACK_LEN = 5000
 _MAX_CLIENT_USER_AGENT_LEN = 500
 _CLIENT_LEVEL_ALLOWLIST = frozenset({"ERROR", "WARN"})
-_REDACTED_CLIENT_URL_VALUE = "[redacted]"
-_SENSITIVE_CLIENT_URL_QUERY_PARAMETER_NAMES = frozenset(
-    {
-        "token",
-        "code",
-        "requesttoken",
-        "accesstoken",
-        "authtoken",
-        "refreshtoken",
-        "resettoken",
-        "apikey",
-        "email",
-        "state",
-        "password",
-        "otp",
-        "secret",
-        "clientsecret",
-        "idtoken",
-        "jwt",
-    }
-)
 
 # Logger dedicated to browser-reported errors. Distinct name so they're easy
 # to filter in errors.jsonl and in the grouped view.
@@ -899,34 +895,8 @@ def _scrub_control_chars(text):
     return "".join(ch for ch in text if ch == "\n" or ch == "\t" or (ch.isprintable()))
 
 
-def _sanitize_client_error_url(url):
-    """Redact sensitive query values and remove fragments before logging a URL."""
-    try:
-        parsed = urlsplit(url)
-    except ValueError:
-        return url.split("?", 1)[0].split("#", 1)[0]
-
-    if parsed.scheme in {"", "http", "https"}:
-        query = urlencode(
-            [
-                (
-                    key,
-                    _REDACTED_CLIENT_URL_VALUE
-                    if key.lower().replace("_", "").replace("-", "")
-                    in _SENSITIVE_CLIENT_URL_QUERY_PARAMETER_NAMES
-                    else value,
-                )
-                for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-            ]
-        )
-        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, ""))
-    if parsed.scheme.endswith("-extension"):
-        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
-    return f"{parsed.scheme}:"
-
-
 @admin_bp.route("/api/errors/client", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(_CLIENT_REPORT_RATE)
 def api_errors_client_report():
     """Receive a browser-side error report and route it into errors.jsonl.
@@ -945,9 +915,7 @@ def api_errors_client_report():
 
         message = _scrub_control_chars(str(data.get("message") or ""))[:_MAX_CLIENT_MESSAGE_LEN]
         stack = _scrub_control_chars(str(data.get("stack") or ""))[:_MAX_CLIENT_STACK_LEN]
-        url = _sanitize_client_error_url(
-            _scrub_control_chars(str(data.get("url") or ""))
-        )[:_MAX_CLIENT_URL_LEN]
+        url = _scrub_control_chars(str(data.get("url") or ""))[:_MAX_CLIENT_URL_LEN]
         component_stack = _scrub_control_chars(str(data.get("component_stack") or ""))[
             :_MAX_CLIENT_COMPONENT_STACK_LEN
         ]
@@ -987,7 +955,7 @@ def api_errors_client_report():
 
 
 @admin_bp.route("/api/errors/stats")
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_errors_stats():
     """Return error counts by level and recent (1h, 24h) windows."""
@@ -1084,7 +1052,7 @@ def _fingerprint_entry(entry):
 
 
 @admin_bp.route("/api/errors/groups")
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_errors_groups():
     """Aggregate errors.jsonl entries by fingerprint. Returns top groups by count."""
@@ -1492,7 +1460,7 @@ def _build_system_payload():
 
 
 @admin_bp.route("/api/system")
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_system_info():
     """Return a snapshot of host, runtime, hardware, build, brokers, mode."""
@@ -1534,16 +1502,12 @@ def _check_db_read():
 def _check_loopback_http():
     """HEAD the local Flask app — measures internal request latency.
 
-    Candidate targets, because the listening topology differs by install, in
-    the same resolution order as blueprints/mcp_http.py:
-      - MCP_LOOPBACK_URL: explicit override for unusual topologies. Tried
-        first, since an operator who had to set it did so precisely because
-        neither default answers (GitHub issue #1441).
+    Two candidate targets, because the listening topology differs by install:
       - Docker / dev server: gunicorn (or Flask) listens on TCP
         127.0.0.1:{FLASK_PORT|PORT}.
       - Ubuntu install.sh: gunicorn binds to a UNIX SOCKET behind nginx — no
         TCP port answers locally, so HOST_SERVER via nginx is the only
-        loopback that works.
+        loopback that works (same resolution as blueprints/mcp_http.py).
     Trying only the TCP port made this check a guaranteed false alarm on
     every native Ubuntu install (GitHub issue #1483).
     """
@@ -1553,23 +1517,19 @@ def _check_loopback_http():
     # FLASK_PORT is the canonical OpenAlgo var; PORT is the Docker/Railway
     # convention (gunicorn binds to ${PORT:-5000} in start.sh).
     port = os.getenv("FLASK_PORT") or os.getenv("PORT") or "5000"
-
-    targets = []
-    override = (os.getenv("MCP_LOOPBACK_URL") or "").strip().rstrip("/")
-    if override:
-        targets.append((f"{override}/", "MCP_LOOPBACK_URL"))
-    targets.append((f"http://127.0.0.1:{port}/", "direct"))
+    targets = [f"http://127.0.0.1:{port}/"]
     host_server = (os.getenv("HOST_SERVER") or "").strip().rstrip("/")
     if host_server and "127.0.0.1" not in host_server and "localhost" not in host_server:
-        targets.append((f"{host_server}/", "via nginx (unix-socket bind)"))
+        targets.append(f"{host_server}/")
 
     last_error = "no target answered"
-    for target, label in targets:
+    for target in targets:
         started = time.perf_counter()
         try:
             req = urllib.request.Request(target, method="HEAD")
             with urllib.request.urlopen(req, timeout=3.0) as resp:
                 elapsed = round((time.perf_counter() - started) * 1000, 1)
+                label = "direct" if "127.0.0.1" in target else "via nginx (unix-socket bind)"
                 return {
                     "name": "Loopback HTTP",
                     "ok": resp.status < 500,
@@ -1675,7 +1635,7 @@ def _check_active_broker_tcp():
 
 
 @admin_bp.route("/api/system/diagnostics", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(_DIAG_RATE)
 def api_system_diagnostics():
     """Run a fixed set of latency/connectivity probes. No client-supplied targets."""
@@ -1862,7 +1822,7 @@ def _render_report(payload, errors_summary, errors_recent, fmt):
 
 
 @admin_bp.route("/api/system/report")
-@check_session_validity
+@admin_required
 @limiter.limit(_REPORT_RATE)
 def api_system_report():
     """Download a sanitized system report as .md or .txt for community support posts."""
@@ -1934,7 +1894,7 @@ def api_system_report():
 # render an "MCP is disabled" hint without lighting up errors.
 #
 # Security:
-#   - All endpoints @check_session_validity (admin session required)
+#   - All endpoints @admin_required (admin session required)
 #   - Rate-limited the same as other admin/api/* endpoints
 #   - Kill switch and revoke require explicit ``confirm`` parameter so an
 #     accidental form submit can't disconnect every active token
@@ -1979,7 +1939,7 @@ def _serialize_oauth_client(c) -> dict:
 
 
 @admin_bp.route("/api/oauth/clients", methods=["GET"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_oauth_clients_list():
     """List every DCR-registered OAuth client.
@@ -2023,7 +1983,7 @@ def api_oauth_clients_list():
 
 
 @admin_bp.route("/api/oauth/clients/<client_id>/approve", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_oauth_client_approve(client_id):
     """Approve a pending DCR client so it can complete the OAuth flow."""
@@ -2063,7 +2023,7 @@ def api_oauth_client_approve(client_id):
 
 
 @admin_bp.route("/api/oauth/clients/<client_id>/revoke", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_oauth_client_revoke(client_id):
     """Revoke a client and every refresh token it owns.
@@ -2118,7 +2078,7 @@ _MCP_AUDIT_MAX_LIMIT = 500
 
 
 @admin_bp.route("/api/mcp/audit", methods=["GET"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_mcp_audit():
     """Tail log/mcp.jsonl. Mirrors the /admin/api/errors design.
@@ -2218,7 +2178,7 @@ def api_mcp_audit():
 
 
 @admin_bp.route("/api/mcp/kill-switch", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit("10/minute")
 def api_mcp_kill_switch():
     """Atomic revoke of every refresh token. Requires explicit confirmation.
@@ -2347,7 +2307,7 @@ def _mcp_settings_payload() -> dict:
 
 
 @admin_bp.route("/api/mcp/settings", methods=["GET"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_mcp_settings_get():
     """Return the current MCP settings (master switch + posture toggles).
@@ -2359,7 +2319,7 @@ def api_mcp_settings_get():
 
 
 @admin_bp.route("/api/mcp/settings", methods=["PUT"])
-@check_session_validity
+@admin_required
 @limiter.limit("30/minute")
 def api_mcp_settings_put():
     """Update MCP settings in .env. Returns restart_required=True.

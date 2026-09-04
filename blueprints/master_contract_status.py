@@ -9,7 +9,7 @@ from utils.auth_utils import (
     should_download_master_contract,
 )
 from utils.logging import get_logger
-from utils.session import check_session_validity
+from utils.session import require_app_session
 
 logger = get_logger(__name__)
 
@@ -17,7 +17,7 @@ master_contract_status_bp = Blueprint("master_contract_status_bp", __name__, url
 
 
 @master_contract_status_bp.route("/master-contract/status", methods=["GET"])
-@check_session_validity
+@require_app_session
 def get_master_contract_status():
     """Get the current master contract download status"""
     try:
@@ -34,7 +34,7 @@ def get_master_contract_status():
 
 
 @master_contract_status_bp.route("/master-contract/ready", methods=["GET"])
-@check_session_validity
+@require_app_session
 def check_master_contract_ready():
     """Check if master contracts are ready for trading"""
     try:
@@ -60,7 +60,7 @@ def check_master_contract_ready():
 
 
 @master_contract_status_bp.route("/cache/status", methods=["GET"])
-@check_session_validity
+@require_app_session
 def get_cache_status():
     """Get the current symbol cache status and statistics"""
     try:
@@ -80,7 +80,7 @@ def get_cache_status():
 
 
 @master_contract_status_bp.route("/cache/health", methods=["GET"])
-@check_session_validity
+@require_app_session
 def get_cache_health():
     """Get cache health metrics and recommendations"""
     try:
@@ -109,7 +109,7 @@ def get_cache_health():
 
 
 @master_contract_status_bp.route("/cache/reload", methods=["POST"])
-@check_session_validity
+@require_app_session
 def reload_cache():
     """Manually trigger cache reload"""
     try:
@@ -141,7 +141,7 @@ def reload_cache():
 
 
 @master_contract_status_bp.route("/cache/clear", methods=["POST"])
-@check_session_validity
+@require_app_session
 def clear_cache():
     """Manually clear the cache"""
     try:
@@ -161,7 +161,7 @@ def clear_cache():
 
 
 @master_contract_status_bp.route("/master-contract/download", methods=["POST"])
-@check_session_validity
+@require_app_session
 def force_master_contract_download():
     """Force a fresh master contract download regardless of smart download logic"""
     try:
@@ -203,7 +203,7 @@ def force_master_contract_download():
 
 
 @master_contract_status_bp.route("/master-contract/smart-status", methods=["GET"])
-@check_session_validity
+@require_app_session
 def get_smart_download_status():
     """Get detailed status including smart download information"""
     try:

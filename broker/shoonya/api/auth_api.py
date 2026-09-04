@@ -1,25 +1,25 @@
 import hashlib
 import json
-import os
 
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def authenticate_broker(code):
+def authenticate_broker(code, account_id=None):
     """
     Authenticate with Shoonya using the new GenAcsTok flow.
     Exchanges the code for an access token.
     """
     try:
         # BROKER_API_KEY format: userid:::client_id
-        full_api_key = os.getenv("BROKER_API_KEY")
+        full_api_key = get_broker_api_key(account_id)
         if not full_api_key or ":::" not in full_api_key:
             return None, "BROKER_API_KEY must be in format userid:::client_id"
         client_id = full_api_key.split(":::")[1]  # appKey / client_id
-        secret_key = os.getenv("BROKER_API_SECRET")
+        secret_key = get_broker_api_secret(account_id)
         if not secret_key:
             return None, "BROKER_API_SECRET is required"
 

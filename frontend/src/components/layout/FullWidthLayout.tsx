@@ -7,14 +7,12 @@ import { useAuthStore } from '@/stores/authStore'
  * No container constraints, minimal chrome.
  */
 export function FullWidthLayout() {
-  const { isAuthenticated, user } = useAuthStore()
+  const { user } = useAuthStore()
 
-  if (!isAuthenticated) {
+  // `user` is non-null for any valid app session, whether or not a broker
+  // is connected yet — see Layout.tsx for the same change and rationale.
+  if (!user) {
     return <Navigate to="/login" replace />
-  }
-
-  if (!user?.broker) {
-    return <Navigate to="/broker" replace />
   }
 
   return (
