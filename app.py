@@ -45,7 +45,7 @@ mimetypes.add_type("application/font-woff", ".woff")
 mimetypes.add_type("application/font-woff2", ".woff2")
 
 from flask import Flask, session
-from flask_wtf.csrf import CSRFProtect  # Import CSRF protection
+from flask_wtf.csrf import CSRFError, CSRFProtect  # Import CSRF protection
 
 from blueprints.admin import admin_bp  # Import the admin blueprint
 from blueprints.analyzer import analyzer_bp  # Import the analyzer blueprint
@@ -545,29 +545,35 @@ def create_app():
             session.clear()
             # Don't redirect here, let individual routes handle it
 
-    @app.errorhandler(400)
+    @app.errorhandler(CSRFError)
     def csrf_error(error):
-        """Custom handler for CSRF errors (400 Bad Request)"""
+        """Dedicated handler for Flask-WTF CSRFError (a 400 subclass).
+
+        Registered on the exception class itself rather than relying on the
+        generic 400 handler's string-matching on the description — Flask-WTF's
+        referrer checks ("The referrer header is missing.", "The referrer does
+        not match the host.") don't contain the word "csrf", so that matching
+        let them fall through to a raw-text 400 body that non-browser/JSON
+        clients can't parse.
+        """
         from flask import flash, jsonify, redirect, request, url_for
 
-        error_description = str(error)
+        logger.warning(f"CSRF Error on {request.path}: {error.description}")
 
-        logger.warning(f"CSRF Error on {request.path}: {error_description}")
+        if request.is_json or request.path.startswith("/api"):
+            return jsonify(
+                {
+                    "error": "CSRF validation failed",
+                    "message": "Security token expired or invalid. Please refresh the page and try again.",
+                }
+            ), 400
+        else:
+            flash("Security token expired. Please try again.", "error")
+            return redirect(request.referrer or url_for("auth.login"))
 
-        # Check if it's a CSRF error
-        if "CSRF" in error_description or "csrf" in error_description.lower():
-            if request.is_json or request.path.startswith("/api"):
-                return jsonify(
-                    {
-                        "error": "CSRF validation failed",
-                        "message": "Security token expired or invalid. Please refresh the page and try again.",
-                    }
-                ), 400
-            else:
-                flash("Security token expired. Please try again.", "error")
-                return redirect(request.referrer or url_for("auth.login"))
-
-        # For other 400 errors
+    @app.errorhandler(400)
+    def bad_request_error(error):
+        """Fallback handler for non-CSRF 400 errors."""
         return str(error), 400
 
     @app.errorhandler(404)
