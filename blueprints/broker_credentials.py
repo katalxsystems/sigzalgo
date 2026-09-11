@@ -25,7 +25,7 @@ from utils.config import (
     get_broker_redirect_url,
 )
 from utils.logging import get_logger
-from utils.session import check_session_validity, require_app_session
+from utils.session import require_app_session
 
 logger = get_logger(__name__)
 
@@ -132,9 +132,16 @@ def get_broker_from_redirect_url(redirect_url: str) -> str:
 
 
 @broker_credentials_bp.route("/credentials", methods=["GET"])
-@check_session_validity
+@require_app_session
 def get_credentials():
-    """Get current broker credentials (masked)."""
+    """Get current broker credentials (masked).
+
+    Must not require a connected broker (@check_session_validity would 401
+    and hard-clear the whole session, same reasoning as get_capabilities()
+    below): this is exactly the data a broker-less user needs to see the
+    list of VALID_BROKERS and connect their first one, or a multi-account
+    user needs to add another account from the Profile page's Accounts tab.
+    """
     try:
         # Broker-identity fields: DB-first (Profile > Broker save), falling
         # back to .env for installs that haven't saved via the DB-backed UI
@@ -196,7 +203,7 @@ def get_credentials():
 
 
 @broker_credentials_bp.route("/credentials", methods=["POST"])
-@check_session_validity
+@require_app_session
 def update_credentials():
     """Update broker credentials: broker-identity fields go to the DB
     (immediate effect), infra fields go to .env (restart required)."""

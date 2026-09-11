@@ -214,7 +214,7 @@ export default function GoCharting() {
             <strong>Webhook URL not accessible!</strong> GoCharting cannot send alerts to localhost.
             Use <strong>ngrok</strong>, <strong>Cloudflare Tunnel</strong>,{' '}
             <strong>VS Code Dev Tunnel</strong>, or a <strong>custom domain</strong> to expose your
-            OpenAlgo instance to the internet. Update <code>HOST_SERVER</code> in your{' '}
+            AlgoZ instance to the internet. Update <code>HOST_SERVER</code> in your{' '}
             <code>.env</code> file with your external URL.
           </AlertDescription>
         </Alert>

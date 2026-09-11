@@ -321,7 +321,7 @@ export default function Search() {
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
     const a = document.createElement('a')
     a.href = url
-    a.download = `openalgo-search-${ts}.csv`
+    a.download = `algoz-search-${ts}.csv`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)

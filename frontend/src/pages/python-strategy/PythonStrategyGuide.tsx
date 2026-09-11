@@ -14,14 +14,14 @@ import { showToast } from '@/utils/toast'
 const sampleStrategy = `"""
 ===============================================================================
                 EMA CROSSOVER WITH FIXED DATETIME HANDLING
-                            OpenAlgo Trading Bot
+                            AlgoZ Trading Bot
 ===============================================================================
 
 Run standalone:
     export OPENALGO_API_KEY="your-api-key"
     python emacrossover_strategy_python.py
 
-Run via OpenAlgo's /python strategy runner:
+Run via AlgoZ's /python strategy runner:
     OPENALGO_API_KEY            : injected per-strategy (PR #1247).
     OPENALGO_STRATEGY_EXCHANGE  : set from the strategy's \`exchange\` config
                                   (NSE / BSE / NFO / BFO / MCX / BCD / CDS / CRYPTO).
@@ -29,7 +29,7 @@ Run via OpenAlgo's /python strategy runner:
                                   the host's calendar/holiday gating, so the two
                                   always agree.
     STRATEGY_ID / STRATEGY_NAME : injected for log/order tagging.
-    HOST_SERVER / WEBSOCKET_URL : inherited from OpenAlgo's .env.
+    HOST_SERVER / WEBSOCKET_URL : inherited from AlgoZ's .env.
     No code changes required.
 """
 
@@ -46,10 +46,10 @@ from openalgo import api
 # ===============================================================================
 
 # API Configuration — read from environment with sensible fallbacks.
-# When launched via OpenAlgo's /python runner, these come from the platform:
+# When launched via AlgoZ's /python runner, these come from the platform:
 #   OPENALGO_API_KEY : injected per-strategy (decrypted from DB)
-#   HOST_SERVER      : inherited from OpenAlgo's .env
-#   WEBSOCKET_URL    : inherited from OpenAlgo's .env
+#   HOST_SERVER      : inherited from AlgoZ's .env
+#   WEBSOCKET_URL    : inherited from AlgoZ's .env
 API_KEY = os.getenv("OPENALGO_API_KEY", "openalgo-apikey")
 API_HOST = os.getenv("HOST_SERVER", "http://127.0.0.1:5000")
 WS_URL = os.getenv("WEBSOCKET_URL", "ws://127.0.0.1:8765")
@@ -299,7 +299,7 @@ export default function PythonStrategyGuide() {
       <div className="space-y-2">
         <h1 className="text-2xl font-bold tracking-tight">Python Strategy Guide</h1>
         <p className="text-muted-foreground">
-          Self-host automated trading strategies inside OpenAlgo. Each strategy runs as an isolated
+          Self-host automated trading strategies inside AlgoZ. Each strategy runs as an isolated
           subprocess with its own process, memory, and log file &mdash; managed through the{' '}
           <Link to="/python" className="text-primary hover:underline">
             /python
@@ -321,7 +321,7 @@ export default function PythonStrategyGuide() {
                 1
               </Badge>
               <div>
-                <p className="font-medium">Install OpenAlgo SDK</p>
+                <p className="font-medium">Install AlgoZ SDK</p>
                 <div className="mt-1 flex items-center gap-2">
                   <code className="bg-muted px-2 py-1 rounded text-sm">pip install openalgo</code>
                   <Button
@@ -345,7 +345,7 @@ export default function PythonStrategyGuide() {
                   <Link to="/apikey" className="text-primary hover:underline">
                     API Key
                   </Link>{' '}
-                  page and copy your OpenAlgo API key
+                  page and copy your AlgoZ API key
                 </p>
               </div>
             </div>
@@ -509,8 +509,8 @@ export default function PythonStrategyGuide() {
           <div>
             <p className="font-medium mb-2">Inherited from .env</p>
             <p className="text-sm text-muted-foreground mb-3">
-              Strategies inherit every variable from OpenAlgo's <code>.env</code> via{' '}
-              <code>os.environ.copy()</code>. The key ones for connecting back to OpenAlgo:
+              Strategies inherit every variable from AlgoZ's <code>.env</code> via{' '}
+              <code>os.environ.copy()</code>. The key ones for connecting back to AlgoZ:
             </p>
             <div className="overflow-x-auto">
               <table className="w-full text-sm border-collapse">
@@ -1013,7 +1013,7 @@ export default function PythonStrategyGuide() {
                   <div className="bg-muted p-3 rounded-lg">
                     <p className="font-medium">Manual Override</p>
                     <p className="mt-1">
-                      Log in to OpenAlgo before the session, wait for master contracts to download,
+                      Log in to AlgoZ before the session, wait for master contracts to download,
                       and click <strong>Start</strong> manually. Click <strong>Stop</strong> when
                       the session ends.
                     </p>
@@ -1031,7 +1031,7 @@ export default function PythonStrategyGuide() {
                 </p>
                 <p>Master contracts are automatically downloaded when you:</p>
                 <ol className="list-decimal list-inside space-y-1 ml-2">
-                  <li>Log in to OpenAlgo</li>
+                  <li>Log in to AlgoZ</li>
                   <li>Wait for the download to complete (shown in header)</li>
                 </ol>
                 <p className="text-sm">
@@ -1045,7 +1045,7 @@ export default function PythonStrategyGuide() {
               <AccordionContent className="text-muted-foreground space-y-3">
                 <p>
                   On Linux/macOS, per-strategy resource limits prevent buggy scripts from crashing
-                  OpenAlgo. On Windows, these are not enforced at the OS level.
+                  AlgoZ. On Windows, these are not enforced at the OS level.
                 </p>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm border-collapse">
@@ -1112,9 +1112,9 @@ export default function PythonStrategyGuide() {
             </AccordionItem>
 
             <AccordionItem value="restart">
-              <AccordionTrigger>What happens if I restart OpenAlgo?</AccordionTrigger>
+              <AccordionTrigger>What happens if I restart AlgoZ?</AccordionTrigger>
               <AccordionContent className="text-muted-foreground space-y-3">
-                <p>OpenAlgo handles restarts gracefully:</p>
+                <p>AlgoZ handles restarts gracefully:</p>
                 <ul className="list-disc list-inside space-y-1 ml-2">
                   <li>Strategy configurations are saved to disk and persist</li>
                   <li>Schedules are automatically re-created for all strategies</li>
@@ -1204,7 +1204,7 @@ export default function PythonStrategyGuide() {
               </AccordionTrigger>
               <AccordionContent className="text-muted-foreground space-y-3">
                 <p>
-                  If your strategy needs additional Python libraries, install them in OpenAlgo's
+                  If your strategy needs additional Python libraries, install them in AlgoZ's
                   environment.
                 </p>
 
@@ -1219,7 +1219,7 @@ export default function PythonStrategyGuide() {
                       <li>
                         Run <code>uv sync</code> in the openalgo directory
                       </li>
-                      <li>Restart OpenAlgo</li>
+                      <li>Restart AlgoZ</li>
                     </ol>
                   </div>
 
@@ -1232,7 +1232,7 @@ export default function PythonStrategyGuide() {
                       <li>
                         Activate your venv and run <code>pip install -r requirements.txt</code>
                       </li>
-                      <li>Restart OpenAlgo</li>
+                      <li>Restart AlgoZ</li>
                     </ol>
                   </div>
                 </div>
@@ -1320,7 +1320,7 @@ export default function PythonStrategyGuide() {
       {/* SDK Quick Reference */}
       <Card>
         <CardHeader>
-          <CardTitle>OpenAlgo SDK Quick Reference</CardTitle>
+          <CardTitle>AlgoZ SDK Quick Reference</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-3 text-sm">

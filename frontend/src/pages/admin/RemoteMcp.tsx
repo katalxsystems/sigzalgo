@@ -440,7 +440,7 @@ export default function RemoteMcp() {
                 placeholder="https://yourdomain.com"
               />
               <p className="text-xs text-muted-foreground">
-                Same as your OpenAlgo dashboard URL. Required when MCP is enabled. Used as the JWT
+                Same as your AlgoZ dashboard URL. Required when MCP is enabled. Used as the JWT
                 issuer / audience claim — tokens are scoped to this exact origin.
               </p>
             </div>

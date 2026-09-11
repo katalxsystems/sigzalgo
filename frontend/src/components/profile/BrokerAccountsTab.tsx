@@ -251,7 +251,7 @@ export default function BrokerAccountsTab() {
         <Key className="h-4 w-4" />
         <AlertDescription>
           Connect multiple broker accounts to this login — including more than one account on the
-          same broker. Each account gets its own OpenAlgo API key; incoming requests route to the
+          same broker. Each account gets its own AlgoZ API key; incoming requests route to the
           correct account automatically based on which key is used.
         </AlertDescription>
       </Alert>
@@ -260,7 +260,7 @@ export default function BrokerAccountsTab() {
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <div>
             <CardTitle>Broker Accounts</CardTitle>
-            <CardDescription>Accounts connected to your OpenAlgo login</CardDescription>
+            <CardDescription>Accounts connected to your AlgoZ login</CardDescription>
           </div>
           <Button size="sm" onClick={() => setShowAddDialog(true)}>
             <Plus className="h-4 w-4 mr-2" />

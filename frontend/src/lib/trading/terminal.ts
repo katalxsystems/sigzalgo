@@ -749,9 +749,8 @@ export class TradingTerminal {
         // Mark alone at rest; the wording unrolls to its right on hover, so it
         // names itself when looked at without occupying the corner always. The
         // mark and text share one colour, so this sets both.
-        label: 'OpenAlgo Charts',
+        label: 'AlgoZ Charts',
         labelColor: light ? '#3c4354' : '#e4e8f4',
-        href: 'https://openalgo.in',
     })
     this.chart.addPrimitive(watermark, 0)
 

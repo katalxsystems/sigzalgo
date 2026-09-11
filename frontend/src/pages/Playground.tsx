@@ -623,8 +623,8 @@ export default function Playground() {
             <Menu className="h-4 w-4" />
           </Button>
           <div className="flex items-center gap-2 px-2">
-            <img src="/images/android-chrome-192x192.png" alt="OpenAlgo" className="w-6 h-6" />
-            <span className="font-semibold text-sm">openalgo</span>
+            <img src="/images/android-chrome-192x192.png" alt="AlgoZ" className="w-6 h-6" />
+            <span className="font-semibold text-sm">algoz</span>
           </div>
         </div>
 
@@ -1172,7 +1172,7 @@ export default function Playground() {
                 <div className="flex-1 flex flex-col items-center justify-center text-center bg-background">
                   <img
                     src="/images/android-chrome-192x192.png"
-                    alt="OpenAlgo"
+                    alt="AlgoZ"
                     className="w-16 h-16 mb-4"
                   />
                   <h2 className="text-lg font-semibold text-foreground/80 mb-2">

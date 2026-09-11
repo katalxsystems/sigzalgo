@@ -1714,7 +1714,7 @@ export default function ProfilePage() {
             <FolderCheck className="h-4 w-4" />
             <AlertTitle>File Permissions Monitor</AlertTitle>
             <AlertDescription>
-              Check file and directory permissions for OpenAlgo components. Incorrect permissions
+              Check file and directory permissions for AlgoZ components. Incorrect permissions
               may cause the application to malfunction.
             </AlertDescription>
           </Alert>
@@ -2383,7 +2383,7 @@ export default function ProfilePage() {
                 <code className="bg-muted px-1 rounded">.env</code> file.
               </p>
               <p>
-                To apply these changes, please restart the OpenAlgo application using your usual
+                To apply these changes, please restart the AlgoZ application using your usual
                 method (terminal, service manager, or container orchestrator).
               </p>
             </AlertDialogDescription>
