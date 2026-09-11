@@ -1,11 +1,15 @@
 import base64
+import hashlib
+import hmac
 import io
 import os
 import re
 import secrets
+import time
 from datetime import UTC, datetime
 
 import qrcode
+from cachetools import TTLCache
 from flask import (
     Blueprint,
     current_app,
@@ -19,7 +23,7 @@ from flask import (
 )
 from flask_wtf.csrf import generate_csrf
 
-from database.auth_db import auth_cache, feed_token_cache, upsert_api_key, upsert_auth
+from database.auth_db import auth_cache, feed_token_cache, log_login_attempt, upsert_api_key, upsert_auth
 from database.settings_db import get_smtp_settings, set_smtp_settings
 from database.user_db import (  # Import the function
     User,
@@ -53,6 +57,17 @@ LOGIN_RATE_LIMIT_HOUR = os.getenv("LOGIN_RATE_LIMIT_HOUR", "25 per hour")
 REGISTER_RATE_LIMIT_MIN = os.getenv("REGISTER_RATE_LIMIT_MIN", "5 per minute")
 REGISTER_RATE_LIMIT_HOUR = os.getenv("REGISTER_RATE_LIMIT_HOUR", "20 per hour")
 RESET_RATE_LIMIT = os.getenv("RESET_RATE_LIMIT", "15 per hour")  # Password reset rate limit
+
+# Shared secret for the WordPress CMS single sign-on bridge (see
+# cms_sso_login() below). Blank disables the endpoint entirely.
+CMS_SSO_SHARED_SECRET = os.getenv("CMS_SSO_SHARED_SECRET", "")
+
+# How long a signed CMS SSO token stays acceptable, and a defensive upper
+# bound independent of the signature check (see cms_sso_login()). Nonces are
+# tracked for a little longer than the token TTL so a token can never be
+# replayed even right at the edge of its validity window.
+_CMS_SSO_MAX_TOKEN_TTL_SECONDS = 60
+_cms_sso_used_nonces = TTLCache(maxsize=1024, ttl=_CMS_SSO_MAX_TOKEN_TTL_SECONDS * 2)
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
 
@@ -358,6 +373,105 @@ def _try_resume_broker_session(username):
     except Exception as e:
         logger.error(f"Error trying to resume broker session: {e}", exc_info=True)
         return None
+
+
+@auth_bp.route("/cms-sso", methods=["POST"])
+@limiter.limit(LOGIN_RATE_LIMIT_MIN)
+@limiter.limit(LOGIN_RATE_LIMIT_HOUR)
+def cms_sso_login():
+    """One-time, signed hand-off from the WordPress CMS plugin (katx-core's
+    Katx_Openalgo_Session) into an already-authenticated OpenAlgo session —
+    built for brokers whose OAuth flow needs a human to click through that
+    broker's own hosted login page, which can't be automated headlessly.
+
+    The CMS never learns this account's real password: it mints a single-use,
+    short-lived HMAC-signed token server-side per click, using a secret only
+    it and this server share (CMS_SSO_SHARED_SECRET). This route verifies
+    that token, then sets up session state exactly the way a successful
+    password login would — including honoring the TOTP-for-login gate if
+    that's enabled for the account — before handing the browser to the
+    normal broker-connect flow. Registered CSRF-exempt in app.py: the
+    browser being handed off has no session/CSRF cookie yet, so the HMAC
+    signature plus single-use nonce below is the actual authentication.
+
+    Every attempt is written to the login_attempts audit log (login_type
+    "cms_sso") — this route grants a live session without a password or
+    TOTP prompt, so it's exactly the kind of surface worth being able to
+    review after the fact.
+    """
+    ip = get_real_ip()
+    ua = request.headers.get("User-Agent", "")
+
+    if not CMS_SSO_SHARED_SECRET:
+        logger.warning("[CMS-SSO] Attempted but CMS_SSO_SHARED_SECRET is not configured")
+        return "CMS single sign-on is not configured on this server.", 403
+
+    username = request.form.get("username", "")
+    expires_at_raw = request.form.get("expires_at", "")
+    nonce = request.form.get("nonce", "")
+    signature = request.form.get("signature", "")
+
+    if not username or not expires_at_raw or not nonce or not signature:
+        return "Malformed single sign-on request.", 400
+
+    try:
+        expires_at = int(expires_at_raw)
+    except ValueError:
+        return "Malformed single sign-on request.", 400
+
+    expected_signature = hmac.new(
+        CMS_SSO_SHARED_SECRET.encode("utf-8"),
+        f"{username}|{expires_at}|{nonce}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(expected_signature, signature):
+        logger.warning(f"[CMS-SSO] Signature mismatch for username={username} from IP={ip}")
+        log_login_attempt(username, ip, ua, status="failed", login_type="cms_sso", failure_reason="bad_signature")
+        return "Invalid or tampered single sign-on link.", 403
+
+    now = time.time()
+    if expires_at < now:
+        log_login_attempt(username, ip, ua, status="failed", login_type="cms_sso", failure_reason="expired")
+        return "This single sign-on link has expired — go back to WordPress and try again.", 403
+
+    if expires_at - now > _CMS_SSO_MAX_TOKEN_TTL_SECONDS:
+        # Belt-and-braces: a correctly-signed token should never be minted
+        # with a longer window than Katx_Openalgo_Session actually uses.
+        # Independent of the signature check, in case that ever changes.
+        log_login_attempt(username, ip, ua, status="failed", login_type="cms_sso", failure_reason="ttl_too_long")
+        return "Invalid single sign-on link.", 403
+
+    if nonce in _cms_sso_used_nonces:
+        logger.warning(f"[CMS-SSO] Replayed nonce for username={username} from IP={ip}")
+        log_login_attempt(username, ip, ua, status="failed", login_type="cms_sso", failure_reason="replayed")
+        return "This single sign-on link has already been used — go back to WordPress and try again.", 403
+    _cms_sso_used_nonces[nonce] = True
+
+    user = find_user_by_exact_username(username)
+    if user is None:
+        log_login_attempt(username, ip, ua, status="failed", login_type="cms_sso", failure_reason="unknown_user")
+        return "Unknown account.", 404
+
+    # Session hygiene: never layer this hand-off on top of stale state from
+    # a different account that happened to be logged in on this browser.
+    session.clear()
+
+    if user.is_totp_required_for("login"):
+        session["pending_totp_user"] = username
+        session["pending_totp_started_at"] = _utcnow_iso()
+        log_login_attempt(username, ip, ua, status="success", login_type="cms_sso_totp_pending")
+        return redirect("/login")
+
+    session["user"] = username
+
+    resumed = _try_resume_broker_session(username)
+    if resumed:
+        log_login_attempt(username, ip, ua, status="success", login_type="cms_sso", broker=session.get("broker"))
+        return redirect("/dashboard")
+
+    log_login_attempt(username, ip, ua, status="success", login_type="cms_sso")
+    return redirect("/broker")
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])

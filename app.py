@@ -448,6 +448,12 @@ def create_app():
         # Exempt logout endpoint from CSRF protection (safe - only destroys session)
         csrf.exempt(app.view_functions["auth.logout"])
 
+        # Exempt the WordPress CMS single sign-on bridge from CSRF — the
+        # browser being handed off has no session/CSRF cookie yet, so the
+        # HMAC signature + single-use nonce inside blueprints/auth.py:
+        # cms_sso_login() is the actual authentication, not the CSRF cookie.
+        csrf.exempt(app.view_functions["auth.cms_sso_login"])
+
         # Exempt health check endpoints from CSRF (for AWS ELB, K8s probes)
         csrf.exempt(app.view_functions["health_bp.simple_health"])
         csrf.exempt(app.view_functions["health_bp.detailed_health_check"])
