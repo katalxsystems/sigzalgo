@@ -2,7 +2,7 @@ import copy
 import importlib
 from typing import Any, Dict, Optional, Tuple
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, GTTCancelFailedEvent, GTTCancelledEvent
 from utils.event_bus import bus
@@ -47,7 +47,7 @@ def cancel_gtt_order_with_auth(
     order_request_data.pop("apikey", None)
     api_key = original_data.get("apikey", "")
 
-    if get_analyze_mode():
+    if get_analyze_mode(verify_api_key(api_key) if api_key else None):
         error_response = {
             "mode": "analyze",
             "status": "error",
@@ -131,10 +131,11 @@ def cancel_gtt_order(
 
     # API-based auth
     if api_key and not (auth_token and broker):
-        from database.auth_db import get_order_mode, verify_api_key
+        from database.auth_db import get_order_mode
 
-        if not get_analyze_mode():
-            user_id = verify_api_key(api_key)
+        user_id = verify_api_key(api_key)
+
+        if not get_analyze_mode(user_id):
             if user_id:
                 order_mode = get_order_mode(user_id)
                 if order_mode == "semi_auto":

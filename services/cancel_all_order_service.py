@@ -2,7 +2,7 @@ import copy
 import importlib
 from typing import Any, Dict, List, Optional, Tuple
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, AllOrdersCancelledEvent, OrderFailedEvent
 from utils.event_bus import bus
@@ -83,11 +83,12 @@ def cancel_all_orders_with_auth(
     if "apikey" in order_request_data:
         order_request_data.pop("apikey", None)
 
+    api_key = original_data.get("apikey")
+
     # If in analyze mode, route to sandbox for sandbox trading
-    if get_analyze_mode():
+    if get_analyze_mode(verify_api_key(api_key) if api_key else None):
         from services.sandbox_service import sandbox_cancel_all_orders
 
-        api_key = original_data.get("apikey")
         if not api_key:
             return (
                 False,
@@ -197,11 +198,12 @@ def cancel_all_orders(
     if api_key and not (auth_token and broker):
         # Check if user is in semi-auto mode (cancelallorder is blocked in semi-auto)
         # BUT allow execution in analyze/sandbox mode (sandbox trading should always work)
-        from database.auth_db import get_order_mode, verify_api_key
+        from database.auth_db import get_order_mode
+
+        user_id = verify_api_key(api_key)
 
         # Check analyze mode first - if in analyze mode, allow execution
-        if not get_analyze_mode():
-            user_id = verify_api_key(api_key)
+        if not get_analyze_mode(user_id):
             if user_id:
                 order_mode = get_order_mode(user_id)
                 if order_mode == "semi_auto":

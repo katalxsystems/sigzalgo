@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional, Tuple
 from database.analyzer_db import AnalyzerLog, db_session
 from database.apilog_db import async_log_order
 from database.apilog_db import executor as log_executor
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
 from database.settings_db import get_analyze_mode, set_analyze_mode
 from utils.logging import get_logger
 
@@ -35,8 +35,9 @@ def get_analyzer_status_with_auth(
         request_data.pop("apikey", None)
 
     try:
-        # Get current analyzer mode
-        current_mode = get_analyze_mode()
+        # Get current analyzer mode for this account
+        api_key = original_data.get("apikey")
+        current_mode = get_analyze_mode(verify_api_key(api_key) if api_key else None)
 
         # Get analyzer logs count
         logs_count = db_session.query(AnalyzerLog).count()
@@ -86,18 +87,17 @@ def toggle_analyzer_mode_with_auth(
         # Get the requested mode
         new_mode = analyzer_data.get("mode", False)
 
-        # Set the analyzer mode
-        set_analyze_mode(new_mode)
-
-        # Start/stop execution engine and squareoff scheduler based on mode
-        from sandbox.execution_thread import start_execution_engine, stop_execution_engine
-        from sandbox.squareoff_thread import start_squareoff_scheduler, stop_squareoff_scheduler
+        # Set the analyzer mode for this account only. The sandbox execution
+        # engine and square-off scheduler run continuously from app startup
+        # (see app.py) rather than being started/stopped here -- they already
+        # scan every account's pending sandbox orders, and stopping them on
+        # this account's toggle would have broken any other account still
+        # relying on analyze mode.
+        api_key = original_data.get("apikey")
+        account_id = verify_api_key(api_key) if api_key else None
+        set_analyze_mode(new_mode, account_id)
 
         if new_mode:
-            # Analyzer mode ON - start both threads
-            start_execution_engine()
-            start_squareoff_scheduler()
-
             # Run catch-up settlement for any missed settlements while app was stopped
             from sandbox.position_manager import catchup_missed_settlements
 
@@ -107,14 +107,9 @@ def toggle_analyzer_mode_with_auth(
             except Exception as e:
                 logger.exception(f"Error in catch-up settlement: {e}")
 
-            logger.info("Analyzer mode enabled - Execution engine and square-off scheduler started")
+            logger.info(f"Analyzer mode enabled for account {account_id}")
         else:
-            # Analyzer mode OFF - stop both threads
-            stop_execution_engine()
-            stop_squareoff_scheduler()
-            logger.info(
-                "Analyzer mode disabled - Execution engine and square-off scheduler stopped"
-            )
+            logger.info(f"Analyzer mode disabled for account {account_id}")
 
         # Get logs count for response
         logs_count = db_session.query(AnalyzerLog).count()

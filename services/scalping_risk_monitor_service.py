@@ -543,12 +543,19 @@ class ScalpingRiskMonitor:
         """
         try:
             from database.settings_db import get_analyze_mode
+            from database.user_db import find_user_by_username
 
-            return "analyze" if get_analyze_mode() else "live"
+            # Same account _resolve_api_key()/_resolve_auth() use, so this
+            # monitor's mode check never diverges from which account it
+            # actually routes exits for.
+            user = find_user_by_username()
+            account_id = user.username if user else None
+            return "analyze" if get_analyze_mode(account_id) else "live"
         except Exception:
             return None
         finally:
             self._remove_session("database.settings_db")
+            self._remove_session("database.user_db")
 
     def _resolve_api_key(self) -> str | None:
         from database.auth_db import get_api_key_for_tradingview

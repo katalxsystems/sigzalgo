@@ -14,7 +14,7 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, OptionsOrderCompletedEvent
 from services.option_symbol_service import get_option_symbol
@@ -305,8 +305,9 @@ def place_options_order(
             }
 
             # Add mode if in analyze mode
-            mode = "analyze" if get_analyze_mode() else "live"
-            if get_analyze_mode():
+            account_id = verify_api_key(api_key) if api_key else None
+            mode = "analyze" if get_analyze_mode(account_id) else "live"
+            if get_analyze_mode(account_id):
                 response_data["mode"] = "analyze"
 
             # Prepare request data for logging (without apikey)

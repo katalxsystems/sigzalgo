@@ -226,7 +226,7 @@ def test_dhan_created_response_is_a_successful_gtt(monkeypatch):
             "DHAN-TRIGGER",
         )
     )
-    monkeypatch.setattr(gtt_service, "get_analyze_mode", lambda: False)
+    monkeypatch.setattr(gtt_service, "get_analyze_mode", lambda account_id=None: False)
     monkeypatch.setattr(gtt_service, "import_broker_gtt_module", lambda broker: fake_broker_module)
     monkeypatch.setattr(gtt_service.bus, "publish", lambda event: None)
 

@@ -100,7 +100,8 @@ def _underlying_quote(underlying: str, fo_exchange: str):
 
 def _current_mode() -> str:
     """Trading mode for segregating scalping state: 'analyze' (sandbox) or 'live'."""
-    return "analyze" if get_analyze_mode() else "live"
+    account_id = session.get("user_session_key") or session.get("user")
+    return "analyze" if get_analyze_mode(account_id) else "live"
 
 
 def _notify_risk_monitor():

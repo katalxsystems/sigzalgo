@@ -1,7 +1,7 @@
 import importlib
 from typing import Any, Dict, List, Optional, Tuple
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
 from database.settings_db import get_analyze_mode
 from utils.logging import get_logger
 
@@ -21,7 +21,8 @@ def import_broker_gtt_module(broker_name: str) -> Any | None:
 def get_gtt_orderbook_with_auth(
     auth_token: str, broker: str, original_data: dict[str, Any] | None = None
 ) -> tuple[bool, dict[str, Any], int]:
-    if get_analyze_mode() and original_data:
+    api_key = original_data.get("apikey") if original_data else None
+    if original_data and get_analyze_mode(verify_api_key(api_key) if api_key else None):
         return (
             False,
             {

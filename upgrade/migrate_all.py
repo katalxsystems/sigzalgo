@@ -72,6 +72,7 @@ MIGRATIONS = [
     ("add_totp_purpose_flags.py", "Per-Purpose 2FA Flags (login/MCP/reset)"),
     ("migrate_multi_account.py", "Multi-Broker-Account Support"),
     ("migrate_broker_settings.py", "Instance-Wide Broker Settings (DB-backed)"),
+    ("migrate_account_analyze_mode.py", "Per-Account Analyzer Mode"),
 ]
 
 

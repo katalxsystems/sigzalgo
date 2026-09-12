@@ -555,7 +555,7 @@ def test_smart_order_service_rejects_actual_invalid_payload_keys_before_broker(
             raise AssertionError("invalid order reached broker placement")
 
     broker = Broker()
-    monkeypatch.setattr(smart_service, "get_analyze_mode", lambda: False)
+    monkeypatch.setattr(smart_service, "get_analyze_mode", lambda account_id=None: False)
     monkeypatch.setattr(smart_service, "import_broker_module", lambda broker_name: broker)
     monkeypatch.setattr(smart_service.bus, "publish", lambda event: None)
     payload = _smart_service_payload(**{field: value})

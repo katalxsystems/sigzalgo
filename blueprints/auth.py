@@ -1296,7 +1296,8 @@ def get_analyzer_mode_status():
     try:
         from database.settings_db import get_analyze_mode
 
-        current_mode = get_analyze_mode()
+        account_id = session.get("user_session_key") or session.get("user")
+        current_mode = get_analyze_mode(account_id)
 
         return jsonify(
             {
@@ -1321,6 +1322,14 @@ def toggle_analyzer_mode_session():
     that's enforced by the session.get("logged_in") check below, which used
     to be dead code under @check_session_validity (which 401s -- and wipes
     the whole session -- before this function body ever runs).
+
+    Per-account (database.auth_db.Auth.analyze_mode), not instance-wide:
+    this only switches order routing for the account making this request,
+    not every account connected to this instance. The sandbox execution
+    engine and square-off scheduler run continuously from app startup
+    (see app.py) rather than being started/stopped here, since they already
+    scan every account's pending sandbox orders and stopping them here would
+    have broken any other account still relying on analyze mode.
     """
     if "user" not in session:
         return jsonify({"status": "error", "message": "Not authenticated"}), 401
@@ -1331,22 +1340,16 @@ def toggle_analyzer_mode_session():
     try:
         from database.settings_db import get_analyze_mode, set_analyze_mode
 
+        account_id = session.get("user_session_key") or session.get("user")
+
         # Get current mode and toggle it
-        current_mode = get_analyze_mode()
+        current_mode = get_analyze_mode(account_id)
         new_mode = not current_mode
 
-        # Set the new mode
-        set_analyze_mode(new_mode)
-
-        # Start/stop execution engine and squareoff scheduler based on mode
-        from sandbox.execution_thread import start_execution_engine, stop_execution_engine
-        from sandbox.squareoff_thread import start_squareoff_scheduler, stop_squareoff_scheduler
+        # Set the new mode for this account only
+        set_analyze_mode(new_mode, account_id)
 
         if new_mode:
-            # Analyzer mode ON - start both threads
-            start_execution_engine()
-            start_squareoff_scheduler()
-
             # Run catch-up settlement for any missed settlements while app was stopped
             from sandbox.position_manager import catchup_missed_settlements
 
@@ -1356,14 +1359,9 @@ def toggle_analyzer_mode_session():
             except Exception as e:
                 logger.exception(f"Error in catch-up settlement: {e}")
 
-            logger.info("Analyzer mode enabled - Execution engine and square-off scheduler started")
+            logger.info(f"Analyzer mode enabled for account {account_id}")
         else:
-            # Analyzer mode OFF - stop both threads
-            stop_execution_engine()
-            stop_squareoff_scheduler()
-            logger.info(
-                "Analyzer mode disabled - Execution engine and square-off scheduler stopped"
-            )
+            logger.info(f"Analyzer mode disabled for account {account_id}")
 
         return jsonify(
             {
@@ -1449,7 +1447,7 @@ def get_dashboard_data():
             ), 401
 
         # Check if in analyze mode
-        if get_analyze_mode():
+        if get_analyze_mode(account_id):
             api_key = get_api_key_for_tradingview(account_id)
             if api_key:
                 success, response, status_code = get_funds(api_key=api_key)

@@ -6,7 +6,7 @@ from flask import Blueprint, jsonify, request
 
 from database.leverage_db import get_leverage, set_leverage
 from utils.logging import get_logger
-from utils.session import check_session_validity
+from utils.session import admin_required, check_session_validity
 
 logger = get_logger(__name__)
 
@@ -24,11 +24,14 @@ def get_current():
 
 
 @leverage_bp.route("/api/update", methods=["POST"])
-@check_session_validity
+@admin_required
 def update_leverage():
     """
     Set common leverage for all crypto futures orders.
     Expects JSON: {"leverage": 10}
+
+    Admin-only: this is a single instance-wide value applied to every
+    tenant's crypto futures orders, not a per-account setting.
     """
     data = request.get_json()
     if data is None or "leverage" not in data:

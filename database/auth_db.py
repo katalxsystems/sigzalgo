@@ -210,6 +210,17 @@ class Auth(Base):
     broker_api_key = Column(Text, nullable=True)
     broker_api_secret = Column(Text, nullable=True)
 
+    # Per-account Analyzer/Sandbox toggle. NULL means "not set for this
+    # account yet, fall back to the instance-wide Settings.analyze_mode
+    # default" (see database.settings_db.get_analyze_mode) — same
+    # resolution shape as broker_api_key above. Explicit True/False once a
+    # user has touched their own toggle. Multiple accounts on one instance
+    # must be able to run live and analyze mode independently: this column
+    # is what lets order placement (services/place_order_service.py etc.)
+    # route each account's own orders instead of one global switch flipping
+    # every tenant's order routing at once.
+    analyze_mode = Column(Boolean, nullable=True)
+
     # Samco 2FA fields
     secret_api_key = Column(Text, nullable=True)
     primary_ip = Column(String(45), nullable=True)
@@ -1036,6 +1047,38 @@ def set_broker_credentials(account_id, broker_api_key, broker_api_secret):
     except Exception as e:
         db_session.rollback()
         logger.exception(f"Error setting broker credentials for account {account_id}: {e}")
+        return False
+
+
+def get_account_analyze_mode(account_id):
+    """Get this account's own Analyzer/Sandbox override.
+
+    Returns None if the account has never set one (caller should fall back
+    to the instance-wide database.settings_db.get_analyze_mode() default),
+    or the account doesn't exist. Otherwise returns the explicit bool.
+    """
+    try:
+        account = Auth.query.filter_by(name=account_id).first()
+        if not account or account.analyze_mode is None:
+            return None
+        return bool(account.analyze_mode)
+    except Exception as e:
+        logger.exception(f"Error getting analyze mode for account {account_id}: {e}")
+        return None
+
+
+def set_account_analyze_mode(account_id, mode: bool):
+    """Store this account's own Analyzer/Sandbox override."""
+    try:
+        account = Auth.query.filter_by(name=account_id).first()
+        if not account:
+            return False
+        account.analyze_mode = bool(mode)
+        db_session.commit()
+        return True
+    except Exception as e:
+        db_session.rollback()
+        logger.exception(f"Error setting analyze mode for account {account_id}: {e}")
         return False
 
 

@@ -18,8 +18,11 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 # Settings cache - 1 hour TTL (settings rarely change)
-# This cache significantly reduces DB queries since get_analyze_mode() is called on every request
-_settings_cache = TTLCache(maxsize=10, ttl=3600)  # 1 hour TTL
+# This cache significantly reduces DB queries since get_analyze_mode() is called on every request.
+# Sized well past the handful of scalar setting keys (security_settings, broker_settings, the
+# instance-wide "analyze_mode") to comfortably hold one "analyze_mode:<account_id>" entry per
+# connected broker account without premature LRU eviction on a multi-account instance.
+_settings_cache = TTLCache(maxsize=500, ttl=3600)  # 1 hour TTL
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -90,8 +93,12 @@ def init_db():
         logger.debug(f"Settings DB: Default config may already exist (race condition): {e}")
 
 
-def get_analyze_mode():
-    """Get current analyze mode setting (cached for 1 hour)"""
+def _get_instance_analyze_mode():
+    """The instance-wide Analyzer/Sandbox default (cached for 1 hour).
+
+    Used directly for internal/no-account calls, and as the fallback for any
+    account that hasn't set its own override yet — see get_analyze_mode().
+    """
     cache_key = "analyze_mode"
 
     # Check cache first
@@ -110,8 +117,50 @@ def get_analyze_mode():
     return settings.analyze_mode
 
 
-def set_analyze_mode(mode: bool):
-    """Set analyze mode setting"""
+def get_analyze_mode(account_id: str | None = None):
+    """Get the effective analyze mode for a broker account.
+
+    Per-account first (database.auth_db.Auth.analyze_mode — see that
+    column's docstring), falling back to the instance-wide default when the
+    account has never set its own toggle, or when ``account_id`` is omitted
+    (internal calls with no request-scoped account, e.g. background
+    services). This mirrors get_broker_api_key()'s per-account-then-instance
+    resolution so multiple accounts on one instance can run live and
+    analyze mode independently instead of one flag flipping order routing
+    for every tenant at once.
+
+    Cached per account_id for 1 hour (this is called on every request).
+    """
+    cache_key = f"analyze_mode:{account_id}" if account_id else "analyze_mode"
+
+    if cache_key in _settings_cache:
+        return _settings_cache[cache_key]
+
+    if account_id:
+        from database.auth_db import get_account_analyze_mode
+
+        account_mode = get_account_analyze_mode(account_id)
+        if account_mode is not None:
+            _settings_cache[cache_key] = account_mode
+            return account_mode
+
+    result = _get_instance_analyze_mode()
+    _settings_cache[cache_key] = result
+    return result
+
+
+def set_analyze_mode(mode: bool, account_id: str | None = None):
+    """Set analyze mode: per-account when account_id is given, else the
+    instance-wide default (e.g. legacy /settings/analyze-mode route, or an
+    install that hasn't connected any per-account broker yet)."""
+    if account_id:
+        from database.auth_db import set_account_analyze_mode
+
+        set_account_analyze_mode(account_id, mode)
+        if f"analyze_mode:{account_id}" in _settings_cache:
+            del _settings_cache[f"analyze_mode:{account_id}"]
+        return
+
     settings = Settings.query.first()
     if not settings:
         settings = Settings(analyze_mode=mode)
@@ -120,7 +169,9 @@ def set_analyze_mode(mode: bool):
         settings.analyze_mode = mode
     db_session.commit()
 
-    # Invalidate cache after update
+    # Invalidate cache after update. Only the instance-wide key and
+    # no-override accounts are affected; accounts with their own explicit
+    # override are unaffected and keep their separate cache entry.
     if "analyze_mode" in _settings_cache:
         del _settings_cache["analyze_mode"]
 

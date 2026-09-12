@@ -2,7 +2,7 @@ import copy
 import importlib
 from typing import Any, Dict, Optional, Tuple
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, GTTModifiedEvent, GTTModifyFailedEvent
 from utils.event_bus import bus
@@ -48,7 +48,7 @@ def modify_gtt_order_with_auth(
     api_key = original_data.get("apikey", "")
     trigger_id = order_data.get("trigger_id", "")
 
-    if get_analyze_mode():
+    if get_analyze_mode(verify_api_key(api_key) if api_key else None):
         error_response = {
             "mode": "analyze",
             "status": "error",
@@ -126,10 +126,11 @@ def modify_gtt_order(
         # Semi-auto mode blocks GTT modify (parity with modify_order — stale queued
         # actions against a triggered GTT are unsafe). Analyze mode would be handled
         # here if sandbox was wired.
-        from database.auth_db import get_order_mode, verify_api_key
+        from database.auth_db import get_order_mode
 
-        if not get_analyze_mode():
-            user_id = verify_api_key(api_key)
+        user_id = verify_api_key(api_key)
+
+        if not get_analyze_mode(user_id):
             if user_id:
                 order_mode = get_order_mode(user_id)
                 if order_mode == "semi_auto":

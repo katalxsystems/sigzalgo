@@ -2,7 +2,7 @@ import copy
 import importlib
 from typing import Any
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, GTTFailedEvent, GTTPlacedEvent
 from utils.event_bus import bus
@@ -52,7 +52,7 @@ def place_gtt_order_with_auth(
     api_key = original_data.get("apikey", "")
 
     # Analyze (sandbox) mode: not wired yet — clean 501 until Phase 3.
-    if get_analyze_mode():
+    if get_analyze_mode(verify_api_key(api_key) if api_key else None):
         error_response = {
             "mode": "analyze",
             "status": "error",

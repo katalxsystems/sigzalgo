@@ -25,7 +25,7 @@ from utils.config import (
     get_broker_redirect_url,
 )
 from utils.logging import get_logger
-from utils.session import require_app_session
+from utils.session import admin_required, require_app_session
 
 logger = get_logger(__name__)
 
@@ -203,10 +203,17 @@ def get_credentials():
 
 
 @broker_credentials_bp.route("/credentials", methods=["POST"])
-@require_app_session
+@admin_required
 def update_credentials():
     """Update broker credentials: broker-identity fields go to the DB
-    (immediate effect), infra fields go to .env (restart required)."""
+    (immediate effect), infra fields go to .env (restart required).
+
+    Admin-only: this mutates the instance-wide default (BROKER_API_KEY/
+    SECRET/REDIRECT_URL) that every account without its own per-account
+    override falls back to, plus shared infra (.env HOST_SERVER/
+    WEBSOCKET_URL/NGROK_ALLOW). A non-admin tenant must not be able to
+    change what every other tenant's connections depend on.
+    """
     try:
         # Support both JSON and form data
         if request.is_json:
