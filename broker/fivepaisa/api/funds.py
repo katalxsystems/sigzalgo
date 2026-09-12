@@ -1,19 +1,16 @@
 # api/funds.py
 
 import json
-import os
 from typing import Any, Dict
 
 import httpx
 
 from broker.fivepaisa.api.order_api import get_positions
+from utils.config import get_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-# Retrieve the BROKER_API_KEY environment variable
-broker_api_key = os.getenv("BROKER_API_KEY")
 
 
 def get_margin_data(auth_token: str) -> dict[str, Any]:
@@ -30,8 +27,9 @@ def get_margin_data(auth_token: str) -> dict[str, Any]:
             - m2mrealized: Total booked P&L
             - utiliseddebits: Utilized margin
     """
+    broker_api_key = get_broker_api_key()
     if not broker_api_key:
-        raise ValueError("BROKER_API_KEY not found in environment variables")
+        raise ValueError("BROKER_API_KEY not configured")
 
     # Split the string to separate the API key and the client ID
     try:

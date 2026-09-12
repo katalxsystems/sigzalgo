@@ -38,10 +38,12 @@ export function AuthSync({ children }: AuthSyncProps) {
               isLoggedIn: true,
               loginTime: new Date().toISOString(),
             })
-            // Store the API key for trading API calls
-            if (data.api_key) {
-              setApiKey(data.api_key)
-            }
+            // Store the API key for trading API calls. Always set it (even
+            // when absent) so switching to an account with no key generated
+            // yet clears a stale key left over from a previous account/
+            // session rather than silently reusing it (localStorage-persisted
+            // via zustand/persist under "openalgo-auth").
+            setApiKey(data.api_key ?? null)
             // Fetch broker capabilities (exchanges, type, features)
             await fetchCapabilities()
             // Also sync app mode from backend
@@ -77,7 +79,15 @@ export function AuthSync({ children }: AuthSyncProps) {
     }
 
     syncSession()
-  }, [setUser, setApiKey, logout, fetchCapabilities, clearCapabilities, syncAppMode, setActiveSessionCount])
+  }, [
+    setUser,
+    setApiKey,
+    logout,
+    fetchCapabilities,
+    clearCapabilities,
+    syncAppMode,
+    setActiveSessionCount,
+  ])
 
   // Show nothing while checking - prevents flash of wrong content
   if (isChecking) {

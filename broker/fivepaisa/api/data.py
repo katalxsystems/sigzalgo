@@ -1,5 +1,4 @@
 import json
-import os
 import time
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -8,17 +7,13 @@ import httpx
 import pandas as pd
 import pytz
 
+from broker.fivepaisa.api.order_api import _get_5paisa_credentials
 from broker.fivepaisa.mapping.transform_data import map_exchange, map_exchange_type
 from database.token_db import get_br_symbol, get_oa_symbol, get_token
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-
-# Retrieve the BROKER_API_KEY environment variable
-broker_api_key = os.getenv("BROKER_API_KEY")
-api_key, user_id, client_id = broker_api_key.split(":::")
 
 
 def normalize_exchange_for_query(symbol: str, exchange: str) -> str:
@@ -145,6 +140,7 @@ class BrokerData:
             br_symbol = get_br_symbol(symbol, normalized_exchange)
 
             # Prepare request payload
+            api_key, client_id = _get_5paisa_credentials()
             json_data = {
                 "head": {"key": api_key},
                 "body": {
@@ -222,6 +218,7 @@ class BrokerData:
             br_symbol = get_br_symbol(symbol, normalized_exchange)
 
             # Get market snapshot for overall data
+            api_key, client_id = _get_5paisa_credentials()
             snapshot_data = {
                 "head": {"key": api_key},
                 "body": {
@@ -372,6 +369,7 @@ class BrokerData:
             )
 
             # Prepare request payload
+            api_key, client_id = _get_5paisa_credentials()
             json_data = {
                 "head": {"key": api_key},
                 "body": {
@@ -556,6 +554,7 @@ class BrokerData:
             return skipped_symbols
 
         # Build request payload
+        api_key, client_id = _get_5paisa_credentials()
         json_data = {
             "head": {"key": api_key},
             "body": {"ClientCode": client_id, "Data": data_array},
