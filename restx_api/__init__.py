@@ -48,6 +48,7 @@ from .place_smart_order import api as place_smart_order_ns
 from .pnl_symbols import api as pnl_symbols_ns
 from .portfolio import api as portfolio_ns
 from .positionbook import api as positionbook_ns
+from .price_breach_monitor import api as price_breach_monitor_ns
 from .quotes import api as quotes_ns
 from .search import api as search_ns
 from .split_order import api as split_order_ns
@@ -107,3 +108,4 @@ api.add_namespace(modify_gtt_order_ns, path="/modifygttorder")
 api.add_namespace(cancel_gtt_order_ns, path="/cancelgttorder")
 api.add_namespace(gtt_orderbook_ns, path="/gttorderbook")
 api.add_namespace(websocket_subscribe_ns, path="/ws")
+api.add_namespace(price_breach_monitor_ns, path="/pricebreach")

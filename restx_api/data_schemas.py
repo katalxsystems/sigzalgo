@@ -67,6 +67,21 @@ class WebSocketUnsubscribeAllSchema(Schema):
     apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
 
 
+class PriceBreachCreateSchema(Schema):
+    apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
+    symbol = fields.Str(required=True)
+    exchange = fields.Str(required=True, validate=validate.OneOf(VALID_EXCHANGES))
+    entry_price = fields.Float(load_default=None, allow_none=True)
+    stop_loss = fields.Float(required=True)
+    target1 = fields.Float(required=True)
+    webhook_url = fields.Url(required=True, schemes={"http", "https"})
+    name = fields.Str(load_default=None, allow_none=True, validate=validate.Length(max=200))
+
+
+class PriceBreachDeactivateSchema(Schema):
+    apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
+
+
 class HistorySchema(Schema):
     apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
     symbol = fields.Str(required=True)
