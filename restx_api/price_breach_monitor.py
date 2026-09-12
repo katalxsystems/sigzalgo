@@ -27,19 +27,26 @@ deactivate_schema = PriceBreachDeactivateSchema()
 class PriceBreachCreate(Resource):
     @limiter.limit(PRICE_BREACH_LIMIT)
     def post(self):
-        """Create and activate a price-breach watch.
+        """Create and activate a price-breach watch (up to two workflows).
 
-        Builds a Flow workflow with a single `priceAlert` trigger (fires
-        once price goes outside [stop_loss, target1]) chained to an
-        `httpRequest` action that POSTs the breach to webhook_url, then
-        activates it. See docs/api/market-data/pricebreach.md, or
+        Builds one Flow workflow with a `priceAlert` trigger watching
+        `outside_channel` [stop_loss, target1] -- its webhook payload carries
+        `breach_type` of "stop_loss" or "target1" depending on which bound
+        was actually crossed -- and, unless active_price already equals
+        entry_price, a second one watching for price crossing back through
+        entry_price (`breach_type` "entry_price"), in whichever direction is
+        a genuine "re-cross" given where price was (active_price) when this
+        call was made. See docs/api/market-data/pricebreach.md, or
         scripts/price_breach_monitor.py for the equivalent session-based
         flow using the Flow editor's own routes directly.
 
-        The watch is "once": it stops polling the instant it fires, but the
-        workflow still shows active until you deactivate it -- call
-        POST /pricebreach/<id>/deactivate from your webhook receiver once it
-        has handled the notification.
+        Each watch is "once" while it is live: whichever fires first
+        notifies webhook_url, then deactivates both itself and the other
+        watch automatically -- no separate deactivate call is needed from
+        your webhook receiver. If active_price already equals entry_price,
+        no entry_recross watch is created (there is no direction to watch
+        for) -- instead an entry_price breach notification is sent to
+        webhook_url immediately, in the background.
         """
         try:
             data = create_schema.load(request.json)
@@ -52,12 +59,14 @@ class PriceBreachCreate(Resource):
 
             success, response_data, status_code = create_and_activate(
                 api_key=api_key,
+                call_id=data["call_id"],
                 symbol=data["symbol"],
                 exchange=data["exchange"],
+                active_price=data["active_price"],
+                entry_price=data["entry_price"],
                 stop_loss=data["stop_loss"],
                 target1=data["target1"],
                 webhook_url=data["webhook_url"],
-                entry_price=data["entry_price"],
                 name=data["name"],
             )
             return make_response(jsonify(response_data), status_code)
@@ -77,7 +86,10 @@ class PriceBreachDeactivate(Resource):
     def post(self, workflow_id):
         """Deactivate a price-breach watch by workflow id.
 
-        Requires the same apikey the watch was created with.
+        Not usually needed -- each watch deactivates itself and its sibling
+        automatically once either fires. Exposed for manual/operator use
+        (e.g. canceling a watch before it fires). Requires the same apikey
+        the watch was created with.
         """
         try:
             data = deactivate_schema.load(request.json)

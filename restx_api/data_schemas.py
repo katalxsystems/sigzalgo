@@ -69,9 +69,15 @@ class WebSocketUnsubscribeAllSchema(Schema):
 
 class PriceBreachCreateSchema(Schema):
     apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
+    call_id = fields.Str(required=True, validate=validate.Length(min=1, max=100))
     symbol = fields.Str(required=True)
     exchange = fields.Str(required=True, validate=validate.OneOf(VALID_EXCHANGES))
-    entry_price = fields.Float(load_default=None, allow_none=True)
+    # The live price at the moment of the call -- used only to pick which
+    # direction counts as "back to entry" (see
+    # services.price_breach_service._entry_cross_condition), not stored as a
+    # trigger threshold itself.
+    active_price = fields.Float(required=True)
+    entry_price = fields.Float(required=True)
     stop_loss = fields.Float(required=True)
     target1 = fields.Float(required=True)
     webhook_url = fields.Url(required=True, schemes={"http", "https"})
