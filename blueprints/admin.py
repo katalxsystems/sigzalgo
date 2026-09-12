@@ -29,7 +29,7 @@ from database.qty_freeze_db import db_session as freeze_db_session
 from database.user_db import list_users
 from limiter import limiter
 from utils.logging import get_logger
-from utils.session import admin_required
+from utils.session import admin_required, require_app_session
 
 logger = get_logger(__name__)
 
@@ -327,10 +327,18 @@ def api_freeze_upload():
 
 
 @admin_bp.route("/api/holidays")
-@admin_required
+@require_app_session
 @limiter.limit(API_RATE_LIMIT)
 def api_holidays_list():
-    """Get holidays for a specific year"""
+    """Get holidays for a specific year.
+
+    Read-only, not admin-gated: frontend/src/hooks/useMarketStatus.ts calls
+    this directly for every logged-in user (any tenant, any page using the
+    hook) to know whether a given exchange is open today -- it is not an
+    admin-only feature. Only the mutating routes below (add/delete a
+    holiday) stay @admin_required, since those change the instance-wide
+    calendar every tenant relies on.
+    """
     try:
         current_year = datetime.now().year
         year = request.args.get("year", current_year, type=int)
@@ -491,10 +499,18 @@ def api_holiday_delete(id):
 
 
 @admin_bp.route("/api/timings")
-@admin_required
+@require_app_session
 @limiter.limit(API_RATE_LIMIT)
 def api_timings_list():
-    """Get all market timings"""
+    """Get all market timings.
+
+    Read-only, not admin-gated: frontend/src/hooks/useMarketStatus.ts calls
+    this directly for every logged-in user (any tenant, any page using the
+    hook -- e.g. the Options Trading Suite) to know whether a given
+    exchange is open right now via the market_status field below. Only the
+    mutating PUT route stays @admin_required, since it changes the
+    instance-wide timing every tenant relies on.
+    """
     try:
         timings_data = get_all_market_timings()
 
