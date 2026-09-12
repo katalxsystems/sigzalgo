@@ -25,7 +25,7 @@ Never put broker credentials or broker access tokens in these requests. The Open
 
 ## Registered REST Inventory
 
-The current v1 surface contains **57 method/path pairs**. A resource with both GET and POST counts as two endpoints.
+The current v1 surface contains **60 method/path pairs**. A resource with both GET and POST counts as two endpoints.
 
 ### Order Management
 
@@ -73,6 +73,9 @@ The current v1 surface contains **57 method/path pairs**. A resource with both G
 | POST | `/search` | [Symbol search](./symbol-services/search.md) |
 | POST | `/expiry` | [Expiry dates](./symbol-services/expiry.md) |
 | GET | `/instruments` | [Instrument master](./symbol-services/instruments.md) |
+| POST | `/ws/subscribe` | [WebSocket subscribe/unsubscribe](./market-data/websocket-control.md) |
+| POST | `/ws/unsubscribe` | [WebSocket subscribe/unsubscribe](./market-data/websocket-control.md) |
+| POST | `/ws/unsubscribe-all` | [WebSocket subscribe/unsubscribe](./market-data/websocket-control.md) |
 
 ### Options Analytics
 

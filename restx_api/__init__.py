@@ -56,6 +56,7 @@ from .synthetic_future import api as synthetic_future_ns
 from .telegram_bot import api as telegram_ns
 from .ticker import api as ticker_ns
 from .tradebook import api as tradebook_ns
+from .websocket_subscribe import api as websocket_subscribe_ns
 from .whatsapp_bot import api as whatsapp_ns
 
 # Add namespaces
@@ -105,3 +106,4 @@ api.add_namespace(place_gtt_order_ns, path="/placegttorder")
 api.add_namespace(modify_gtt_order_ns, path="/modifygttorder")
 api.add_namespace(cancel_gtt_order_ns, path="/cancelgttorder")
 api.add_namespace(gtt_orderbook_ns, path="/gttorderbook")
+api.add_namespace(websocket_subscribe_ns, path="/ws")

@@ -55,6 +55,18 @@ class MultiQuotesSchema(Schema):
     )
 
 
+class WebSocketSubscribeSchema(Schema):
+    apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
+    symbols = fields.List(
+        fields.Nested(SymbolExchangePair), required=True, validate=validate.Length(min=1, max=50)
+    )
+    mode = fields.Str(load_default="Quote", validate=validate.OneOf(["LTP", "Quote", "Depth"]))
+
+
+class WebSocketUnsubscribeAllSchema(Schema):
+    apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
+
+
 class HistorySchema(Schema):
     apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
     symbol = fields.Str(required=True)
