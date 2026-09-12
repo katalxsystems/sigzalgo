@@ -5,8 +5,7 @@ from typing import Any, Dict
 
 import httpx
 
-from broker.fivepaisa.api.order_api import get_positions
-from utils.config import get_broker_api_key
+from broker.fivepaisa.api.order_api import _get_5paisa_credentials, get_positions
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -27,17 +26,10 @@ def get_margin_data(auth_token: str) -> dict[str, Any]:
             - m2mrealized: Total booked P&L
             - utiliseddebits: Utilized margin
     """
-    broker_api_key = get_broker_api_key()
-    if not broker_api_key:
-        raise ValueError("BROKER_API_KEY not configured")
-
-    # Split the string to separate the API key and the client ID
-    try:
-        api_key, user_id, client_id = broker_api_key.split(":::")
-    except ValueError:
-        raise ValueError(
-            "BROKER_API_KEY format is incorrect. Expected format: 'api_key:::client_id'"
-        )
+    # Per-account key (Profile > Accounts) wins when auth_token resolves to
+    # one; falls back to the instance-wide default otherwise -- see
+    # _get_5paisa_credentials's docstring.
+    api_key, client_id = _get_5paisa_credentials(auth_token)
 
     # Get the shared httpx client
     client = get_httpx_client()

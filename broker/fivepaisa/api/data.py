@@ -140,7 +140,7 @@ class BrokerData:
             br_symbol = get_br_symbol(symbol, normalized_exchange)
 
             # Prepare request payload
-            api_key, client_id = _get_5paisa_credentials()
+            api_key, client_id = _get_5paisa_credentials(self.auth_token)
             json_data = {
                 "head": {"key": api_key},
                 "body": {
@@ -218,7 +218,7 @@ class BrokerData:
             br_symbol = get_br_symbol(symbol, normalized_exchange)
 
             # Get market snapshot for overall data
-            api_key, client_id = _get_5paisa_credentials()
+            api_key, client_id = _get_5paisa_credentials(self.auth_token)
             snapshot_data = {
                 "head": {"key": api_key},
                 "body": {
@@ -369,7 +369,7 @@ class BrokerData:
             )
 
             # Prepare request payload
-            api_key, client_id = _get_5paisa_credentials()
+            api_key, client_id = _get_5paisa_credentials(self.auth_token)
             json_data = {
                 "head": {"key": api_key},
                 "body": {
@@ -554,7 +554,7 @@ class BrokerData:
             return skipped_symbols
 
         # Build request payload
-        api_key, client_id = _get_5paisa_credentials()
+        api_key, client_id = _get_5paisa_credentials(self.auth_token)
         json_data = {
             "head": {"key": api_key},
             "body": {"ClientCode": client_id, "Data": data_array},
@@ -964,9 +964,7 @@ class BrokerData:
 
         except Exception as e:
             error_msg = str(e)
-            logger.exception(
-                f"Error in get_history: {error_msg}"
-            )  # Debug log
+            logger.exception(f"Error in get_history: {error_msg}")  # Debug log
 
             # Check if this is the timestamp conversion error with raw_data available
             if (

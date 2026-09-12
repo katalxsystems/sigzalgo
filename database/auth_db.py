@@ -74,6 +74,7 @@ def _resolve_fernet_salt() -> bytes:
     # Fallback path. Print once so prod misuse is visible without spamming.
     if not getattr(_resolve_fernet_salt, "_warned", False):
         import sys as _sys
+
         _sys.stderr.write(
             "[auth_db] WARNING: FERNET_SALT not set or invalid; using legacy\n"
             "static salt. Run the app once via app.py so utils/env_check.py\n"
@@ -189,6 +190,7 @@ class Auth(Base):
     plan for details. ``owner_username`` is the platform user (users.username)
     who owns this connection; a user can own many Auth rows.
     """
+
     __tablename__ = "auth"
     id = Column(Integer, primary_key=True)
     name = Column(String(255), unique=True, nullable=False)
@@ -253,6 +255,7 @@ class ApiKeys(Base):
     pre-migration rows loadable; the ``upgrade/`` backfill script sets it to
     the legacy ``user_id`` value for every existing row.
     """
+
     __tablename__ = "api_keys"
     id = Column(Integer, primary_key=True)
     user_id = Column(String, nullable=False)
@@ -272,6 +275,7 @@ class ApiKeys(Base):
 
 class ActiveSession(Base):
     """Tracks active login sessions across devices for a user."""
+
     __tablename__ = "active_sessions"
     id = Column(Integer, primary_key=True)
     username = Column(String(255), nullable=False, index=True)
@@ -282,13 +286,12 @@ class ActiveSession(Base):
     login_time = Column(DateTime(timezone=True), default=func.now())
     last_seen = Column(DateTime(timezone=True), default=func.now())
 
-    __table_args__ = (
-        Index("idx_active_sessions_username", "username"),
-    )
+    __table_args__ = (Index("idx_active_sessions_username", "username"),)
 
 
 class LoginAttempt(Base):
     """Records all login attempts (successful and failed) for security auditing."""
+
     __tablename__ = "login_attempts"
     id = Column(Integer, primary_key=True)
     username = Column(String(255), nullable=False)
@@ -312,11 +315,19 @@ def _now_ist():
     from datetime import datetime
 
     import pytz
+
     return datetime.now(pytz.timezone("Asia/Kolkata"))
 
 
-def log_login_attempt(username, ip_address=None, device_info=None, status="failed",
-                      login_type="password", broker=None, failure_reason=None):
+def log_login_attempt(
+    username,
+    ip_address=None,
+    device_info=None,
+    status="failed",
+    login_type="password",
+    broker=None,
+    failure_reason=None,
+):
     """Record a login attempt for audit purposes. All records are retained permanently."""
     try:
         attempt = LoginAttempt(
@@ -387,9 +398,11 @@ def register_session(username, session_id, device_info=None, ip_address=None, br
         # Enforce per-user session cap — remove oldest if at limit
         current_count = ActiveSession.query.filter_by(username=username).count()
         if current_count >= MAX_SESSIONS_PER_USER:
-            oldest = ActiveSession.query.filter_by(username=username).order_by(
-                ActiveSession.login_time.asc()
-            ).first()
+            oldest = (
+                ActiveSession.query.filter_by(username=username)
+                .order_by(ActiveSession.login_time.asc())
+                .first()
+            )
             if oldest:
                 db_session.delete(oldest)
 
@@ -425,9 +438,11 @@ def remove_session(session_id):
 def get_active_sessions(username):
     """Get all active sessions for a user."""
     try:
-        sessions = ActiveSession.query.filter_by(username=username).order_by(
-            ActiveSession.last_seen.desc()
-        ).all()
+        sessions = (
+            ActiveSession.query.filter_by(username=username)
+            .order_by(ActiveSession.last_seen.desc())
+            .all()
+        )
         return [
             {
                 "session_id": s.session_id,
@@ -524,9 +539,7 @@ def decrypt_token(encrypted_token):
 
         try:
             payload = (
-                encrypted_token.encode()
-                if isinstance(encrypted_token, str)
-                else encrypted_token
+                encrypted_token.encode() if isinstance(encrypted_token, str) else encrypted_token
             )
             fp = hashlib.blake2s(payload, digest_size=8).hexdigest()
         except Exception:
@@ -548,8 +561,9 @@ def decrypt_token(encrypted_token):
         return None
 
 
-def upsert_auth(name, auth_token, broker, feed_token=None, user_id=None, revoke=False,
-                 owner_username=None):
+def upsert_auth(
+    name, auth_token, broker, feed_token=None, user_id=None, revoke=False, owner_username=None
+):
     """Store encrypted auth token and feed token if provided.
 
     ``name`` is the account_id (see the Auth model docstring). When this
@@ -662,6 +676,7 @@ def upsert_auth(name, auth_token, broker, feed_token=None, user_id=None, revoke=
     # This notifies WebSocket proxy and other processes to clear their stale caches
     try:
         from database.cache_invalidation import publish_all_cache_invalidation
+
         publish_all_cache_invalidation(name)
         logger.debug(f"Published cache invalidation for user: {name}")
     except Exception as e:
@@ -679,6 +694,7 @@ def upsert_auth(name, auth_token, broker, feed_token=None, user_id=None, revoke=
     # token found" until the process is restarted. See issue #1394.
     try:
         from websocket_proxy.broker_factory import cleanup_pools_for_user
+
         cleanup_pools_for_user(name, broker_name=broker)
     except Exception as e:
         # Don't fail auth on cleanup error — the user can still trade via
@@ -899,8 +915,9 @@ def generate_account_id(owner_username, broker):
     return f"{owner_username}_{broker}_{_secrets.token_hex(4)}"
 
 
-def create_broker_account(owner_username, broker, label=None,
-                           broker_api_key=None, broker_api_secret=None):
+def create_broker_account(
+    owner_username, broker, label=None, broker_api_key=None, broker_api_secret=None
+):
     """Create a new (unconnected) broker account for a platform user.
 
     Inserts a placeholder Auth row (is_revoked=True, no session token yet —
@@ -941,9 +958,7 @@ def create_broker_account(owner_username, broker, label=None,
 def list_broker_accounts(owner_username):
     """List every broker account owned by a platform user."""
     try:
-        accounts = Auth.query.filter_by(owner_username=owner_username).order_by(
-            Auth.id.asc()
-        ).all()
+        accounts = Auth.query.filter_by(owner_username=owner_username).order_by(Auth.id.asc()).all()
         return [
             {
                 "account_id": a.name,
@@ -970,14 +985,16 @@ def get_default_account_id(owner_username):
         default = Auth.query.filter_by(owner_username=owner_username, is_default=True).first()
         if default:
             return default.name
-        fallback = Auth.query.filter_by(owner_username=owner_username, is_revoked=False).order_by(
-            Auth.id.asc()
-        ).first()
+        fallback = (
+            Auth.query.filter_by(owner_username=owner_username, is_revoked=False)
+            .order_by(Auth.id.asc())
+            .first()
+        )
         if fallback:
             return fallback.name
-        any_account = Auth.query.filter_by(owner_username=owner_username).order_by(
-            Auth.id.asc()
-        ).first()
+        any_account = (
+            Auth.query.filter_by(owner_username=owner_username).order_by(Auth.id.asc()).first()
+        )
         return any_account.name if any_account else None
     except Exception as e:
         logger.exception(f"Error resolving default account for {owner_username}: {e}")
@@ -1025,9 +1042,7 @@ def get_broker_credentials(account_id):
         if not account:
             return None, None
         api_key = decrypt_token(account.broker_api_key) if account.broker_api_key else None
-        api_secret = (
-            decrypt_token(account.broker_api_secret) if account.broker_api_secret else None
-        )
+        api_secret = decrypt_token(account.broker_api_secret) if account.broker_api_secret else None
         return api_key, api_secret
     except Exception as e:
         logger.exception(f"Error getting broker credentials for account {account_id}: {e}")
@@ -1048,6 +1063,39 @@ def set_broker_credentials(account_id, broker_api_key, broker_api_secret):
         db_session.rollback()
         logger.exception(f"Error setting broker credentials for account {account_id}: {e}")
         return False
+
+
+def get_account_id_from_auth_token(auth_token, broker=None):
+    """Reverse-lookup: which account_id (Auth.name) a decrypted broker auth
+    token belongs to.
+
+    Needed by broker plugins whose per-request API calls (funds/orders/data)
+    only receive the bare auth_token, not the account_id -- e.g. 5Paisa,
+    which must resend its app-level BROKER_API_KEY (a per-account credential,
+    see get_broker_credentials) on every request, not just at login. Without
+    this, those call sites can only fall back to the instance-wide default
+    key (utils.config.get_broker_api_key with no account_id), silently
+    ignoring a different key set for this specific account via Profile >
+    Accounts.
+
+    O(n) over this instance's connected accounts (decrypt-and-compare,
+    there's no way to look up by plaintext token in an encrypted column) --
+    fine for the handful of broker accounts a self-hosted instance has.
+    Pass ``broker`` to narrow the scan when the caller already knows it.
+    """
+    if not auth_token:
+        return None
+    try:
+        query = Auth.query.filter_by(is_revoked=False)
+        if broker:
+            query = query.filter_by(broker=broker)
+        for account in query.all():
+            if account.auth and decrypt_token(account.auth) == auth_token:
+                return account.name
+        return None
+    except Exception as e:
+        logger.exception(f"Error resolving account_id from auth token: {e}")
+        return None
 
 
 def get_account_analyze_mode(account_id):
@@ -1380,7 +1428,9 @@ def get_auth_token_broker(provided_api_key, include_feed_token=False):
                 # (e.g., orphaned users with revoked sessions polled by background services)
                 negative_result = (None, None, None) if include_feed_token else (None, None)
                 auth_cache[cache_key] = negative_result
-                logger.warning(f"No valid auth token or broker found for user_id '{user_id}'. Cached negative result.")
+                logger.warning(
+                    f"No valid auth token or broker found for user_id '{user_id}'. Cached negative result."
+                )
                 return negative_result
         except Exception as e:
             logger.exception(f"Error while querying the database for auth token and broker: {e}")
