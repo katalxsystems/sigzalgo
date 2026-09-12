@@ -23,7 +23,7 @@ from database.auth_db import (
     upsert_api_key,
     upsert_auth,
 )
-from utils.config import get_connect_path
+from utils.config import get_connect_path, validate_broker_api_key_format
 from utils.logging import get_logger
 from utils.session import require_app_session
 
@@ -31,9 +31,7 @@ logger = get_logger(__name__)
 
 broker_accounts_bp = Blueprint("broker_accounts_bp", __name__, url_prefix="/api/accounts")
 
-VALID_BROKERS = {
-    b.strip().lower() for b in os.getenv("VALID_BROKERS", "").split(",") if b.strip()
-}
+VALID_BROKERS = {b.strip().lower() for b in os.getenv("VALID_BROKERS", "").split(",") if b.strip()}
 
 
 def _generate_api_key():
@@ -76,9 +74,17 @@ def add_account():
     if VALID_BROKERS and broker not in VALID_BROKERS:
         return jsonify({"status": "error", "message": f"Unsupported broker: {broker}"}), 400
 
+    if broker_api_key:
+        format_error = validate_broker_api_key_format(broker, broker_api_key)
+        if format_error:
+            return jsonify({"status": "error", "message": format_error}), 400
+
     account_id = create_broker_account(
-        session["user"], broker, label=label,
-        broker_api_key=broker_api_key, broker_api_secret=broker_api_secret,
+        session["user"],
+        broker,
+        label=label,
+        broker_api_key=broker_api_key,
+        broker_api_secret=broker_api_secret,
     )
     if not account_id:
         return jsonify({"status": "error", "message": "Failed to create account"}), 500
@@ -144,7 +150,8 @@ def connect_account(account_id):
 @require_app_session
 def update_account_credentials(account_id):
     """Set/update the per-account broker app credentials (API key/secret)."""
-    if not _owns(account_id):
+    account = _find_owned_account(account_id)
+    if not account:
         return jsonify({"status": "error", "message": "Account not found"}), 404
 
     data = request.get_json(silent=True) or {}
@@ -153,6 +160,16 @@ def update_account_credentials(account_id):
 
     if not broker_api_key and not broker_api_secret:
         return jsonify({"status": "error", "message": "Nothing to update"}), 400
+
+    # Some brokers (5paisa, Flattrade, Dhan) pack more than one credential
+    # into a single ":::"-delimited BROKER_API_KEY. Reject a malformed value
+    # here, at save time, instead of letting it silently fail deep inside a
+    # broker plugin the next time it's actually used (see
+    # utils.config.validate_broker_api_key_format).
+    if broker_api_key:
+        format_error = validate_broker_api_key_format(account["broker"], broker_api_key)
+        if format_error:
+            return jsonify({"status": "error", "message": format_error}), 400
 
     ok = set_broker_credentials(account_id, broker_api_key, broker_api_secret)
     if not ok:
@@ -210,5 +227,8 @@ def activate_account(account_id):
     session["user_session_key"] = account_id
     session["broker"] = account["broker"]
     return jsonify(
-        {"status": "success", "data": {"active_account_id": account_id, "broker": account["broker"]}}
+        {
+            "status": "success",
+            "data": {"active_account_id": account_id, "broker": account["broker"]},
+        }
     )

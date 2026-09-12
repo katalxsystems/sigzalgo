@@ -23,6 +23,7 @@ from utils.config import (
     get_broker_api_secret,
     get_broker_api_secret_market,
     get_broker_redirect_url,
+    validate_broker_api_key_format,
 )
 from utils.logging import get_logger
 from utils.session import admin_required, require_app_session
@@ -264,33 +265,22 @@ def update_credentials():
                     }
                 ), 400
 
-            # Validate broker-specific API key formats
-            if broker_name == "fivepaisa" and broker_api_key:
-                if ":::" not in broker_api_key or broker_api_key.count(":::") != 2:
-                    return jsonify(
-                        {
-                            "status": "error",
-                            "message": "5paisa API key must be in format: 'User_Key:::User_ID:::client_id'",
-                        }
-                    ), 400
-
-            elif broker_name == "flattrade" and broker_api_key:
-                if ":::" not in broker_api_key or broker_api_key.count(":::") != 1:
-                    return jsonify(
-                        {
-                            "status": "error",
-                            "message": "Flattrade API key must be in format: 'client_id:::api_key'",
-                        }
-                    ), 400
-
-            elif broker_name == "dhan" and broker_api_key:
-                if ":::" not in broker_api_key or broker_api_key.count(":::") != 1:
-                    return jsonify(
-                        {
-                            "status": "error",
-                            "message": "Dhan API key must be in format: 'client_id:::api_key'",
-                        }
-                    ), 400
+        # Validate broker-specific API key formats (fivepaisa/flattrade/dhan
+        # pack more than one credential into a single ":::"-delimited
+        # value). Runs whenever a key is submitted, independent of whether
+        # redirect_url is also in this request -- otherwise saving just the
+        # key by itself (redirect_url already set from a prior save) would
+        # skip this check entirely. broker_name comes from redirect_url when
+        # given here, else the instance's already-configured broker.
+        if broker_api_key:
+            broker_name = (
+                get_broker_from_redirect_url(redirect_url)
+                if redirect_url
+                else get_broker_from_redirect_url(get_broker_redirect_url() or "")
+            )
+            format_error = validate_broker_api_key_format(broker_name, broker_api_key)
+            if format_error:
+                return jsonify({"status": "error", "message": format_error}), 400
 
         # Validate the infra fields up front (alongside the redirect_url
         # validation above) so nothing is persisted -- DB or .env -- if any
@@ -367,7 +357,9 @@ def update_credentials():
                 # Use UTF-8 encoding for cross-platform compatibility
                 with open(env_path, "w", encoding="utf-8") as f:
                     f.write(content)
-                logger.info(f"Updated instance config (.env, restart required): {', '.join(infra_fields)}")
+                logger.info(
+                    f"Updated instance config (.env, restart required): {', '.join(infra_fields)}"
+                )
             except Exception as e:
                 logger.exception(f"Error writing .env file: {e}")
                 return jsonify(
