@@ -53,6 +53,7 @@ not need to call deactivate itself.
 {
   "apikey": "<your_app_apikey>",
   "call_id": "CALL-001",
+  "mentor_id": "MENTOR-007",
   "symbol": "RELIANCE",
   "exchange": "NSE",
   "active_price": 1190,
@@ -71,6 +72,7 @@ curl -X POST http://127.0.0.1:5000/api/v1/pricebreach/create \
   -d '{
   "apikey": "<your_app_apikey>",
   "call_id": "CALL-001",
+  "mentor_id": "MENTOR-007",
   "symbol": "RELIANCE",
   "exchange": "NSE",
   "active_price": 1190,
@@ -87,6 +89,7 @@ curl -X POST http://127.0.0.1:5000/api/v1/pricebreach/create \
 {
   "status": "success",
   "call_id": "CALL-001",
+  "mentor_id": "MENTOR-007",
   "workflows": {
     "sl_target": { "workflow_id": 1, "watching": "price outside [1160.0, 1220.0]" },
     "entry_recross": { "workflow_id": 2, "watching": "price crosses_below 1180.0" }
@@ -94,6 +97,10 @@ curl -X POST http://127.0.0.1:5000/api/v1/pricebreach/create \
   "message": "Each watch fires once, notifies your webhook, then deactivates both itself and its sibling watch automatically -- no separate deactivate call needed."
 }
 ```
+
+Both workflows created above are named from `call_id`, `mentor_id`, and
+`symbol` (the "script"), e.g. `CALL-001_MENTOR-007_RELIANCE (SL/Target)` —
+unless you pass an explicit `name` to override the base.
 
 If `active_price` had equaled `entry_price`, `entry_recross` would be `null`
 and only `sl_target` would exist (and an immediate notification would already
@@ -110,6 +117,7 @@ was breached. `alert_type` tells you which *workflow* fired
 ```json
 {
   "call_id": "CALL-001",
+  "mentor_id": "MENTOR-007",
   "workflow_id": 1,
   "alert_type": "sl_target_breach",
   "breach_type": "stop_loss",
@@ -126,6 +134,7 @@ was breached. `alert_type` tells you which *workflow* fired
 ```json
 {
   "call_id": "CALL-001",
+  "mentor_id": "MENTOR-007",
   "workflow_id": 1,
   "alert_type": "sl_target_breach",
   "breach_type": "target1",
@@ -142,6 +151,7 @@ was breached. `alert_type` tells you which *workflow* fired
 ```json
 {
   "call_id": "CALL-001",
+  "mentor_id": "MENTOR-007",
   "workflow_id": 2,
   "alert_type": "entry_recross",
   "breach_type": "entry_price",
@@ -174,6 +184,7 @@ deactivate it if needed:
 ```json
 {
   "call_id": "CALL-001",
+  "mentor_id": "MENTOR-007",
   "workflow_id": 1,
   "alert_type": "entry_recross",
   "breach_type": "entry_price",
@@ -210,15 +221,16 @@ account's key gets `403`.
 | Field | Type | Endpoint | Mandatory | Description |
 |-------|------|----------|-----------|-------------|
 | apikey | string | both | Mandatory | Your OpenAlgo API key |
-| call_id | string | create | Mandatory | Your own identifier for this call/trade — echoed back in every webhook payload |
-| symbol | string | create | Mandatory | Trading symbol |
+| call_id | string | create | Mandatory | Your own identifier for this call/trade — echoed back in every webhook payload and used in the default workflow name |
+| mentor_id | string | create | Mandatory | Identifier for the mentor/analyst behind this call — echoed back in every webhook payload and used in the default workflow name |
+| symbol | string | create | Mandatory | Trading symbol ("script") |
 | exchange | string | create | Mandatory | Exchange code |
 | active_price | number | create | Mandatory | The live price at the moment of this call — used only to pick the entry re-cross direction, not stored as a threshold itself |
 | entry_price | number | create | Mandatory | The level `entry_recross` watches for a re-cross through |
 | stop_loss | number | create | Mandatory | Lower `sl_target` bound; must be less than `target1` |
 | target1 | number | create | Mandatory | Upper `sl_target` bound |
 | webhook_url | string | create | Mandatory | Where breach notifications are POSTed |
-| name | string | create | Optional | Base workflow name (default: `"<symbol> breach watch"`); each of the two workflows suffixes `(SL/Target)` / `(Entry re-cross)` |
+| name | string | create | Optional | Base workflow name (default: `"<call_id>_<mentor_id>_<symbol>"`); each of the two workflows suffixes `(SL/Target)` / `(Entry re-cross)` |
 
 ## Notes
 

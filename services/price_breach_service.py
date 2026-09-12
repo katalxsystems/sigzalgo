@@ -1,7 +1,10 @@
 """Price-breach Flow workflows: build, create+activate, and deactivate.
 
 Wraps Flow's `priceAlert` trigger (a real background service polling LTP
-every second -- not a one-shot check) into two independent watches per call:
+every second -- not a one-shot check) into two independent watches per call.
+Every notify body carries the caller-supplied `call_id` and `mentor_id`, and
+-- unless an explicit name override is given -- both workflows are named
+from `call_id`, `mentor_id`, and `symbol` (the "script"), in that order:
 
 - sl_target: fires once price goes outside [stop_loss, target1]. Its notify
   branches on which bound was actually crossed (see _sl_target_graph), so the
@@ -112,6 +115,7 @@ def _send_notification(webhook_url: str, payload: dict) -> None:
 
 def _base_notify_body(
     call_id: str,
+    mentor_id: str,
     workflow_id: int | None,
     alert_type: str,
     symbol: str,
@@ -122,6 +126,7 @@ def _base_notify_body(
 ) -> dict:
     return {
         "call_id": call_id,
+        "mentor_id": mentor_id,
         "workflow_id": workflow_id,
         "alert_type": alert_type,
         "symbol": symbol,
@@ -195,6 +200,7 @@ def _deactivate_chain(
 
 def _sl_target_graph(
     call_id: str,
+    mentor_id: str,
     symbol: str,
     exchange: str,
     entry_price: float,
@@ -225,7 +231,15 @@ def _sl_target_graph(
         "expiration": "none",
     }
     common = _base_notify_body(
-        call_id, own_id, "sl_target_breach", symbol, exchange, entry_price, stop_loss, target1
+        call_id,
+        mentor_id,
+        own_id,
+        "sl_target_breach",
+        symbol,
+        exchange,
+        entry_price,
+        stop_loss,
+        target1,
     )
     common["breach_price"] = "{{webhook.trigger_price}}"
     common["triggered_at"] = "{{webhook.triggered_at}}"
@@ -287,6 +301,7 @@ def _sl_target_graph(
 
 def _entry_recross_graph(
     call_id: str,
+    mentor_id: str,
     symbol: str,
     exchange: str,
     entry_price: float,
@@ -308,7 +323,15 @@ def _entry_recross_graph(
         "expiration": "none",
     }
     notify_body = _base_notify_body(
-        call_id, own_id, "entry_recross", symbol, exchange, entry_price, stop_loss, target1
+        call_id,
+        mentor_id,
+        own_id,
+        "entry_recross",
+        symbol,
+        exchange,
+        entry_price,
+        stop_loss,
+        target1,
     )
     notify_body["breach_type"] = "entry_price"
     notify_body["breach_price"] = "{{webhook.trigger_price}}"
@@ -338,6 +361,7 @@ def _entry_recross_graph(
 def create_and_activate(
     api_key: str,
     call_id: str,
+    mentor_id: str,
     symbol: str,
     exchange: str,
     active_price: float,
@@ -350,13 +374,16 @@ def create_and_activate(
     """Create (and activate) the sl_target watch, and the entry_recross
     watch when active_price != entry_price -- or, when they are equal, send
     one immediate webhook notification instead (see module docstring).
+    mentor_id is echoed back in every webhook payload alongside call_id, and
+    -- unless an explicit name override is given -- both workflows are named
+    from call_id, mentor_id, and symbol (the "script").
     Returns (success, response_data, status_code) -- the convention every
     other service function in this codebase follows.
     """
     if stop_loss >= target1:
         return False, {"status": "error", "message": "stop_loss must be less than target1"}, 400
 
-    base_name = name or f"{symbol} breach watch"
+    base_name = name or f"{call_id}_{mentor_id}_{symbol}"
     entry_condition = _entry_cross_condition(active_price, entry_price)
 
     # Pass 1: create empty rows to get real ids. Both are needed before
@@ -386,6 +413,7 @@ def create_and_activate(
     # referencing the other for auto-cleanup) and write them in.
     sl_target_graph = _sl_target_graph(
         call_id,
+        mentor_id,
         symbol,
         exchange,
         entry_price,
@@ -402,6 +430,7 @@ def create_and_activate(
     if entry_wf:
         entry_graph = _entry_recross_graph(
             call_id,
+            mentor_id,
             symbol,
             exchange,
             entry_price,
@@ -453,6 +482,7 @@ def create_and_activate(
         # manually deactivate against.
         immediate_body = _base_notify_body(
             call_id,
+            mentor_id,
             sl_target_wf.id,
             "entry_recross",
             symbol,
@@ -499,7 +529,13 @@ def create_and_activate(
 
     return (
         True,
-        {"status": "success", "call_id": call_id, "workflows": workflows, "message": message},
+        {
+            "status": "success",
+            "call_id": call_id,
+            "mentor_id": mentor_id,
+            "workflows": workflows,
+            "message": message,
+        },
         201,
     )
 

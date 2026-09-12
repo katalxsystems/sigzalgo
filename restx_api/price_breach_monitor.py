@@ -47,6 +47,10 @@ class PriceBreachCreate(Resource):
         no entry_recross watch is created (there is no direction to watch
         for) -- instead an entry_price breach notification is sent to
         webhook_url immediately, in the background.
+
+        mentor_id is echoed back in every webhook payload alongside call_id,
+        and -- unless name is given -- both workflows are named from
+        call_id, mentor_id, and symbol (the "script").
         """
         try:
             data = create_schema.load(request.json)
@@ -60,6 +64,7 @@ class PriceBreachCreate(Resource):
             success, response_data, status_code = create_and_activate(
                 api_key=api_key,
                 call_id=data["call_id"],
+                mentor_id=data["mentor_id"],
                 symbol=data["symbol"],
                 exchange=data["exchange"],
                 active_price=data["active_price"],
