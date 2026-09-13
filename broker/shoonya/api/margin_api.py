@@ -1,7 +1,7 @@
 import json
-import os
 
 from broker.shoonya.mapping.margin_data import parse_margin_response, transform_margin_positions
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -19,7 +19,7 @@ def calculate_margin_api(positions, auth):
     """
     AUTH_TOKEN = auth
 
-    api_key = os.getenv("BROKER_API_KEY")
+    api_key, _ = resolve_broker_api_key(AUTH_TOKEN, "shoonya")
     if not api_key or ":::" not in api_key:
         error_response = {
             "status": "error",

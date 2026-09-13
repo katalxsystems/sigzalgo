@@ -894,7 +894,7 @@ def broker_callback(broker, para=None):
                 # Get feed token for market data
                 from broker.rmoney.api.auth_api import get_feed_token
 
-                feed_token, feed_user_id, feed_error = get_feed_token()
+                feed_token, feed_user_id, feed_error = get_feed_token(account_id)
                 if feed_error:
                     logger.warning(f"RMoney feed token error: {feed_error}")
                     feed_token = None

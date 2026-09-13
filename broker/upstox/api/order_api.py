@@ -1,5 +1,4 @@
 import json
-import os
 
 import httpx
 import threading
@@ -13,6 +12,7 @@ from broker.upstox.mapping.transform_data import (
 )
 from database.auth_db import get_auth_token
 from database.token_db import get_br_symbol, get_symbol, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -32,7 +32,7 @@ def get_api_response(endpoint, auth, method="GET", payload=""):
     """
     logger.debug(f"Requesting {method} on endpoint: {endpoint}")
     try:
-        api_key = os.getenv("BROKER_API_KEY")
+        api_key, _ = resolve_broker_api_key(auth, "upstox")
         if not api_key:
             logger.error("BROKER_API_KEY environment variable not set.")
             return {"status": "error", "message": "BROKER_API_KEY not set"}
@@ -180,7 +180,7 @@ def place_order_api(data, auth):
     """
     logger.debug(f"Placing order with data: {data}")
     try:
-        api_key = os.getenv("BROKER_API_KEY")
+        api_key, _ = resolve_broker_api_key(auth, "upstox")
         if not api_key:
             logger.error("BROKER_API_KEY not set. Cannot place order.")
             return None, {"status": "error", "message": "BROKER_API_KEY not set"}, None

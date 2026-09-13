@@ -305,7 +305,7 @@ def verify_otp(otp_code, refresh_token, account_id=None):
 
 
 # Keep authenticate_broker for backward compatibility (deprecated, use send_otp + verify_otp)
-def authenticate_broker(otp_code, password=None):
+def authenticate_broker(otp_code, password=None, account_id=None):
     """
     DEPRECATED: Use send_otp() and verify_otp() for proper two-step authentication.
 

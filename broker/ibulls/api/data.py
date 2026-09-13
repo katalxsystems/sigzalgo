@@ -10,7 +10,7 @@ from flask import session
 from broker.ibulls.api.auth_api import get_feed_token as refresh_feed_token
 from broker.ibulls.baseurl import MARKET_DATA_URL
 from broker.ibulls.database.master_contract_db import SymToken, db_session
-from database.auth_db import get_feed_token
+from database.auth_db import get_account_id_from_auth_token, get_feed_token
 from database.token_db import get_br_symbol, get_brexchange, get_oa_symbol
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
@@ -103,7 +103,8 @@ class BrokerData:
     def _refresh_feed_token(self):
         """Refresh the feed token when it expires"""
         try:
-            new_feed_token, user_id, error = refresh_feed_token()
+            account_id = get_account_id_from_auth_token(self.auth_token, broker="ibulls")
+            new_feed_token, user_id, error = refresh_feed_token(account_id)
             if error:
                 logger.error(f"Failed to refresh feed token: {error}")
                 return False

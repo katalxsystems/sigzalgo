@@ -1,5 +1,4 @@
 import json
-import os
 import time
 import urllib.parse
 from datetime import datetime
@@ -9,6 +8,7 @@ import pandas as pd
 
 from broker.fyers.api.rate_limiter import MAX_RETRIES, apply_rate_limit, retry_delay_from_headers
 from database.token_db import get_br_symbol, get_oa_symbol
+from utils.config import resolve_broker_api_key
 from utils.constants import FNO_EXCHANGES
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
@@ -40,7 +40,7 @@ def get_api_response(endpoint, auth, method="GET", payload="", _retry_count=0):
         client = get_httpx_client()
 
         AUTH_TOKEN = auth
-        api_key = os.getenv("BROKER_API_KEY")
+        api_key, _ = resolve_broker_api_key(auth, "fyers")
 
         url = f"https://api-t1.fyers.in{endpoint}"
         headers = {"Authorization": f"{api_key}:{AUTH_TOKEN}", "Content-Type": "application/json"}

@@ -1,7 +1,6 @@
 # api/funds.py for Fyers
 
 import json
-import os
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -10,6 +9,7 @@ import httpx
 
 from broker.fyers.api.order_api import get_positions
 from broker.fyers.mapping.order_data import map_position_data
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -67,7 +67,7 @@ def get_margin_data(auth_token: str) -> dict[str, str]:
         logger.debug(f"Rate limit backoff active, {remaining}s remaining. Serving cached data.")
         return user_cache["data"] if user_cache["data"] else {}
 
-    api_key = os.getenv("BROKER_API_KEY")
+    api_key, _ = resolve_broker_api_key(auth_token, "fyers")
     if not api_key:
         logger.error("BROKER_API_KEY environment variable not set")
         return {}

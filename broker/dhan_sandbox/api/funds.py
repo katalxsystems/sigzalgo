@@ -1,19 +1,19 @@
 # api/funds.py
 
 import json
-import os
 
 from broker.dhan_sandbox.api.baseurl import get_url
 from broker.dhan_sandbox.api.order_api import get_positions
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def _get_dhan_client_id() -> str | None:
-    """Extract Dhan client-id from BROKER_API_KEY env value."""
-    broker_api_key = os.getenv("BROKER_API_KEY")
+def _get_dhan_client_id(auth_token: str | None = None) -> str | None:
+    """Resolve Dhan client-id from the per-account (or instance-wide) broker_api_key."""
+    broker_api_key, _ = resolve_broker_api_key(auth_token, "dhan_sandbox")
     if not broker_api_key:
         return None
     if ":::" in broker_api_key:
@@ -24,7 +24,7 @@ def _get_dhan_client_id() -> str | None:
 
 def test_auth_token(auth_token):
     """Test if the auth token is valid by making a simple API call to funds endpoint."""
-    client_id = _get_dhan_client_id()
+    client_id = _get_dhan_client_id(auth_token)
 
     # Get the shared httpx client with connection pooling
     client = get_httpx_client()
@@ -64,7 +64,7 @@ def test_auth_token(auth_token):
 
 def get_margin_data(auth_token):
     """Fetch margin data from Dhan Sandbox API using the provided auth token."""
-    client_id = _get_dhan_client_id()
+    client_id = _get_dhan_client_id(auth_token)
 
     # Get the shared httpx client with connection pooling
     client = get_httpx_client()

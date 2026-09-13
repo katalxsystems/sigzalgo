@@ -111,23 +111,94 @@ def _instance_broker_setting(field: str) -> str | None:
         return None
 
 
-def get_broker_api_key_market() -> str | None:
+def get_broker_api_key_market(account_id: str | None = None) -> str | None:
     """Retrieve the market-data-specific broker API key (used by the XTS-
-    family brokers' separate market-feed login): DB-first, .env fallback.
+    family brokers' separate market-feed login: compositedge, rmoney,
+    fivepaisaxts, ibulls, iifl, jainamxts, wisdom).
 
-    Unlike get_broker_api_key(), this has no per-account layer — the market
-    feed credential is a single instance-wide pair, not something that
-    varies per connected trading account.
+    Per-account first (database.auth_db.Auth.broker_api_key_market), falling
+    back to the instance-wide default during the per-account migration --
+    see get_broker_api_key() for the same resolution shape. The
+    instance-wide fallback here is transitional: it goes away once every
+    XTS-family broker's get_feed_token() threads account_id and the
+    one-time backfill migration has populated broker_api_key_market for
+    every existing account (see the SaaS per-account credentials plan).
     """
+    if account_id:
+        try:
+            from database.auth_db import get_broker_credentials_market
+
+            api_key, _ = get_broker_credentials_market(account_id)
+            if api_key:
+                return api_key
+        except Exception:
+            from utils.logging import get_logger
+
+            get_logger(__name__).exception(
+                f"Error reading DB-stored broker_api_key_market for account {account_id}"
+            )
     return _instance_broker_setting("broker_api_key_market") or os.getenv("BROKER_API_KEY_MARKET")
 
 
-def get_broker_api_secret_market() -> str | None:
+def get_broker_api_secret_market(account_id: str | None = None) -> str | None:
     """Retrieve the market-data-specific broker API secret. See
     get_broker_api_key_market() for the resolution order."""
+    if account_id:
+        try:
+            from database.auth_db import get_broker_credentials_market
+
+            _, api_secret = get_broker_credentials_market(account_id)
+            if api_secret:
+                return api_secret
+        except Exception:
+            from utils.logging import get_logger
+
+            get_logger(__name__).exception(
+                f"Error reading DB-stored broker_api_secret_market for account {account_id}"
+            )
     return _instance_broker_setting("broker_api_secret_market") or os.getenv(
         "BROKER_API_SECRET_MARKET"
     )
+
+
+def resolve_broker_api_key(
+    auth_token: str | None, broker: str, account_id: str | None = None
+) -> tuple[str | None, str | None]:
+    """Resolve (api_key, api_secret) for a broker plugin's per-request calls
+    (order placement, funds, quotes) that must resend the app-level
+    BROKER_API_KEY/SECRET on every call, not just at login.
+
+    Reverse-looks-up account_id from auth_token when not already known
+    (database.auth_db.get_account_id_from_auth_token), then resolves through
+    get_broker_api_key/get_broker_api_secret -- the same per-account-first
+    resolution login already uses. This is the shared helper broker plugins
+    should call instead of reading os.getenv("BROKER_API_KEY") directly: see
+    broker/fivepaisa/api/order_api.py's _get_5paisa_credentials() for the
+    original hand-written version of this pattern, before it was
+    generalized here.
+    """
+    if account_id is None and auth_token:
+        from database.auth_db import get_account_id_from_auth_token
+
+        account_id = get_account_id_from_auth_token(auth_token, broker=broker)
+    return get_broker_api_key(account_id), get_broker_api_secret(account_id)
+
+
+def resolve_broker_api_key_market(
+    auth_token: str | None, broker: str, account_id: str | None = None
+) -> tuple[str | None, str | None]:
+    """Market-data-feed counterpart of resolve_broker_api_key() -- for
+    XTS-family brokers' get_feed_token() (compositedge, rmoney, fivepaisaxts,
+    ibulls, iifl, jainamxts, wisdom), which needs its own app key/secret
+    pair, separate from the trading credential. Same reverse-lookup-from-
+    auth_token mechanism; resolves through get_broker_api_key_market/
+    get_broker_api_secret_market instead.
+    """
+    if account_id is None and auth_token:
+        from database.auth_db import get_account_id_from_auth_token
+
+        account_id = get_account_id_from_auth_token(auth_token, broker=broker)
+    return get_broker_api_key_market(account_id), get_broker_api_secret_market(account_id)
 
 
 def get_broker_redirect_url() -> str | None:

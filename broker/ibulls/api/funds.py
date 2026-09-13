@@ -2,7 +2,6 @@
 
 import http.client
 import json
-import os
 
 from broker.ibulls.baseurl import INTERACTIVE_URL
 from utils.httpx_client import get_httpx_client
@@ -13,9 +12,6 @@ logger = get_logger(__name__)
 
 def get_margin_data(auth_token):
     """Fetch margin data from Compositedge's API using the provided auth token."""
-    api_key = os.getenv("BROKER_API_KEY")
-    api_secret = os.getenv("BROKER_API_SECRET")
-
     client = get_httpx_client()
 
     # conn = http.client.HTTPSConnection("xts.compositedge.com")

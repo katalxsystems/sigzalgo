@@ -1,10 +1,10 @@
 # api/funds.py
 
 import json
-import os
 
 import httpx
 
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -15,7 +15,7 @@ def get_margin_data(auth_token):
     """Fetch margin data from Shoonya's API using the provided auth token."""
 
     # BROKER_API_KEY format: userid:::client_id
-    full_api_key = os.getenv("BROKER_API_KEY")
+    full_api_key, _ = resolve_broker_api_key(auth_token, "shoonya")
     if not full_api_key or ":::" not in full_api_key:
         logger.error("BROKER_API_KEY not configured or invalid format")
         return {}

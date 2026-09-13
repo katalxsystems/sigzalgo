@@ -1,5 +1,4 @@
 import json
-import os
 
 from broker.firstock.mapping.transform_data import (
     map_product_type,
@@ -9,6 +8,7 @@ from broker.firstock.mapping.transform_data import (
 )
 from database.auth_db import get_auth_token
 from database.token_db import get_br_symbol, get_symbol, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 import threading
@@ -26,7 +26,7 @@ def get_api_response(endpoint, auth, method="POST", payload=None):
         # Get the shared httpx client with connection pooling
         client = get_httpx_client()
 
-        api_key = os.getenv("BROKER_API_KEY")
+        api_key, _ = resolve_broker_api_key(auth, "firstock")
         if not api_key:
             raise Exception("BROKER_API_KEY not found in environment variables")
 
@@ -94,9 +94,10 @@ def get_positions(auth):
 
 def get_ltp(auth, exchange, token):
     """Get Last Traded Price from Firstock"""
+    firstock_api_key, _ = resolve_broker_api_key(auth, "firstock")
     payload = {
         "jKey": auth,
-        "userId": os.getenv("BROKER_API_KEY")[:-4],
+        "userId": firstock_api_key[:-4],
         "exchange": exchange,
         "token": token,
     }
@@ -229,7 +230,7 @@ def place_order_api(data, auth):
     Place order through Firstock API
     Returns: response, response_data, orderid
     """
-    api_key = os.getenv("BROKER_API_KEY")
+    api_key, _ = resolve_broker_api_key(auth, "firstock")
     api_key = api_key[:-4]
 
     token = get_token(data["symbol"], data["exchange"])
@@ -486,7 +487,7 @@ def cancel_order(orderid, auth):
         "field": "orderNumber"
     }
     """
-    api_key = os.getenv("BROKER_API_KEY")
+    api_key, _ = resolve_broker_api_key(auth, "firstock")
     api_key = api_key[:-4]  # Remove last 4 characters
 
     # Prepare request data
@@ -548,7 +549,7 @@ def modify_order(data, auth):
     Success: {"status": "success", "orderid": "1234567890111"}
     Error: {"status": "error", "message": "error message"}
     """
-    api_key = os.getenv("BROKER_API_KEY")
+    api_key, _ = resolve_broker_api_key(auth, "firstock")
     api_key = api_key[:-4]  # Remove last 4 characters
 
     # Get token. Do NOT mutate data["symbol"] to the broker symbol — MPP
@@ -643,7 +644,7 @@ def placeorder(data, auth):
     Returns:
         dict: API response with order details
     """
-    api_key = os.getenv("BROKER_API_KEY")
+    api_key, _ = resolve_broker_api_key(auth, "firstock")
     api_key = api_key[:-4]  # Remove last 4 characters
 
     token = get_token(data["symbol"], data["exchange"])

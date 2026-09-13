@@ -43,7 +43,7 @@ def authenticate_broker(request_token, account_id=None):
                 logger.debug("Auth token received successfully")
 
                 # Call get_feed_token() after successful authentication
-                feed_token, user_id, feed_error = get_feed_token()
+                feed_token, user_id, feed_error = get_feed_token(account_id)
                 if feed_error:
                     return token, None, None, f"Feed token error: {feed_error}"
 
@@ -67,11 +67,12 @@ def authenticate_broker(request_token, account_id=None):
         return None, None, None, f"Error during authentication: {str(e)}"
 
 
-def get_feed_token():
+def get_feed_token(account_id=None):
     try:
-        # Fetch credentials for feed token
-        BROKER_API_KEY_MARKET = get_broker_api_key_market()
-        BROKER_API_SECRET_MARKET = get_broker_api_secret_market()
+        # Fetch credentials for feed token (per-account first, see
+        # utils.config.get_broker_api_key_market's docstring)
+        BROKER_API_KEY_MARKET = get_broker_api_key_market(account_id)
+        BROKER_API_SECRET_MARKET = get_broker_api_secret_market(account_id)
 
         # Construct payload for feed token request
         feed_payload = {

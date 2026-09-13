@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from broker.ibulls.streaming.ibulls_websocket import IbullsWebSocketClient
 from database.auth_db import get_auth_token, get_feed_token
 from database.token_db import get_token
-from utils.config import get_broker_api_key_market, get_broker_api_secret_market
+from utils.config import resolve_broker_api_key_market
 
 # Add parent directory to path to allow imports
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../"))
@@ -69,14 +69,15 @@ class IbullsWebSocketAdapter(BaseBrokerWebSocketAdapter):
                 self.logger.error(f"No authentication tokens found for user {user_id}")
                 raise ValueError(f"No authentication tokens found for user {user_id}")
 
-            # For XTS, we need API key and secret, not just tokens
-            # These should be stored in environment variables or config
-            api_key = get_broker_api_key_market()
-            api_secret = get_broker_api_secret_market()
+            # For XTS, we need API key and secret, not just tokens. Resolved
+            # per-account (reverse-looked-up from auth_token) first, falling
+            # back to the instance-wide default -- see
+            # utils.config.resolve_broker_api_key_market.
+            api_key, api_secret = resolve_broker_api_key_market(auth_token, "ibulls")
 
             if not api_key or not api_secret:
                 self.logger.error(
-                    "Missing BROKER_API_KEY_MARKET or BROKER_API_SECRET_MARKET environment variables"
+                    "Missing BROKER_API_KEY_MARKET or BROKER_API_SECRET_MARKET (per-account or instance-wide)"
                 )
                 raise ValueError("Missing Ibulls XTS API credentials in environment variables")
 
@@ -84,8 +85,9 @@ class IbullsWebSocketAdapter(BaseBrokerWebSocketAdapter):
             # Use provided tokens
             auth_token = auth_data.get("auth_token")
             feed_token = auth_data.get("feed_token")
-            api_key = auth_data.get("api_key", get_broker_api_key_market())
-            api_secret = auth_data.get("api_secret", get_broker_api_secret_market())
+            default_key, default_secret = resolve_broker_api_key_market(auth_token, "ibulls")
+            api_key = auth_data.get("api_key", default_key)
+            api_secret = auth_data.get("api_secret", default_secret)
 
             if not auth_token or not feed_token:
                 self.logger.error("Missing required authentication data")

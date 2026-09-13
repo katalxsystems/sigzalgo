@@ -13,6 +13,7 @@ from broker.deltaexchange.mapping.transform_data import (
     transform_modify_order_data,
 )
 from database.token_db import get_br_symbol, get_oa_symbol, get_symbol, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -34,7 +35,8 @@ def get_api_response(endpoint, auth, method="GET", payload="", params=None):
         Parsed JSON dict from Delta Exchange.
         On error returns {"success": False, "error": {"code": ..., "message": ...}}
     """
-    api_secret = os.getenv("BROKER_API_SECRET", "")
+    _, api_secret = resolve_broker_api_key(auth, "deltaexchange")
+    api_secret = api_secret or ""
 
     # Build query string manually so the signature and the URL are always in sync.
     # Delta Exchange signature formula: METHOD + timestamp + path + query_string + body

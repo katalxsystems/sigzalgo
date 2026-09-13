@@ -8,6 +8,7 @@ import pandas as pd
 from broker.mstock.api.mstockwebsocket import MstockWebSocket
 from broker.mstock.mapping.order_data import transform_holdings_data, transform_positions_data
 from database.token_db import get_br_symbol, get_oa_symbol, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -16,7 +17,7 @@ logger = get_logger(__name__)
 
 def get_api_response(endpoint, auth_token, method="GET", payload=None):
     """Helper function to make API calls to mstock"""
-    api_key = os.getenv("BROKER_API_SECRET")
+    _, api_key = resolve_broker_api_key(auth_token, "mstock")
 
     # Get the shared httpx client with connection pooling
     client = get_httpx_client()
@@ -61,7 +62,7 @@ def get_positions(auth_token):
     """
     Retrieves the user's positions using Type B authentication.
     """
-    api_key = os.getenv("BROKER_API_SECRET")
+    _, api_key = resolve_broker_api_key(auth_token, "mstock")
     headers = {
         "X-Mirae-Version": "1",
         "Authorization": f"Bearer {auth_token}",
@@ -85,7 +86,7 @@ def get_holdings(auth_token):
     """
     Retrieves the user's holdings using Type B authentication.
     """
-    api_key = os.getenv("BROKER_API_SECRET")
+    _, api_key = resolve_broker_api_key(auth_token, "mstock")
     headers = {
         "X-Mirae-Version": "1",
         "Authorization": f"Bearer {auth_token}",
@@ -762,7 +763,7 @@ class BrokerData:
             )
 
             # Call intraday API using typeb endpoint
-            api_key = os.getenv("BROKER_API_SECRET")
+            _, api_key = resolve_broker_api_key(self.auth_token, "mstock")
             client = get_httpx_client()
 
             headers = {

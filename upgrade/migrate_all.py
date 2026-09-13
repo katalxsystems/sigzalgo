@@ -73,6 +73,7 @@ MIGRATIONS = [
     ("migrate_multi_account.py", "Multi-Broker-Account Support"),
     ("migrate_broker_settings.py", "Instance-Wide Broker Settings (DB-backed)"),
     ("migrate_account_analyze_mode.py", "Per-Account Analyzer Mode"),
+    ("migrate_broker_credentials_market.py", "Per-Account Market-Data Credentials"),
 ]
 
 

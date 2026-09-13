@@ -1,5 +1,4 @@
 import json
-import os
 import time
 import urllib.parse
 from datetime import datetime, timedelta
@@ -13,15 +12,16 @@ import pandas as pd
 from broker.dhan_sandbox.api.baseurl import get_url
 from broker.dhan_sandbox.mapping.transform_data import map_exchange_type
 from database.token_db import get_br_symbol, get_oa_symbol, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def _get_dhan_client_id() -> str | None:
-    """Extract Dhan client-id from BROKER_API_KEY env value."""
-    broker_api_key = os.getenv("BROKER_API_KEY")
+def _get_dhan_client_id(auth_token: str | None = None) -> str | None:
+    """Resolve Dhan client-id from the per-account (or instance-wide) broker_api_key."""
+    broker_api_key, _ = resolve_broker_api_key(auth_token, "dhan_sandbox")
     if not broker_api_key:
         return None
     if ":::" in broker_api_key:
@@ -33,7 +33,7 @@ def _get_dhan_client_id() -> str | None:
 
 def get_api_response(endpoint, auth, method="POST", payload=""):
     AUTH_TOKEN = auth
-    client_id = _get_dhan_client_id()
+    client_id = _get_dhan_client_id(AUTH_TOKEN)
 
     if not client_id:
         raise Exception("Could not extract client ID from auth token")

@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -10,6 +9,7 @@ import httpx
 import pandas as pd
 
 from database.token_db import get_br_symbol, get_oa_symbol, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -33,7 +33,7 @@ def get_api_response(endpoint, auth, method="POST", payload=None):
     """
     AUTH_TOKEN = auth
     # BROKER_API_KEY format: userid:::client_id
-    full_api_key = os.getenv("BROKER_API_KEY")
+    full_api_key, _ = resolve_broker_api_key(AUTH_TOKEN, "shoonya")
     if not full_api_key:
         raise RuntimeError("BROKER_API_KEY is not configured")
     api_key = full_api_key.split(":::")[0]  # Trading user ID
@@ -78,7 +78,7 @@ def get_chart_api_response(endpoint, auth, method="POST", payload=None):
     and caused JSONDecodeError at line 1 col 1.
     """
     AUTH_TOKEN = auth
-    full_api_key = os.getenv("BROKER_API_KEY")
+    full_api_key, _ = resolve_broker_api_key(AUTH_TOKEN, "shoonya")
     if not full_api_key:
         raise RuntimeError("BROKER_API_KEY is not configured")
     api_key = full_api_key.split(":::")[0]
@@ -369,7 +369,7 @@ class BrokerData:
         prepared_symbols = []
 
         # Pre-fetch API key (userid part)
-        full_api_key = os.getenv("BROKER_API_KEY")
+        full_api_key, _ = resolve_broker_api_key(self.auth_token, "shoonya")
         api_key = full_api_key.split(":::")[0]  # Trading user ID
 
         # Step 1: Pre-resolve all tokens sequentially (database access)

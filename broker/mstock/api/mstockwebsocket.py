@@ -34,7 +34,8 @@ class MstockWebSocket:
         # database. Invoked before each reconnect so daily token rollover
         # (~3 AM IST) does not leave the feed dead with the construction-time token.
         self.token_provider = token_provider
-        self.api_key = os.getenv("BROKER_API_SECRET") or os.getenv("BROKER_API_KEY")
+        _resolved_key, _resolved_secret = resolve_broker_api_key(auth_token, "mstock")
+        self.api_key = _resolved_secret or _resolved_key
         self.ws_url = self._build_ws_url()
 
         # Streaming mode variables

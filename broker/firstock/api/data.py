@@ -1,5 +1,4 @@
 import json
-import os
 import time
 from datetime import datetime, timedelta
 
@@ -7,6 +6,7 @@ import httpx
 import pandas as pd
 
 from database.token_db import get_br_symbol, get_symbol, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -31,7 +31,7 @@ def get_api_response(endpoint, auth, method="POST", payload=None, custom_timeout
     Common function to make API calls to Firstock using shared httpx client with connection pooling
     """
     try:
-        api_key = os.getenv("BROKER_API_KEY")
+        api_key, _ = resolve_broker_api_key(auth, "firstock")
         if not api_key:
             raise Exception("BROKER_API_KEY not found in environment variables")
 
@@ -185,8 +185,9 @@ class BrokerData:
             # Map exchange to Firstock format (NSE_INDEX -> NSE, BSE_INDEX -> BSE)
             firstock_exchange = map_firstock_exchange(exchange)
 
+            firstock_api_key, _ = resolve_broker_api_key(self.auth_token, "firstock")
             payload = {
-                "userId": os.getenv("BROKER_API_KEY")[:-4],
+                "userId": firstock_api_key[:-4],
                 "exchange": firstock_exchange,
                 "tradingSymbol": br_symbol,
                 "jKey": self.auth_token,
@@ -269,7 +270,7 @@ class BrokerData:
         skipped_symbols = []
         symbol_map = {}  # Map br_symbol to original symbol/exchange
 
-        api_key = os.getenv("BROKER_API_KEY")
+        api_key, _ = resolve_broker_api_key(self.auth_token, "firstock")
         if not api_key:
             raise Exception("BROKER_API_KEY not found in environment variables")
         api_key = api_key[:-4]  # Firstock specific requirement
@@ -362,8 +363,9 @@ class BrokerData:
             # Map exchange to Firstock format (NSE_INDEX -> NSE, BSE_INDEX -> BSE)
             firstock_exchange = map_firstock_exchange(exchange)
 
+            firstock_api_key, _ = resolve_broker_api_key(self.auth_token, "firstock")
             payload = {
-                "userId": os.getenv("BROKER_API_KEY")[:-4],
+                "userId": firstock_api_key[:-4],
                 "exchange": firstock_exchange,
                 "tradingSymbol": br_symbol,
                 "jKey": self.auth_token,
@@ -647,8 +649,9 @@ class BrokerData:
                         br_symbol = get_br_symbol(symbol, exchange)
                         firstock_exchange = map_firstock_exchange(exchange)
 
+                        firstock_api_key, _ = resolve_broker_api_key(self.auth_token, "firstock")
                         payload = {
-                            "userId": os.getenv("BROKER_API_KEY")[:-4],
+                            "userId": firstock_api_key[:-4],
                             "jKey": self.auth_token,
                             "exchange": firstock_exchange,
                             "tradingSymbol": br_symbol,
@@ -983,8 +986,9 @@ class BrokerData:
             firstock_exchange = map_firstock_exchange(exchange)
 
             # Prepare payload according to new API format
+            firstock_api_key, _ = resolve_broker_api_key(self.auth_token, "firstock")
             payload = {
-                "userId": os.getenv("BROKER_API_KEY")[:-4],
+                "userId": firstock_api_key[:-4],
                 "jKey": self.auth_token,
                 "exchange": firstock_exchange,
                 "tradingSymbol": br_symbol,

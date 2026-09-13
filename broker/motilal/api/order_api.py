@@ -15,6 +15,7 @@ from broker.motilal.mapping.transform_data import (
 )
 from database.auth_db import get_auth_token
 from database.token_db import get_br_symbol, get_symbol, get_symbol_info, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -23,7 +24,7 @@ logger = get_logger(__name__)
 
 def get_api_response(endpoint, auth, method="GET", payload=""):
     AUTH_TOKEN = auth
-    api_key = os.getenv("BROKER_API_SECRET")
+    _, api_key = resolve_broker_api_key(AUTH_TOKEN, "motilal")
 
     # Get the shared httpx client with connection pooling
     client = get_httpx_client()
@@ -199,7 +200,7 @@ def get_open_position(tradingsymbol, exchange, producttype, auth):
 
 def place_order_api(data, auth):
     AUTH_TOKEN = auth
-    BROKER_API_SECRET = os.getenv("BROKER_API_SECRET")
+    _, BROKER_API_SECRET = resolve_broker_api_key(AUTH_TOKEN, "motilal")
     data["apikey"] = BROKER_API_SECRET
     token = get_token(data["symbol"], data["exchange"])
 
@@ -501,7 +502,7 @@ def close_all_positions(current_api_key, auth):
 def cancel_order(orderid, auth):
     # Assuming you have a function to get the authentication token
     AUTH_TOKEN = auth
-    api_key = os.getenv("BROKER_API_SECRET")
+    _, api_key = resolve_broker_api_key(AUTH_TOKEN, "motilal")
 
     # Get the shared httpx client with connection pooling
     client = get_httpx_client()
@@ -572,7 +573,7 @@ def modify_order(data, auth):
     """
     # Assuming you have a function to get the authentication token
     AUTH_TOKEN = auth
-    api_key = os.getenv("BROKER_API_SECRET")
+    _, api_key = resolve_broker_api_key(AUTH_TOKEN, "motilal")
 
     # Get the shared httpx client with connection pooling
     client = get_httpx_client()

@@ -6,6 +6,7 @@ import os
 
 from broker.deltaexchange.api.baseurl import BASE_URL, get_auth_headers
 from broker.deltaexchange.mapping.margin_data import parse_margin_response, transform_margin_positions
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -29,7 +30,8 @@ def get_margin_mode(auth: str) -> str:
     separate margin allocation.
     """
     api_key    = auth
-    api_secret = os.getenv("BROKER_API_SECRET", "")
+    _, api_secret = resolve_broker_api_key(auth, "deltaexchange")
+    api_secret = api_secret or ""
     if not api_key or not api_secret:
         return "unknown"
 
@@ -78,7 +80,8 @@ def calculate_margin_api(positions, auth):
         Tuple of (MockResponse, response_data) matching OpenAlgo broker interface.
     """
     api_key = auth
-    api_secret = os.getenv("BROKER_API_SECRET", "")
+    _, api_secret = resolve_broker_api_key(auth, "deltaexchange")
+    api_secret = api_secret or ""
 
     class MockResponse:
         def __init__(self, code):

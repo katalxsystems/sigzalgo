@@ -207,10 +207,20 @@ class Auth(Base):
 
     # Per-account broker app credentials (OAuth API key/secret registered
     # with the broker). Fernet-encrypted at rest, same key as the auth
-    # token. NULL means "fall back to the instance-wide .env pair" —
-    # see utils/broker_credentials.py.
+    # token. NULL until backfilled/set — see
+    # upgrade/migrate_broker_credentials_market.py and utils/config.py's
+    # get_broker_api_key/get_broker_api_secret (no instance-wide fallback;
+    # per-account is the only source).
     broker_api_key = Column(Text, nullable=True)
     broker_api_secret = Column(Text, nullable=True)
+
+    # Per-account market-data feed credentials (XTS-family brokers' separate
+    # quote/depth login, e.g. compositedge, rmoney, fivepaisaxts, ibulls,
+    # iifl, jainamxts, wisdom). Same resolution shape as broker_api_key
+    # above -- see utils/config.py's get_broker_api_key_market/
+    # get_broker_api_secret_market.
+    broker_api_key_market = Column(Text, nullable=True)
+    broker_api_secret_market = Column(Text, nullable=True)
 
     # Per-account Analyzer/Sandbox toggle. NULL means "not set for this
     # account yet, fall back to the instance-wide Settings.analyze_mode
@@ -1030,12 +1040,11 @@ def set_default_account(owner_username, account_id):
 
 
 def get_broker_credentials(account_id):
-    """Get the per-account broker app credentials (API key/secret).
+    """Get the per-account broker app credentials (trading API key/secret).
 
     Returns (api_key, api_secret), either of which is None if the account
-    has no DB-stored credentials — callers should fall back to the
-    instance-wide .env BROKER_API_KEY/BROKER_API_SECRET in that case (see
-    utils/broker_credentials.py).
+    has no DB-stored credentials. Per-account is the only source — see
+    utils.config.get_broker_api_key/get_broker_api_secret.
     """
     try:
         account = Auth.query.filter_by(name=account_id).first()
@@ -1062,6 +1071,53 @@ def set_broker_credentials(account_id, broker_api_key, broker_api_secret):
     except Exception as e:
         db_session.rollback()
         logger.exception(f"Error setting broker credentials for account {account_id}: {e}")
+        return False
+
+
+def get_broker_credentials_market(account_id):
+    """Get the per-account market-data feed credentials (XTS-family
+    brokers' separate quote/depth login: compositedge, rmoney, fivepaisaxts,
+    ibulls, iifl, jainamxts, wisdom).
+
+    Returns (api_key, api_secret), either of which is None if the account
+    has no DB-stored market credentials. Per-account is the only source —
+    see utils.config.get_broker_api_key_market/get_broker_api_secret_market.
+    """
+    try:
+        account = Auth.query.filter_by(name=account_id).first()
+        if not account:
+            return None, None
+        api_key = (
+            decrypt_token(account.broker_api_key_market) if account.broker_api_key_market else None
+        )
+        api_secret = (
+            decrypt_token(account.broker_api_secret_market)
+            if account.broker_api_secret_market
+            else None
+        )
+        return api_key, api_secret
+    except Exception as e:
+        logger.exception(f"Error getting market broker credentials for account {account_id}: {e}")
+        return None, None
+
+
+def set_broker_credentials_market(account_id, broker_api_key_market, broker_api_secret_market):
+    """Store per-account market-data feed credentials, encrypted at rest."""
+    try:
+        account = Auth.query.filter_by(name=account_id).first()
+        if not account:
+            return False
+        account.broker_api_key_market = (
+            encrypt_token(broker_api_key_market) if broker_api_key_market else None
+        )
+        account.broker_api_secret_market = (
+            encrypt_token(broker_api_secret_market) if broker_api_secret_market else None
+        )
+        db_session.commit()
+        return True
+    except Exception as e:
+        db_session.rollback()
+        logger.exception(f"Error setting market broker credentials for account {account_id}: {e}")
         return False
 
 

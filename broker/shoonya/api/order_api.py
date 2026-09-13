@@ -1,5 +1,4 @@
 import json
-import os
 
 import httpx
 import threading
@@ -14,6 +13,7 @@ from broker.shoonya.mapping.transform_data import (
 )
 from database.auth_db import get_auth_token
 from database.token_db import get_br_symbol, get_symbol, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -24,7 +24,7 @@ def get_api_response(endpoint, auth, method="GET", payload=""):
     AUTH_TOKEN = auth
 
     # BROKER_API_KEY format: userid:::client_id
-    full_api_key = os.getenv("BROKER_API_KEY")
+    full_api_key, _ = resolve_broker_api_key(AUTH_TOKEN, "shoonya")
     api_key = full_api_key.split(":::")[0]  # Trading user ID
 
     data = f'{{"uid": "{api_key}", "actid": "{api_key}"}}'
@@ -148,7 +148,7 @@ def get_open_position(tradingsymbol, exchange, producttype, auth):
 def place_order_api(data, auth):
     AUTH_TOKEN = auth
     # BROKER_API_KEY format: userid:::client_id
-    full_api_key = os.getenv("BROKER_API_KEY")
+    full_api_key, _ = resolve_broker_api_key(AUTH_TOKEN, "shoonya")
     BROKER_API_KEY = full_api_key.split(":::")[0]  # Trading user ID
     data["apikey"] = BROKER_API_KEY
     token = get_token(data["symbol"], data["exchange"])
@@ -321,7 +321,7 @@ def close_all_positions(current_api_key, auth):
 def cancel_order(orderid, auth):
     AUTH_TOKEN = auth
     # BROKER_API_KEY format: userid:::client_id
-    full_api_key = os.getenv("BROKER_API_KEY")
+    full_api_key, _ = resolve_broker_api_key(AUTH_TOKEN, "shoonya")
     api_key = full_api_key.split(":::")[0]  # Trading user ID
     data = {"uid": api_key, "norenordno": orderid}
 
@@ -355,7 +355,7 @@ def cancel_order(orderid, auth):
 def modify_order(data, auth):
     AUTH_TOKEN = auth
     # BROKER_API_KEY format: userid:::client_id
-    full_api_key = os.getenv("BROKER_API_KEY")
+    full_api_key, _ = resolve_broker_api_key(AUTH_TOKEN, "shoonya")
     api_key = full_api_key.split(":::")[0]  # Trading user ID
 
     token = get_token(data["symbol"], data["exchange"])
