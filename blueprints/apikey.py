@@ -24,7 +24,7 @@ from database.auth_db import (
     verify_api_key,
 )
 from utils.logging import get_logger
-from utils.session import check_session_validity
+from utils.session import require_app_session
 
 # Path to React frontend
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
@@ -60,8 +60,19 @@ def generate_api_key():
 
 
 @api_key_bp.route("/apikey", methods=["GET", "POST"])
-@check_session_validity
+@require_app_session
 def manage_api_key():
+    """View or (re)generate the caller's own API key.
+
+    Deliberately @require_app_session, not @check_session_validity: neither
+    viewing nor generating a key touches the broker session at all (both
+    operate on session["user"] and account ownership only), and connecting
+    a broker is optional now. @check_session_validity requires
+    session["logged_in"], which only becomes True once a broker is
+    connected -- gating this route behind it made an existing, untouched
+    API key look "lost" to anyone who logged back in without immediately
+    reconnecting their broker, when it was never touched by logout at all.
+    """
     if request.method == "GET":
         login_username = session["user"]
         # Get the decrypted API key if it exists
@@ -124,7 +135,7 @@ def manage_api_key():
 
 
 @api_key_bp.route("/apikey/mode", methods=["POST"])
-@check_session_validity
+@require_app_session
 def update_api_key_mode():
     """Update order mode (auto/semi_auto) for a user"""
     try:

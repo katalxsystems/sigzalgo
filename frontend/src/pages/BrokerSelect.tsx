@@ -1,7 +1,7 @@
-import { BookOpen, ExternalLink, Info, Loader2 } from 'lucide-react'
+import { ExternalLink, Info, Loader2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { BrokerAuthSignOut } from '@/components/auth/BrokerAuthSignOut'
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
@@ -142,110 +142,79 @@ export default function BrokerSelect() {
 
   return (
     <div className="min-h-screen flex items-center justify-center py-8 px-4">
-      <div className="container max-w-6xl">
-        <div className="flex flex-col lg:flex-row items-center justify-between gap-8 lg:gap-16">
-          {/* Right side broker form - Shown first on mobile */}
-          <Card className="w-full max-w-md shadow-xl order-1 lg:order-2">
-            <CardHeader className="text-center">
-              <div className="flex justify-center mb-4">
-                <img src="/logo.png" alt="AlgoZ" className="h-20 w-20" />
-              </div>
-              <CardTitle className="text-2xl">Connect Your Trading Account</CardTitle>
-              <CardDescription>
-                Welcome, <span className="font-medium">{user?.username}</span>!
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {error && (
-                <Alert variant="destructive" className="mb-4">
-                  <AlertDescription>{error}</AlertDescription>
-                </Alert>
-              )}
-
-              <form onSubmit={handleSubmit} className="space-y-6">
-                <div className="space-y-2">
-                  <Label htmlFor="broker-select" className="block text-center">
-                    Login with your Broker
-                  </Label>
-                  <Select
-                    value={selectedBroker}
-                    onValueChange={setSelectedBroker}
-                    disabled={isSubmitting}
-                  >
-                    <SelectTrigger id="broker-select" className="w-full">
-                      <SelectValue placeholder="Select a Broker" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {allBrokers
-                        .filter((broker) => broker.id === brokerConfig?.broker_name)
-                        .map((broker) => (
-                          <SelectItem key={broker.id} value={broker.id}>
-                            {broker.name}
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {(selectedBroker === 'zerodha' || selectedBroker === 'dhan') && (
-                  <Alert className="border-amber-500/50 bg-amber-500/10">
-                    <Info className="h-4 w-4 text-amber-500" />
-                    <AlertDescription className="text-amber-700 dark:text-amber-400">
-                      {selectedBroker === 'zerodha'
-                        ? 'Zerodha requires an active Kite Connect data subscription for market data access.'
-                        : 'Dhan requires an active Data API subscription for market data access.'}
-                    </AlertDescription>
-                  </Alert>
-                )}
-
-                <Button type="submit" className="w-full" disabled={!selectedBroker || isSubmitting}>
-                  {isSubmitting ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Connecting...
-                    </>
-                  ) : (
-                    <>
-                      <ExternalLink className="mr-2 h-4 w-4" />
-                      Connect Account
-                    </>
-                  )}
-                </Button>
-              </form>
-
-              <div className="mt-6 text-center text-sm">
-                <BrokerAuthSignOut />
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Left side content - Shown second on mobile */}
-          <div className="flex-1 max-w-xl text-center lg:text-left order-2 lg:order-1">
-            <h1 className="text-4xl lg:text-5xl font-bold mb-6">
-              Connect Your <span className="text-primary">Broker</span>
-            </h1>
-            <p className="text-lg lg:text-xl mb-8 text-muted-foreground">
-              Link your trading account to start executing trades through AlgoZ's algorithmic
-              trading platform.
-            </p>
-
-            <Alert className="mb-6">
-              <BookOpen className="h-4 w-4" />
-              <AlertTitle>Need Help?</AlertTitle>
-              <AlertDescription>Check our documentation for broker setup guides.</AlertDescription>
-            </Alert>
-
-            <div className="flex justify-center lg:justify-start gap-4">
-              <Button variant="outline" asChild>
-                <a href="https://docs.openalgo.in" target="_blank" rel="noopener noreferrer">
-                  <BookOpen className="mr-2 h-4 w-4" />
-                  Documentation
-                </a>
-              </Button>
-            </div>
+      <Card className="w-full max-w-md shadow-xl">
+        <CardHeader className="text-center">
+          <div className="flex justify-center mb-4">
+            <img src="/logo.png" alt="AlgoZ" className="h-20 w-20" />
           </div>
-        </div>
-      </div>
+          <CardTitle className="text-2xl">Connect Your Trading Account</CardTitle>
+          <CardDescription>
+            Welcome, <span className="font-medium">{user?.username}</span>!
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {error && (
+            <Alert variant="destructive" className="mb-4">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div className="space-y-2">
+              <Label htmlFor="broker-select" className="block text-center">
+                Login with your Broker
+              </Label>
+              <Select
+                value={selectedBroker}
+                onValueChange={setSelectedBroker}
+                disabled={isSubmitting}
+              >
+                <SelectTrigger id="broker-select" className="w-full">
+                  <SelectValue placeholder="Select a Broker" />
+                </SelectTrigger>
+                <SelectContent>
+                  {allBrokers
+                    .filter((broker) => broker.id === brokerConfig?.broker_name)
+                    .map((broker) => (
+                      <SelectItem key={broker.id} value={broker.id}>
+                        {broker.name}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {(selectedBroker === 'zerodha' || selectedBroker === 'dhan') && (
+              <Alert className="border-amber-500/50 bg-amber-500/10">
+                <Info className="h-4 w-4 text-amber-500" />
+                <AlertDescription className="text-amber-700 dark:text-amber-400">
+                  {selectedBroker === 'zerodha'
+                    ? 'Zerodha requires an active Kite Connect data subscription for market data access.'
+                    : 'Dhan requires an active Data API subscription for market data access.'}
+                </AlertDescription>
+              </Alert>
+            )}
+
+            <Button type="submit" className="w-full" disabled={!selectedBroker || isSubmitting}>
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Connecting...
+                </>
+              ) : (
+                <>
+                  <ExternalLink className="mr-2 h-4 w-4" />
+                  Connect Account
+                </>
+              )}
+            </Button>
+          </form>
+
+          <div className="mt-6 text-center text-sm">
+            <BrokerAuthSignOut />
+          </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }

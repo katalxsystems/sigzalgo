@@ -10,7 +10,7 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request, session
 
 from database.auth_db import get_api_key_for_tradingview
-from utils.session import check_session_validity
+from utils.session import require_app_session
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ def get_current_api_key():
 
 
 @flow_bp.route("/api/workflows", methods=["GET"])
-@check_session_validity
+@require_app_session
 def list_workflows():
     """List all workflows"""
     from database.flow_db import get_all_workflows, get_workflow_executions
@@ -58,7 +58,7 @@ def list_workflows():
 
 
 @flow_bp.route("/api/workflows", methods=["POST"])
-@check_session_validity
+@require_app_session
 def create_workflow():
     """Create a new workflow"""
     from database.flow_db import create_workflow
@@ -145,7 +145,7 @@ def create_workflow():
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>", methods=["GET"])
-@check_session_validity
+@require_app_session
 def get_workflow(workflow_id):
     """Get a workflow by ID"""
     from database.flow_db import get_workflow
@@ -174,7 +174,7 @@ def get_workflow(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>", methods=["PUT"])
-@check_session_validity
+@require_app_session
 def update_workflow(workflow_id):
     """Update a workflow"""
     from database.flow_db import update_workflow
@@ -243,7 +243,7 @@ def update_workflow(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>", methods=["DELETE"])
-@check_session_validity
+@require_app_session
 def delete_workflow(workflow_id):
     """Delete a workflow"""
     from database.flow_db import delete_workflow, get_workflow
@@ -275,7 +275,7 @@ def delete_workflow(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/activate", methods=["POST"])
-@check_session_validity
+@require_app_session
 def activate_workflow(workflow_id):
     """Activate a workflow"""
     from database.flow_db import activate_workflow as db_activate
@@ -386,7 +386,7 @@ def activate_workflow(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/deactivate", methods=["POST"])
-@check_session_validity
+@require_app_session
 def deactivate_workflow(workflow_id):
     """Deactivate a workflow"""
     from database.flow_db import deactivate_workflow as db_deactivate
@@ -462,7 +462,7 @@ def _execution_blocked(workflow):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/execute", methods=["POST"])
-@check_session_validity
+@require_app_session
 def execute_workflow_now(workflow_id):
     """Execute a workflow immediately"""
     from database.flow_db import get_workflow
@@ -489,7 +489,7 @@ def execute_workflow_now(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/executions", methods=["GET"])
-@check_session_validity
+@require_app_session
 def get_workflow_executions(workflow_id):
     """Get execution history for a workflow"""
     from database.flow_db import get_workflow_executions
@@ -527,7 +527,7 @@ def get_webhook_base_url():
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/webhook", methods=["GET"])
-@check_session_validity
+@require_app_session
 def get_webhook_info(workflow_id):
     """Get webhook configuration for a workflow"""
     from database.flow_db import ensure_webhook_credentials, get_workflow
@@ -563,7 +563,7 @@ def get_webhook_info(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/webhook/enable", methods=["POST"])
-@check_session_validity
+@require_app_session
 def enable_webhook(workflow_id):
     """Enable webhook for a workflow"""
     from database.flow_db import enable_webhook, ensure_webhook_credentials, get_workflow
@@ -599,7 +599,7 @@ def enable_webhook(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/webhook/disable", methods=["POST"])
-@check_session_validity
+@require_app_session
 def disable_webhook(workflow_id):
     """Disable webhook for a workflow"""
     from database.flow_db import disable_webhook
@@ -611,7 +611,7 @@ def disable_webhook(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/webhook/regenerate", methods=["POST"])
-@check_session_validity
+@require_app_session
 def regenerate_webhook(workflow_id):
     """Regenerate webhook token and secret"""
     from database.flow_db import get_workflow, regenerate_webhook_secret, regenerate_webhook_token
@@ -640,7 +640,7 @@ def regenerate_webhook(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/webhook/regenerate-secret", methods=["POST"])
-@check_session_validity
+@require_app_session
 def regenerate_webhook_secret_route(workflow_id):
     """Regenerate webhook secret only"""
     from database.flow_db import get_workflow, regenerate_webhook_secret
@@ -655,7 +655,7 @@ def regenerate_webhook_secret_route(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/webhook/auth-type", methods=["POST"])
-@check_session_validity
+@require_app_session
 def set_webhook_auth(workflow_id):
     """Set webhook auth type"""
     from database.flow_db import get_workflow, set_webhook_auth_type
@@ -801,7 +801,7 @@ def trigger_webhook_with_symbol(token, symbol):
 
 
 @flow_bp.route("/api/monitor/status", methods=["GET"])
-@check_session_validity
+@require_app_session
 def get_monitor_status():
     """Get price monitor and order-update monitor status"""
     from services.flow_order_update_monitor_service import get_flow_order_update_monitor
@@ -817,7 +817,7 @@ def get_monitor_status():
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/export", methods=["GET"])
-@check_session_validity
+@require_app_session
 def export_workflow(workflow_id):
     """Export a workflow"""
     from database.flow_db import get_workflow
@@ -839,7 +839,7 @@ def export_workflow(workflow_id):
 
 
 @flow_bp.route("/api/workflows/import", methods=["POST"])
-@check_session_validity
+@require_app_session
 def import_workflow():
     """Import a workflow.
 
@@ -891,7 +891,7 @@ def import_workflow():
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/replace", methods=["POST"])
-@check_session_validity
+@require_app_session
 def replace_workflow(workflow_id):
     """Replace an existing workflow's graph from JSON, in place.
 
@@ -1000,7 +1000,7 @@ def replace_workflow(workflow_id):
 
 
 @flow_bp.route("/api/index-symbols", methods=["GET"])
-@check_session_validity
+@require_app_session
 def get_index_symbols_lot_sizes():
     """
     Get lot sizes for index symbols from master contract database.
