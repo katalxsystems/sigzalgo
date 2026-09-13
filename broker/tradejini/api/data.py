@@ -10,6 +10,7 @@ import pandas as pd
 
 from broker.tradejini.api.nxtradstream import NxtradStream
 from database.token_db import get_br_symbol, get_oa_symbol, get_symbol, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -43,8 +44,9 @@ class TradejiniWebSocket:
         try:
             self.auth_token = auth_token
 
-            # Get API key from environment if not provided in token
-            api_key = os.environ.get("BROKER_API_SECRET", "")
+            # Resolve API key for this account if not provided in token
+            _, api_key = resolve_broker_api_key(auth_token, "tradejini")
+            api_key = api_key or ""
 
             # Format the auth token exactly as per TradeJini requirements
             if ":" not in auth_token and api_key:
@@ -935,8 +937,8 @@ class BrokerData:
             endpoint = "/api/mkt-data/chart/interval-data"
             url = f"{base_url}{endpoint}"
 
-            # Get API key from environment
-            api_key = os.getenv("BROKER_API_SECRET")
+            # Resolve API key for this account
+            _, api_key = resolve_broker_api_key(self.auth_token, "tradejini")
             if not api_key:
                 error_msg = "BROKER_API_SECRET environment variable not set"
                 logger.error(error_msg)

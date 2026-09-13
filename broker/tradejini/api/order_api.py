@@ -8,6 +8,7 @@ import httpx
 
 from database.auth_db import get_auth_token
 from database.token_db import get_br_symbol, get_oa_symbol, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -42,8 +43,8 @@ def get_api_response(endpoint, auth, method="GET", data=None, params=None):
         dict: API response data
     """
     try:
-        # Get API key from environment
-        api_key = os.getenv("BROKER_API_SECRET")
+        # Resolve API key for this account
+        _, api_key = resolve_broker_api_key(auth, "tradejini")
         if not api_key:
             raise ValueError("Error: BROKER_API_SECRET not set")
 
@@ -128,8 +129,8 @@ def get_order_book(auth):
         dict: Order book data in OpenAlgo format
     """
     try:
-        # Get API key from environment
-        api_key = os.getenv("BROKER_API_SECRET")
+        # Resolve API key for this account
+        _, api_key = resolve_broker_api_key(auth, "tradejini")
         if not api_key:
             raise ValueError("Error: BROKER_API_SECRET not set")
 
@@ -233,8 +234,8 @@ def get_trade_book(auth):
         dict: Trade book data in OpenAlgo format {'data': [...], 'status': 'success'}
     """
     try:
-        # Get API key from environment
-        api_key = os.getenv("BROKER_API_SECRET")
+        # Resolve API key for this account
+        _, api_key = resolve_broker_api_key(auth, "tradejini")
         if not api_key:
             raise ValueError("Error: BROKER_API_SECRET not set")
 
@@ -361,8 +362,8 @@ def get_positions(auth):
         dict: Positions data in OpenAlgo format
     """
     try:
-        # Get API key from environment
-        api_key = os.getenv("BROKER_API_SECRET")
+        # Resolve API key for this account
+        _, api_key = resolve_broker_api_key(auth, "tradejini")
         if not api_key:
             raise ValueError("Error: BROKER_API_SECRET not set")
 
@@ -905,8 +906,8 @@ def place_order_api(data, auth):
             logger.error(error_msg)
             return None, {"status": "error", "message": error_msg}, None
 
-        # Get API key from environment
-        api_key = os.getenv("BROKER_API_SECRET")
+        # Resolve API key for this account
+        _, api_key = resolve_broker_api_key(AUTH_TOKEN, "tradejini")
         if not api_key:
             error_msg = "BROKER_API_SECRET not set in environment"
             logger.error(error_msg)

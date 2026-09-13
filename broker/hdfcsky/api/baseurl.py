@@ -21,6 +21,7 @@ import json
 import os
 from urllib.parse import urlencode
 
+from utils.config import resolve_broker_api_key
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -61,7 +62,7 @@ def get_ws_url(auth_token):
     `token` + `api_key` upgrades (HTTP 101).
     """
     host = get_root_url().replace("https://", "wss://").replace("http://", "ws://")
-    query = urlencode({"token": auth_token, "api_key": get_api_key()})
+    query = urlencode({"token": auth_token, "api_key": get_api_key(auth_token)})
     return f"{host}{WS_MARKET_DATA_PATH}?{query}"
 
 
@@ -82,8 +83,9 @@ def get_hdfcsky_headers(auth_token, with_json=False):
     return headers
 
 
-def get_api_key():
-    return os.getenv("BROKER_API_KEY")
+def get_api_key(auth_token=None):
+    api_key, _ = resolve_broker_api_key(auth_token, "hdfcsky")
+    return api_key
 
 
 def _b64url_decode(segment):
@@ -119,7 +121,7 @@ def _client_id_from_env():
 
 def base_params(auth_token, client_id=True):
     """Query params every authenticated call needs: api_key (+ client_id)."""
-    params = {"api_key": get_api_key()}
+    params = {"api_key": get_api_key(auth_token)}
     if client_id:
         cid = get_client_id(auth_token)
         if cid:

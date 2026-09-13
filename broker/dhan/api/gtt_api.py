@@ -2,7 +2,6 @@
 # Dhan v2 reference: https://dhanhq.co/docs/v2/forever/
 
 import json
-import os
 
 import httpx
 
@@ -13,6 +12,7 @@ from broker.dhan.mapping.gtt_data import (
     transform_place_gtt,
 )
 from database.auth_db import get_user_id, verify_api_key
+from utils.config import resolve_broker_api_key
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -41,9 +41,10 @@ class _FakeResponse:
         self.text = ""
 
 
-def _resolve_client_id(api_key):
-    """Resolve dhanClientId from BROKER_API_KEY env (``client_id:::api_key``) or DB."""
-    broker_api_key = os.getenv("BROKER_API_KEY", "")
+def _resolve_client_id(api_key, auth_token=None):
+    """Resolve dhanClientId from the resolved broker_api_key (``client_id:::api_key``) or DB."""
+    broker_api_key, _ = resolve_broker_api_key(auth_token, "dhan")
+    broker_api_key = broker_api_key or ""
     if ":::" in broker_api_key:
         return broker_api_key.split(":::")[0]
     if api_key:
@@ -71,7 +72,7 @@ def place_gtt_order(data, auth):
     ``BROKER_API_KEY`` (or DB fallback) and injected before the mapper builds
     the JSON body.
     """
-    client_id = _resolve_client_id(data.get("apikey"))
+    client_id = _resolve_client_id(data.get("apikey"), auth)
     if not client_id:
         return (
             _FakeResponse(401),
@@ -155,7 +156,7 @@ def modify_gtt_order(data, auth):
     if not trigger_id:
         return {"status": "error", "message": "trigger_id is required"}, 400
 
-    client_id = _resolve_client_id(data.get("apikey"))
+    client_id = _resolve_client_id(data.get("apikey"), auth)
     if not client_id:
         return {"status": "error", "message": "Could not resolve Dhan client id"}, 401
     data["dhan_client_id"] = client_id

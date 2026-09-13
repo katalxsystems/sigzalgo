@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import threading
 import time
 import urllib.parse
@@ -12,6 +11,7 @@ import httpx
 import pandas as pd
 
 from database.token_db import get_br_symbol, get_oa_symbol, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -123,7 +123,7 @@ def get_api_response(endpoint, auth, method="POST", payload=None, retry_count=0)
     _apply_rate_limit()
 
     AUTH_TOKEN = auth
-    full_api_key = os.getenv("BROKER_API_KEY")
+    full_api_key, _ = resolve_broker_api_key(AUTH_TOKEN, "flattrade")
     api_key = full_api_key.split(":::")[0]
 
     if payload is None:
@@ -206,8 +206,9 @@ class BrokerData:
             elif exchange == "BSE_INDEX":
                 exchange = "BSE"
 
+            full_api_key, _ = resolve_broker_api_key(self.auth_token, "flattrade")
             payload = {
-                "uid": os.getenv("BROKER_API_KEY").split(":::")[0],
+                "uid": full_api_key.split(":::")[0],
                 "exch": exchange,
                 "token": token,
             }
@@ -472,7 +473,7 @@ class BrokerData:
         prepared_symbols = []
 
         # Pre-fetch API key
-        full_api_key = os.getenv("BROKER_API_KEY")
+        full_api_key, _ = resolve_broker_api_key(self.auth_token, "flattrade")
         api_key = full_api_key.split(":::")[0]
 
         # Step 1: Pre-resolve all tokens sequentially (database access)
@@ -587,8 +588,9 @@ class BrokerData:
             elif exchange == "BSE_INDEX":
                 exchange = "BSE"
 
+            full_api_key, _ = resolve_broker_api_key(self.auth_token, "flattrade")
             payload = {
-                "uid": os.getenv("BROKER_API_KEY").split(":::")[0],
+                "uid": full_api_key.split(":::")[0],
                 "exch": exchange,
                 "token": token,
             }
@@ -713,8 +715,9 @@ class BrokerData:
                     response = []  # Continue with empty response to try quotes
             else:
                 # For intraday data, use TPSeries endpoint
+                full_api_key, _ = resolve_broker_api_key(self.auth_token, "flattrade")
                 payload = {
-                    "uid": os.getenv("BROKER_API_KEY").split(":::")[0],
+                    "uid": full_api_key.split(":::")[0],
                     "exch": exchange,
                     "token": token,
                     "st": str(start_ts),  # Start time in epoch

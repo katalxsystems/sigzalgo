@@ -8,6 +8,7 @@ import httpx
 import pandas as pd
 
 from database.token_db import get_br_symbol, get_oa_symbol, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -17,7 +18,7 @@ logger = get_logger(__name__)
 def get_api_response(endpoint, auth, method="GET", payload=""):
     """Helper function to make API calls to Motilal Oswal"""
     AUTH_TOKEN = auth
-    api_key = os.getenv("BROKER_API_SECRET")
+    _, api_key = resolve_broker_api_key(AUTH_TOKEN, "motilal")
 
     # Get the shared httpx client with connection pooling
     client = get_httpx_client()
@@ -208,9 +209,10 @@ class BrokerData:
                 logger.debug(f"Error disconnecting old WebSocket: {e}")
             self._websocket = None
 
-        # Get credentials from environment
-        client_id = os.getenv("BROKER_API_KEY", "")
-        api_key = os.getenv("BROKER_API_SECRET", "")
+        # Get credentials for this account (per-account first, .env fallback)
+        client_id, api_key = resolve_broker_api_key(self.auth_token, "motilal")
+        client_id = client_id or ""
+        api_key = api_key or ""
 
         # Import and create WebSocket instance
         from .motilal_websocket import MotilalWebSocket

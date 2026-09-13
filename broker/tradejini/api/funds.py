@@ -1,6 +1,7 @@
 import json
 import os
 
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -28,8 +29,8 @@ def get_margin_data(auth_token):
         dict: Processed margin data in OpenAlgo format
     """
     try:
-        # Get API key from environment
-        api_key = os.getenv("BROKER_API_SECRET")
+        # Resolve API key for this account
+        _, api_key = resolve_broker_api_key(auth_token, "tradejini")
         if not api_key:
             logger.info("Error: BROKER_API_SECRET not set")
             return {}

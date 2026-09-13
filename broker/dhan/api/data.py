@@ -12,6 +12,7 @@ import pandas as pd
 from broker.dhan.api.baseurl import get_url
 from broker.dhan.mapping.transform_data import map_exchange_type
 from database.token_db import get_br_symbol, get_oa_symbol, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -62,9 +63,9 @@ def get_api_response(endpoint, auth, method="POST", payload="", retry_count=0):
 
     AUTH_TOKEN = auth
 
-    # Get client_id from BROKER_API_KEY environment variable
+    # Get client_id from the resolved per-account (or instance-wide) broker key
     # Format: client_id:::api_key
-    broker_api_key = os.getenv("BROKER_API_KEY")
+    broker_api_key, _ = resolve_broker_api_key(AUTH_TOKEN, "dhan")
     if not broker_api_key:
         raise Exception("BROKER_API_KEY not found in environment variables")
 

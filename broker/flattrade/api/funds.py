@@ -1,10 +1,10 @@
 # api/funds.py
 
 import json
-import os
 
 import httpx
 
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -38,7 +38,7 @@ def fetch_data(endpoint, payload, headers, client):
 
 def get_margin_data(auth_token):
     """Fetch and process margin and position data."""
-    full_api_key = os.getenv("BROKER_API_KEY")
+    full_api_key, _ = resolve_broker_api_key(auth_token, "flattrade")
     userid = full_api_key.split(":::")[0]
     actid = userid
 

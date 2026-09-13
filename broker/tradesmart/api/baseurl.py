@@ -28,6 +28,7 @@ If neither carries a uid, the whole ``BROKER_API_KEY`` is used as a last resort.
 import json
 import os
 
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 
 # REST + streaming hosts (TradeSmart Noren v2)
@@ -61,11 +62,15 @@ def get_api_key():
 def resolve_uid(auth_token=None):
     """Resolve the client/account id (uid/actid).
 
-    Priority: composite-token uid -> env ``CLIENT_ID:::API_KEY`` -> bare env value.
+    Priority: composite-token uid -> this account's (or the instance-wide
+    default) ``CLIENT_ID:::API_KEY`` BROKER_API_KEY -> bare value. Resolved
+    per-call via resolve_broker_api_key (reverse-looks-up account_id from
+    auth_token) rather than a bare os.getenv, so two TradeSmart accounts with
+    different app registrations don't collide when their tokens carry no uid.
     """
     if auth_token and ":::" in auth_token:
         return auth_token.split(":::", 1)[0]
-    full_api_key = os.getenv("BROKER_API_KEY", "")
+    full_api_key = resolve_broker_api_key(auth_token, "tradesmart")[0] or ""
     if ":::" in full_api_key:
         return full_api_key.split(":::")[0]
     return full_api_key
