@@ -1,5 +1,4 @@
 import { Monitor } from 'lucide-react'
-import { useEffect, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -9,22 +8,7 @@ interface FooterProps {
 }
 
 export function Footer({ className }: FooterProps) {
-  const [version, setVersion] = useState<string>('')
   const activeSessionCount = useSessionStore((s) => s.activeSessionCount)
-
-  useEffect(() => {
-    const fetchVersion = async () => {
-      try {
-        const response = await fetch('/auth/app-info')
-        const data = await response.json()
-        if (data.status === 'success') {
-          setVersion(data.version)
-        }
-      } catch (_error) {}
-    }
-
-    fetchVersion()
-  }, [])
 
   return (
     <footer className={cn('mt-auto border-t bg-muted/30', className)}>
@@ -34,14 +18,7 @@ export function Footer({ className }: FooterProps) {
             <span>Copyright 2026 AlgoZ</span>
           </div>
           <span className="hidden md:inline">|</span>
-          <span className="text-center">Algo Trading Platform for Everyone</span>
-          <span className="hidden md:inline">|</span>
-          {version && (
-            <Badge variant="secondary" className="gap-1">
-              <span className="opacity-75">v</span>
-              <span>{version}</span>
-            </Badge>
-          )}
+          <span className="text-center">Empowering your algo trades</span>
           {activeSessionCount > 0 && (
             <>
               <span className="hidden md:inline">|</span>

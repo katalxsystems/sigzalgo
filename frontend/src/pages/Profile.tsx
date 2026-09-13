@@ -58,6 +58,7 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { navItems, profileMenuItems } from '@/config/navigation'
 import { type AlertCategories, type ToastPosition, useAlertStore } from '@/stores/alertStore'
 import { useAuthStore } from '@/stores/authStore'
 import { type ThemeColor, type ThemeMode, useThemeStore } from '@/stores/themeStore'
@@ -337,6 +338,13 @@ export default function ProfilePage() {
   const [isLoadingPermissions, setIsLoadingPermissions] = useState(false)
   const [isFixingPermissions, setIsFixingPermissions] = useState(false)
 
+  // Profile menu visibility state (admin, per-role hidden-item config)
+  const [hiddenMenuAdmin, setHiddenMenuAdmin] = useState<string[]>([])
+  const [hiddenMenuNonAdmin, setHiddenMenuNonAdmin] = useState<string[]>([])
+  const [isLoadingMenuVisibility, setIsLoadingMenuVisibility] = useState(false)
+  const [isSavingMenuVisibility, setIsSavingMenuVisibility] = useState(false)
+  const [menuVisibilityLoaded, setMenuVisibilityLoaded] = useState(false)
+
   // Check if in analyzer mode (theme changes blocked)
   const isAnalyzerMode = appMode === 'analyzer'
 
@@ -437,6 +445,52 @@ export default function ProfilePage() {
       showToast.error('Failed to fix permissions', 'admin')
     } finally {
       setIsFixingPermissions(false)
+    }
+  }
+
+  const fetchMenuVisibility = async () => {
+    setIsLoadingMenuVisibility(true)
+    try {
+      const response = await webClient.get<{
+        status: string
+        admin: string[]
+        non_admin: string[]
+      }>('/api/menu-visibility/config')
+      if (response.data.status === 'success') {
+        setHiddenMenuAdmin(response.data.admin)
+        setHiddenMenuNonAdmin(response.data.non_admin)
+        setMenuVisibilityLoaded(true)
+      }
+    } catch (_error) {
+      showToast.error('Failed to load menu visibility settings', 'admin')
+    } finally {
+      setIsLoadingMenuVisibility(false)
+    }
+  }
+
+  const toggleHiddenMenuItem = (role: 'admin' | 'non_admin', href: string) => {
+    const setter = role === 'admin' ? setHiddenMenuAdmin : setHiddenMenuNonAdmin
+    setter((current) =>
+      current.includes(href) ? current.filter((h) => h !== href) : [...current, href]
+    )
+  }
+
+  const handleSaveMenuVisibility = async () => {
+    setIsSavingMenuVisibility(true)
+    try {
+      const response = await webClient.post<{ status: string }>('/api/menu-visibility/config', {
+        admin: hiddenMenuAdmin,
+        non_admin: hiddenMenuNonAdmin,
+      })
+      if (response.data.status === 'success') {
+        showToast.success('Menu visibility updated', 'admin')
+      } else {
+        showToast.error('Failed to update menu visibility', 'admin')
+      }
+    } catch (_error) {
+      showToast.error('Failed to update menu visibility', 'admin')
+    } finally {
+      setIsSavingMenuVisibility(false)
     }
   }
 
@@ -807,6 +861,9 @@ export default function ProfilePage() {
           // Fetch permissions when tab is selected
           if (value === 'permissions' && !permissionsData) {
             fetchPermissions()
+          }
+          if (value === 'permissions' && !menuVisibilityLoaded) {
+            fetchMenuVisibility()
           }
         }}
       >
@@ -1972,6 +2029,120 @@ export default function ProfilePage() {
                     instead of Unix-style permissions.
                   </p>
                 </div>
+              </CardContent>
+            </Card>
+
+            {/* Menu Visibility */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Menu Visibility</CardTitle>
+                <CardDescription>
+                  Hide specific items from the main navigation bar and the header's profile
+                  dropdown, separately for admin and non-admin users. This only hides the menu entry
+                  — it does not restrict access to the underlying page for anyone who already knows
+                  the URL.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {isLoadingMenuVisibility ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    Loading menu visibility settings...
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-sm font-medium mb-2">Main Navigation</p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b">
+                            <th className="text-left py-2 pr-4 font-medium">Menu Item</th>
+                            <th className="text-center py-2 px-2 font-medium">Hide for Admin</th>
+                            <th className="text-center py-2 pl-2 font-medium">
+                              Hide for Non-Admin
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {navItems.map((item) => (
+                            <tr key={item.href} className="border-b last:border-0">
+                              <td className="py-2 pr-4">{item.label}</td>
+                              <td className="text-center py-2 px-2">
+                                <Checkbox
+                                  checked={hiddenMenuAdmin.includes(item.href)}
+                                  onCheckedChange={() => toggleHiddenMenuItem('admin', item.href)}
+                                  aria-label={`Hide ${item.label} for admin`}
+                                />
+                              </td>
+                              <td className="text-center py-2 pl-2">
+                                <Checkbox
+                                  checked={hiddenMenuNonAdmin.includes(item.href)}
+                                  onCheckedChange={() =>
+                                    toggleHiddenMenuItem('non_admin', item.href)
+                                  }
+                                  aria-label={`Hide ${item.label} for non-admin`}
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <p className="text-sm font-medium mb-2 mt-6">Profile Dropdown</p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b">
+                            <th className="text-left py-2 pr-4 font-medium">Menu Item</th>
+                            <th className="text-center py-2 px-2 font-medium">Hide for Admin</th>
+                            <th className="text-center py-2 pl-2 font-medium">
+                              Hide for Non-Admin
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {profileMenuItems.map((item) => (
+                            <tr key={item.href} className="border-b last:border-0">
+                              <td className="py-2 pr-4">{item.label}</td>
+                              <td className="text-center py-2 px-2">
+                                <Checkbox
+                                  checked={hiddenMenuAdmin.includes(item.href)}
+                                  onCheckedChange={() => toggleHiddenMenuItem('admin', item.href)}
+                                  aria-label={`Hide ${item.label} for admin`}
+                                />
+                              </td>
+                              <td className="text-center py-2 pl-2">
+                                <Checkbox
+                                  checked={hiddenMenuNonAdmin.includes(item.href)}
+                                  onCheckedChange={() =>
+                                    toggleHiddenMenuItem('non_admin', item.href)
+                                  }
+                                  aria-label={`Hide ${item.label} for non-admin`}
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <Button
+                      onClick={handleSaveMenuVisibility}
+                      disabled={isSavingMenuVisibility}
+                      className="mt-4"
+                    >
+                      {isSavingMenuVisibility ? (
+                        <>
+                          <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                          Saving...
+                        </>
+                      ) : (
+                        'Save Menu Visibility'
+                      )}
+                    </Button>
+                  </>
+                )}
               </CardContent>
             </Card>
           </TabsContent>

@@ -77,6 +77,7 @@ from blueprints.logging import logging_bp  # Import the logging blueprint
 from blueprints.master_contract_status import (
     master_contract_status_bp,  # Import the master contract status blueprint
 )
+from blueprints.menu_visibility import menu_visibility_bp  # Profile menu visibility blueprint
 from blueprints.oiprofile import oiprofile_bp  # Import the OI Profile blueprint
 from blueprints.oitracker import oitracker_bp  # Import the OI tracker blueprint
 from blueprints.orders import orders_bp
@@ -337,6 +338,7 @@ def create_app():
     app.register_blueprint(broker_credentials_bp)  # Register Broker credentials blueprint
     app.register_blueprint(broker_accounts_bp)  # Register Broker accounts (multi-account) blueprint
     app.register_blueprint(system_permissions_bp)  # Register System permissions blueprint
+    app.register_blueprint(menu_visibility_bp)  # Register profile menu visibility blueprint
     app.register_blueprint(strategy_portfolio_bp)  # Register Strategy Portfolio blueprint
     app.register_blueprint(postback_bp)  # Register broker postback (order-update webhook) blueprint
 

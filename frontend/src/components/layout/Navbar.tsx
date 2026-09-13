@@ -20,7 +20,8 @@ import {
   SheetTitle,
   SheetTrigger,
 } from '@/components/ui/sheet'
-import { isActiveRoute, mobileSheetItems, navItems } from '@/config/navigation'
+import { isActiveRoute } from '@/config/navigation'
+import { useNavItems } from '@/hooks/useNavItems'
 import { useProfileMenuItems } from '@/hooks/useProfileMenuItems'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
@@ -37,6 +38,8 @@ export function Navbar() {
 
   // Profile menu filtered by broker capabilities (shared hook, issue #1480)
   const filteredProfileMenuItems = useProfileMenuItems()
+  // Main nav items filtered by admin-configured per-role visibility
+  const { navItems, mobileSheetItems } = useNavItems()
 
   const handleLogout = async () => {
     try {

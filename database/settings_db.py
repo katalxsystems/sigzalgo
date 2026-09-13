@@ -1,6 +1,7 @@
 # database/settings_db.py
 
 import base64
+import json
 import os
 
 from cachetools import TTLCache
@@ -73,6 +74,15 @@ class Settings(Base):
     broker_api_key_market_encrypted = Column(Text, nullable=True)
     broker_api_secret_market_encrypted = Column(Text, nullable=True)
     broker_redirect_url = Column(String(500), nullable=True)
+
+    # Profile-menu visibility, per role. JSON-encoded list of hidden item
+    # keys (config/navigation.ts's profileMenuItems[].href, e.g. "/leverage")
+    # -- NULL/empty means "nothing hidden". Separate lists for admin and
+    # non-admin sessions so, e.g., an admin can hide "/admin" itself from
+    # non-admins without also losing it from their own menu. See
+    # get_hidden_menu_items/set_hidden_menu_items below.
+    hidden_menu_items_admin = Column(Text, nullable=True)
+    hidden_menu_items_nonadmin = Column(Text, nullable=True)
 
 
 def init_db():
@@ -424,6 +434,55 @@ def set_broker_settings(
 
     if "broker_settings" in _settings_cache:
         del _settings_cache["broker_settings"]
+
+
+def get_hidden_menu_items(is_admin: bool) -> list[str]:
+    """Profile-menu item keys (config/navigation.ts href values) hidden for
+    this role, admin-configured. Empty list if none are hidden or nothing
+    has been set yet. Cached for 1 hour like the rest of Settings; cleared
+    on set_hidden_menu_items() so a change is visible immediately.
+    """
+    cache_key = f"hidden_menu_items_{'admin' if is_admin else 'nonadmin'}"
+    if cache_key in _settings_cache:
+        return _settings_cache[cache_key]
+
+    settings = Settings.query.first()
+    raw = (
+        (settings.hidden_menu_items_admin if is_admin else settings.hidden_menu_items_nonadmin)
+        if settings
+        else None
+    )
+    try:
+        items = json.loads(raw) if raw else []
+    except (ValueError, TypeError):
+        logger.exception(f"Corrupt {cache_key} JSON in Settings; treating as empty")
+        items = []
+
+    _settings_cache[cache_key] = items
+    return items
+
+
+def set_hidden_menu_items(admin_items: list[str] | None, nonadmin_items: list[str] | None) -> None:
+    """Set which profile-menu items are hidden per role. Only the list(s)
+    actually passed (not None) are updated -- mirrors set_broker_settings's
+    "only touch what's given" semantics, so an admin editing one role's list
+    in the UI doesn't need to resend the other.
+    """
+    settings = Settings.query.first()
+    if not settings:
+        settings = Settings(analyze_mode=False)
+        db_session.add(settings)
+
+    if admin_items is not None:
+        settings.hidden_menu_items_admin = json.dumps(admin_items)
+    if nonadmin_items is not None:
+        settings.hidden_menu_items_nonadmin = json.dumps(nonadmin_items)
+
+    db_session.commit()
+    logger.info("Profile menu visibility settings updated")
+
+    _settings_cache.pop("hidden_menu_items_admin", None)
+    _settings_cache.pop("hidden_menu_items_nonadmin", None)
 
 
 def clear_settings_cache():
