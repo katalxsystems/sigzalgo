@@ -1192,6 +1192,16 @@ def get_session_status():
     if session.get("logged_in"):
         _touch_session_heartbeat()
 
+    # The frontend needs this to hide admin-only UI (e.g. Profile's
+    # instance-wide Broker tab) for non-admin tenants -- see the SaaS
+    # per-account credentials work: the tab was shown identically to every
+    # user with no signal its Save action is @admin_required, so non-admins
+    # only found out via a 403 after already filling in the form.
+    from database.user_db import find_user_by_exact_username
+
+    user_obj = find_user_by_exact_username(session.get("user"))
+    is_admin = bool(user_obj and user_obj.is_admin)
+
     # If session claims to be logged in with broker, validate the auth token exists
     if session.get("logged_in") and session.get("broker"):
         from database.auth_db import get_api_key_for_tradingview, get_auth_token
@@ -1219,6 +1229,7 @@ def get_session_status():
                     "authenticated": True,
                     "logged_in": True,
                     "user": session.get("user"),
+                    "is_admin": is_admin,
                     "broker": session.get("broker"),
                     "broker_session_expired": True,
                 }
@@ -1237,6 +1248,7 @@ def get_session_status():
                 "authenticated": True,
                 "logged_in": session.get("logged_in", False),
                 "user": session.get("user"),
+                "is_admin": is_admin,
                 "broker": session.get("broker"),
                 "api_key": api_key,
                 "active_sessions": active_count,
@@ -1253,6 +1265,7 @@ def get_session_status():
             "authenticated": True,
             "logged_in": session.get("logged_in", False),
             "user": session.get("user"),
+            "is_admin": is_admin,
             "broker": session.get("broker"),
             "active_sessions": active_count,
         }
@@ -1398,11 +1411,17 @@ def get_dashboard_data():
     if not session.get("logged_in"):
         # App session valid, broker not connected (fresh login or downgraded
         # by session-status after a token rollover) -- the right CTA is the
-        # broker reconnect flow, not /login (issue #1400).
+        # broker reconnect flow, not /login (issue #1400). reason="no_broker"
+        # (as opposed to "token_expired" below) tells the dashboard this
+        # account has never connected any broker at all, so there's no
+        # account_id to reconnect -- it should route to Profile > Accounts
+        # to create one, not the legacy single-broker /broker page (which
+        # has no way to attach per-account credentials).
         return jsonify(
             {
                 "status": "error",
                 "code": "BROKER_SESSION_EXPIRED",
+                "reason": "no_broker",
                 "message": "Broker not connected - please connect your broker",
             }
         ), 401
@@ -1435,13 +1454,19 @@ def get_dashboard_data():
         if AUTH_TOKEN is None:
             # The APP session is still valid -- it is the BROKER token that is
             # revoked/expired. The machine-readable code lets the dashboard
-            # point the user at /broker (reconnect) instead of /login, which
-            # would just bounce them back (issue #1400).
+            # point the user at reconnecting *this specific* account_id
+            # (issue #1400) instead of /login (bounces back) or the legacy
+            # /broker page (which has no notion of which account to
+            # reconnect and would target the wrong one for anyone using a
+            # per-broker-account_id, not the legacy account_id==username
+            # convention).
             logger.warning(f"No auth token found for user {login_username}")
             return jsonify(
                 {
                     "status": "error",
                     "code": "BROKER_SESSION_EXPIRED",
+                    "reason": "token_expired",
+                    "account_id": account_id,
                     "message": "Broker session expired - please reconnect your broker",
                 }
             ), 401
@@ -1479,8 +1504,17 @@ def get_dashboard_data():
 
 @auth_bp.route("/logout", methods=["GET", "POST"])
 def logout():
+    # session["logged_in"] only becomes True once a broker is connected --
+    # connecting one is optional (see Layout.tsx), so a real, common session
+    # shape is "authenticated, no broker yet" (or no-longer-connected). That
+    # branch used to skip straight past session.clear() below, meaning
+    # logout was a silent no-op for any such session: the backend returned
+    # "success" and the frontend cleared its own client-side state, but the
+    # Flask session cookie still had session["user"] set, so the very next
+    # /auth/session-status poll re-authenticated the user -- producing a
+    # login/dashboard redirect loop instead of an actual logout.
+    username = session.get("user")
     if session.get("logged_in"):
-        username = session["user"]
         # The broker session belongs to the active account, which may differ
         # from the platform username once a user has more than one account.
         account_id = session.get("user_session_key") or username
@@ -1527,9 +1561,11 @@ def logout():
             "sessions": [],
         })
 
-        # Clear entire session to ensure complete logout
-        session.clear()
-        logger.info(f"Session cleared for user: {username}")
+    # Clear entire session to ensure complete logout -- unconditional, not
+    # just for the "had a broker connected" branch above (see comment at
+    # the top of this function for why that used to be a real bug).
+    session.clear()
+    logger.info(f"Session cleared for user: {username}")
 
     # For POST requests (AJAX from React), return JSON
     if request.method == "POST":

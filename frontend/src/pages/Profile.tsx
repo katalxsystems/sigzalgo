@@ -28,7 +28,7 @@ import {
   XCircle,
 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import { webClient } from '@/api/client'
 import TwoFactorEnforcement from '@/components/auth/TwoFactorEnforcement'
 import BrokerAccountsTab from '@/components/profile/BrokerAccountsTab'
@@ -271,9 +271,19 @@ const ALERT_CATEGORIES_ADMIN: {
 
 export default function ProfilePage() {
   const user = useAuthStore((s) => s.user)
+  // The Broker tab edits the instance-wide default credentials
+  // (POST /api/broker/credentials is @admin_required) -- hidden for
+  // non-admins so they aren't shown a tab whose Save action 403s. Their
+  // self-service path is the Accounts tab (per-account credentials).
+  const isAdmin = user?.isAdmin ?? false
   const { mode, color, appMode, setMode, setColor } = useThemeStore()
   const alertStore = useAlertStore()
-  const [activeTab, setActiveTab] = useState('account')
+  const [searchParams] = useSearchParams()
+  // Lets other pages deep-link into a specific tab, e.g. the dashboard's
+  // "Connect Broker" CTA for a genuinely broker-less account sends users to
+  // /profile?tab=accounts (the per-account self-service flow) instead of
+  // the legacy single-broker /broker page.
+  const [activeTab, setActiveTab] = useState(searchParams.get('tab') || 'account')
   const [isLoading, setIsLoading] = useState(true)
   const [profileData, setProfileData] = useState<ProfileData | null>(null)
 
@@ -800,15 +810,17 @@ export default function ProfilePage() {
           }
         }}
       >
-        <TabsList className="grid w-full grid-cols-8">
+        <TabsList className={`grid w-full ${isAdmin ? 'grid-cols-8' : 'grid-cols-5'}`}>
           <TabsTrigger value="account" className="gap-1">
             <Lock className="h-4 w-4" />
             <span className="hidden sm:inline">Account</span>
           </TabsTrigger>
-          <TabsTrigger value="broker" className="gap-1">
-            <Key className="h-4 w-4" />
-            <span className="hidden sm:inline">Broker</span>
-          </TabsTrigger>
+          {isAdmin && (
+            <TabsTrigger value="broker" className="gap-1">
+              <Key className="h-4 w-4" />
+              <span className="hidden sm:inline">Broker</span>
+            </TabsTrigger>
+          )}
           <TabsTrigger value="accounts" className="gap-1">
             <Users className="h-4 w-4" />
             <span className="hidden sm:inline">Accounts</span>
@@ -817,18 +829,22 @@ export default function ProfilePage() {
             <Bell className="h-4 w-4" />
             <span className="hidden sm:inline">Alerts</span>
           </TabsTrigger>
-          <TabsTrigger value="permissions" className="gap-1">
-            <FolderCheck className="h-4 w-4" />
-            <span className="hidden sm:inline">System</span>
-          </TabsTrigger>
+          {isAdmin && (
+            <TabsTrigger value="permissions" className="gap-1">
+              <FolderCheck className="h-4 w-4" />
+              <span className="hidden sm:inline">System</span>
+            </TabsTrigger>
+          )}
           <TabsTrigger value="theme" className="gap-1">
             <Palette className="h-4 w-4" />
             <span className="hidden sm:inline">Theme</span>
           </TabsTrigger>
-          <TabsTrigger value="smtp" className="gap-1">
-            <Mail className="h-4 w-4" />
-            <span className="hidden sm:inline">SMTP</span>
-          </TabsTrigger>
+          {isAdmin && (
+            <TabsTrigger value="smtp" className="gap-1">
+              <Mail className="h-4 w-4" />
+              <span className="hidden sm:inline">SMTP</span>
+            </TabsTrigger>
+          )}
           <TabsTrigger value="totp" className="gap-1">
             <Shield className="h-4 w-4" />
             <span className="hidden sm:inline">TOTP</span>
@@ -947,353 +963,355 @@ export default function ProfilePage() {
           </Card>
         </TabsContent>
 
-        {/* Broker Tab */}
-        <TabsContent value="broker" className="space-y-6">
-          <Alert>
-            <Key className="h-4 w-4" />
-            <AlertTitle>Broker API Credentials</AlertTitle>
-            <AlertDescription>
-              Update your broker API credentials. Changes require an application restart to take
-              effect. You will be logged out after saving.
-            </AlertDescription>
-          </Alert>
+        {/* Broker Tab (admin-only -- edits the instance-wide default) */}
+        {isAdmin && (
+          <TabsContent value="broker" className="space-y-6">
+            <Alert>
+              <Key className="h-4 w-4" />
+              <AlertTitle>Broker API Credentials</AlertTitle>
+              <AlertDescription>
+                Update your broker API credentials. Changes require an application restart to take
+                effect. You will be logged out after saving.
+              </AlertDescription>
+            </Alert>
 
-          {/* Current Broker */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Current Configuration</CardTitle>
-              <CardDescription>Your currently configured broker and credentials</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Current Broker</Label>
-                  <div className="flex items-center gap-2">
-                    <Badge variant="outline" className="text-base">
-                      {brokerCredentials?.current_broker?.toUpperCase() || 'Not configured'}
-                    </Badge>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label>Redirect URL</Label>
-                  <code className="text-xs text-muted-foreground break-all">
-                    {brokerCredentials?.redirect_url || 'Not configured'}
-                  </code>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4 pt-2">
-                <div className="space-y-2 min-w-0">
-                  <Label>API Key</Label>
-                  {/* block truncate clamps long masked values to their column;
-                      backend mask is fixed-length but defence-in-depth in case
-                      a future change emits a longer string. */}
-                  <code className="block truncate text-xs text-muted-foreground">
-                    {brokerCredentials?.broker_api_key || '(not set)'}
-                  </code>
-                </div>
-                <div className="space-y-2 min-w-0">
-                  <Label>API Secret</Label>
-                  <code className="block truncate text-xs text-muted-foreground">
-                    {brokerCredentials?.broker_api_secret || '(not set)'}
-                  </code>
-                </div>
-              </div>
-              {(brokerCredentials?.broker_api_key_market_raw_length ?? 0) > 0 && (
-                <div className="grid grid-cols-2 gap-4 pt-2">
-                  <div className="space-y-2 min-w-0">
-                    <Label>Market API Key</Label>
-                    <code className="block truncate text-xs text-muted-foreground">
-                      {brokerCredentials?.broker_api_key_market || '(not set)'}
-                    </code>
-                  </div>
-                  <div className="space-y-2 min-w-0">
-                    <Label>Market API Secret</Label>
-                    <code className="block truncate text-xs text-muted-foreground">
-                      {brokerCredentials?.broker_api_secret_market || '(not set)'}
-                    </code>
-                  </div>
-                </div>
-              )}
-              <div className="grid grid-cols-2 gap-4 pt-2 border-t">
-                <div className="space-y-2">
-                  <Label>Ngrok Status</Label>
-                  <Badge variant={brokerCredentials?.ngrok_allow ? 'default' : 'secondary'}>
-                    {brokerCredentials?.ngrok_allow ? 'Enabled' : 'Disabled'}
-                  </Badge>
-                </div>
-                <div className="space-y-2">
-                  <Label>Host Server</Label>
-                  <code className="text-xs text-muted-foreground break-all">
-                    {brokerCredentials?.host_server || '(not set)'}
-                  </code>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Update Credentials */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Update Credentials</CardTitle>
-              <CardDescription>
-                Enter new values to update. Leave fields empty to keep existing values.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Broker Selection */}
-              <div className="space-y-2">
-                <Label>Select Broker</Label>
-                <Select value={selectedBroker} onValueChange={setSelectedBroker}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a broker" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {brokerCredentials?.valid_brokers.map((broker) => (
-                      <SelectItem key={broker} value={broker}>
-                        {broker.charAt(0).toUpperCase() + broker.slice(1)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {selectedBroker && selectedBroker !== brokerCredentials?.current_broker && (
-                  <p className="text-sm text-yellow-600 dark:text-yellow-500">
-                    Changing broker to: {selectedBroker.toUpperCase()}
-                  </p>
-                )}
-              </div>
-
-              {/* API Credentials */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Broker API Key</Label>
-                  <Input
-                    type="password"
-                    value={brokerApiKey}
-                    onChange={(e) => setBrokerApiKey(e.target.value)}
-                    placeholder="Enter new API key"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    {(brokerCredentials?.broker_api_key_raw_length ?? 0) > 0
-                      ? `Current: ${brokerCredentials?.broker_api_key_raw_length} chars`
-                      : 'Not currently set'}
-                  </p>
-                </div>
-                <div className="space-y-2">
-                  <Label>Broker API Secret</Label>
-                  <Input
-                    type="password"
-                    value={brokerApiSecret}
-                    onChange={(e) => setBrokerApiSecret(e.target.value)}
-                    placeholder="Enter new API secret"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    {(brokerCredentials?.broker_api_secret_raw_length ?? 0) > 0
-                      ? `Current: ${brokerCredentials?.broker_api_secret_raw_length} chars`
-                      : 'Not currently set'}
-                  </p>
-                </div>
-              </div>
-
-              {/* Market API Credentials (optional) */}
-              <div className="pt-4 border-t">
-                <h4 className="font-medium mb-3">Market Data API (Optional)</h4>
-                <p className="text-sm text-muted-foreground mb-4">
-                  Required only for XTS API supported brokers (e.g., 5paisa XTS, Jainam XTS)
-                </p>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Market API Key</Label>
-                    <Input
-                      type="password"
-                      value={brokerApiKeyMarket}
-                      onChange={(e) => setBrokerApiKeyMarket(e.target.value)}
-                      placeholder="Enter market API key"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Market API Secret</Label>
-                    <Input
-                      type="password"
-                      value={brokerApiSecretMarket}
-                      onChange={(e) => setBrokerApiSecretMarket(e.target.value)}
-                      placeholder="Enter market API secret"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Broker-specific hints */}
-              {selectedBroker === 'fivepaisa' && (
-                <Alert className="bg-blue-50 dark:bg-blue-950 border-blue-200">
-                  <AlertCircle className="h-4 w-4" />
-                  <AlertTitle>5paisa API Key Format</AlertTitle>
-                  <AlertDescription>
-                    Format: <code>User_Key:::User_ID:::client_id</code>
-                  </AlertDescription>
-                </Alert>
-              )}
-              {selectedBroker === 'flattrade' && (
-                <Alert className="bg-blue-50 dark:bg-blue-950 border-blue-200">
-                  <AlertCircle className="h-4 w-4" />
-                  <AlertTitle>Flattrade API Key Format</AlertTitle>
-                  <AlertDescription>
-                    Format: <code>client_id:::api_key</code>
-                  </AlertDescription>
-                </Alert>
-              )}
-              {selectedBroker === 'dhan' && (
-                <Alert className="bg-blue-50 dark:bg-blue-950 border-blue-200">
-                  <AlertCircle className="h-4 w-4" />
-                  <AlertTitle>Dhan API Key Format</AlertTitle>
-                  <AlertDescription>
-                    Format: <code>client_id:::api_key</code>
-                  </AlertDescription>
-                </Alert>
-              )}
-
-              {/* Save Button */}
-              <Button
-                onClick={handleBrokerSave}
-                disabled={!hasCredentialChanges || isSavingBroker}
-                className="w-full"
-              >
-                {isSavingBroker ? (
-                  <>
-                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                    Saving...
-                  </>
-                ) : (
-                  <>
-                    <Key className="h-4 w-4 mr-2" />
-                    Save Broker Credentials
-                  </>
-                )}
-              </Button>
-            </CardContent>
-          </Card>
-
-          {/* Server Status Card */}
-          {brokerCredentials?.server_status && (
+            {/* Current Broker */}
             <Card>
               <CardHeader>
-                <CardTitle>Server Status</CardTitle>
-                <CardDescription>Running services and their configured ports</CardDescription>
+                <CardTitle>Current Configuration</CardTitle>
+                <CardDescription>Your currently configured broker and credentials</CardDescription>
               </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="flex flex-col items-center p-3 bg-muted rounded-lg">
-                    <Badge variant="default" className="mb-2 bg-green-600">
-                      Running
-                    </Badge>
-                    <span className="text-sm font-medium">Flask App</span>
-                    <span className="text-xs text-muted-foreground">
-                      {brokerCredentials.server_status.flask.host}:
-                      {brokerCredentials.server_status.flask.port}
-                    </span>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>Current Broker</Label>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="text-base">
+                        {brokerCredentials?.current_broker?.toUpperCase() || 'Not configured'}
+                      </Badge>
+                    </div>
                   </div>
-                  <div className="flex flex-col items-center p-3 bg-muted rounded-lg">
-                    <Badge variant="default" className="mb-2 bg-green-600">
-                      Running
-                    </Badge>
-                    <span className="text-sm font-medium">WebSocket</span>
-                    <span className="text-xs text-muted-foreground">
-                      {brokerCredentials.server_status.websocket.host}:
-                      {brokerCredentials.server_status.websocket.port}
-                    </span>
+                  <div className="space-y-2">
+                    <Label>Redirect URL</Label>
+                    <code className="text-xs text-muted-foreground break-all">
+                      {brokerCredentials?.redirect_url || 'Not configured'}
+                    </code>
                   </div>
-                  <div className="flex flex-col items-center p-3 bg-muted rounded-lg">
-                    <Badge variant="default" className="mb-2 bg-green-600">
-                      Running
+                </div>
+                <div className="grid grid-cols-2 gap-4 pt-2">
+                  <div className="space-y-2 min-w-0">
+                    <Label>API Key</Label>
+                    {/* block truncate clamps long masked values to their column;
+                      backend mask is fixed-length but defence-in-depth in case
+                      a future change emits a longer string. */}
+                    <code className="block truncate text-xs text-muted-foreground">
+                      {brokerCredentials?.broker_api_key || '(not set)'}
+                    </code>
+                  </div>
+                  <div className="space-y-2 min-w-0">
+                    <Label>API Secret</Label>
+                    <code className="block truncate text-xs text-muted-foreground">
+                      {brokerCredentials?.broker_api_secret || '(not set)'}
+                    </code>
+                  </div>
+                </div>
+                {(brokerCredentials?.broker_api_key_market_raw_length ?? 0) > 0 && (
+                  <div className="grid grid-cols-2 gap-4 pt-2">
+                    <div className="space-y-2 min-w-0">
+                      <Label>Market API Key</Label>
+                      <code className="block truncate text-xs text-muted-foreground">
+                        {brokerCredentials?.broker_api_key_market || '(not set)'}
+                      </code>
+                    </div>
+                    <div className="space-y-2 min-w-0">
+                      <Label>Market API Secret</Label>
+                      <code className="block truncate text-xs text-muted-foreground">
+                        {brokerCredentials?.broker_api_secret_market || '(not set)'}
+                      </code>
+                    </div>
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-4 pt-2 border-t">
+                  <div className="space-y-2">
+                    <Label>Ngrok Status</Label>
+                    <Badge variant={brokerCredentials?.ngrok_allow ? 'default' : 'secondary'}>
+                      {brokerCredentials?.ngrok_allow ? 'Enabled' : 'Disabled'}
                     </Badge>
-                    <span className="text-sm font-medium">ZeroMQ</span>
-                    <span className="text-xs text-muted-foreground">
-                      {brokerCredentials.server_status.zmq.host}:
-                      {brokerCredentials.server_status.zmq.port}
-                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Host Server</Label>
+                    <code className="text-xs text-muted-foreground break-all">
+                      {brokerCredentials?.host_server || '(not set)'}
+                    </code>
                   </div>
                 </div>
               </CardContent>
             </Card>
-          )}
 
-          {/* Ngrok Configuration - Separate Card */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Server Configuration</CardTitle>
-              <CardDescription>
-                Configure ngrok for receiving webhook alerts from external services like
-                TradingView, Chartink, GoCharting, etc.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center space-x-2">
-                <Checkbox
-                  id="ngrok_enabled"
-                  checked={ngrokEnabled}
-                  onCheckedChange={(checked) => setNgrokEnabled(checked === true)}
-                />
-                <Label htmlFor="ngrok_enabled">Enable Ngrok Tunnel</Label>
-                {ngrokEnabled !== brokerCredentials?.ngrok_allow && (
-                  <Badge variant="outline" className="text-yellow-600">
-                    Changed
-                  </Badge>
-                )}
-              </div>
+            {/* Update Credentials */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Update Credentials</CardTitle>
+                <CardDescription>
+                  Enter new values to update. Leave fields empty to keep existing values.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Broker Selection */}
+                <div className="space-y-2">
+                  <Label>Select Broker</Label>
+                  <Select value={selectedBroker} onValueChange={setSelectedBroker}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a broker" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {brokerCredentials?.valid_brokers.map((broker) => (
+                        <SelectItem key={broker} value={broker}>
+                          {broker.charAt(0).toUpperCase() + broker.slice(1)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {selectedBroker && selectedBroker !== brokerCredentials?.current_broker && (
+                    <p className="text-sm text-yellow-600 dark:text-yellow-500">
+                      Changing broker to: {selectedBroker.toUpperCase()}
+                    </p>
+                  )}
+                </div>
 
-              <div className="space-y-2">
-                <Label>Host Server URL</Label>
-                <Input
-                  value={hostServer}
-                  onChange={(e) => setHostServer(e.target.value)}
-                  placeholder="https://your-domain.ngrok-free.app"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Your ngrok domain or custom domain for receiving webhooks.
-                </p>
-                {hostServer !== brokerCredentials?.host_server && hostServer && (
-                  <Badge variant="outline" className="text-yellow-600">
-                    Changed from: {brokerCredentials?.host_server}
-                  </Badge>
-                )}
-              </div>
+                {/* API Credentials */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>Broker API Key</Label>
+                    <Input
+                      type="password"
+                      value={brokerApiKey}
+                      onChange={(e) => setBrokerApiKey(e.target.value)}
+                      placeholder="Enter new API key"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {(brokerCredentials?.broker_api_key_raw_length ?? 0) > 0
+                        ? `Current: ${brokerCredentials?.broker_api_key_raw_length} chars`
+                        : 'Not currently set'}
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Broker API Secret</Label>
+                    <Input
+                      type="password"
+                      value={brokerApiSecret}
+                      onChange={(e) => setBrokerApiSecret(e.target.value)}
+                      placeholder="Enter new API secret"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {(brokerCredentials?.broker_api_secret_raw_length ?? 0) > 0
+                        ? `Current: ${brokerCredentials?.broker_api_secret_raw_length} chars`
+                        : 'Not currently set'}
+                    </p>
+                  </div>
+                </div>
 
-              <div className="space-y-2">
-                <Label>WebSocket URL</Label>
-                <Input
-                  value={websocketUrl}
-                  onChange={(e) => setWebsocketUrl(e.target.value)}
-                  placeholder="ws://127.0.0.1:8765"
-                />
-                <p className="text-xs text-muted-foreground">
-                  WebSocket server URL for real-time market data streaming.
-                </p>
-                {websocketUrl !== brokerCredentials?.websocket_url && websocketUrl && (
-                  <Badge variant="outline" className="text-yellow-600">
-                    Changed from: {brokerCredentials?.websocket_url}
-                  </Badge>
-                )}
-              </div>
+                {/* Market API Credentials (optional) */}
+                <div className="pt-4 border-t">
+                  <h4 className="font-medium mb-3">Market Data API (Optional)</h4>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Required only for XTS API supported brokers (e.g., 5paisa XTS, Jainam XTS)
+                  </p>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Market API Key</Label>
+                      <Input
+                        type="password"
+                        value={brokerApiKeyMarket}
+                        onChange={(e) => setBrokerApiKeyMarket(e.target.value)}
+                        placeholder="Enter market API key"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Market API Secret</Label>
+                      <Input
+                        type="password"
+                        value={brokerApiSecretMarket}
+                        onChange={(e) => setBrokerApiSecretMarket(e.target.value)}
+                        placeholder="Enter market API secret"
+                      />
+                    </div>
+                  </div>
+                </div>
 
-              <Button
-                onClick={handleNgrokSave}
-                disabled={!hasNgrokChanges || isSavingNgrok}
-                className="w-full"
-              >
-                {isSavingNgrok ? (
-                  <>
-                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                    Saving...
-                  </>
-                ) : (
-                  <>
-                    <RefreshCw className="h-4 w-4 mr-2" />
-                    Save Ngrok Settings
-                  </>
+                {/* Broker-specific hints */}
+                {selectedBroker === 'fivepaisa' && (
+                  <Alert className="bg-blue-50 dark:bg-blue-950 border-blue-200">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertTitle>5paisa API Key Format</AlertTitle>
+                    <AlertDescription>
+                      Format: <code>User_Key:::User_ID:::client_id</code>
+                    </AlertDescription>
+                  </Alert>
                 )}
-              </Button>
-            </CardContent>
-          </Card>
-        </TabsContent>
+                {selectedBroker === 'flattrade' && (
+                  <Alert className="bg-blue-50 dark:bg-blue-950 border-blue-200">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertTitle>Flattrade API Key Format</AlertTitle>
+                    <AlertDescription>
+                      Format: <code>client_id:::api_key</code>
+                    </AlertDescription>
+                  </Alert>
+                )}
+                {selectedBroker === 'dhan' && (
+                  <Alert className="bg-blue-50 dark:bg-blue-950 border-blue-200">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertTitle>Dhan API Key Format</AlertTitle>
+                    <AlertDescription>
+                      Format: <code>client_id:::api_key</code>
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                {/* Save Button */}
+                <Button
+                  onClick={handleBrokerSave}
+                  disabled={!hasCredentialChanges || isSavingBroker}
+                  className="w-full"
+                >
+                  {isSavingBroker ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Key className="h-4 w-4 mr-2" />
+                      Save Broker Credentials
+                    </>
+                  )}
+                </Button>
+              </CardContent>
+            </Card>
+
+            {/* Server Status Card */}
+            {brokerCredentials?.server_status && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Server Status</CardTitle>
+                  <CardDescription>Running services and their configured ports</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="flex flex-col items-center p-3 bg-muted rounded-lg">
+                      <Badge variant="default" className="mb-2 bg-green-600">
+                        Running
+                      </Badge>
+                      <span className="text-sm font-medium">Flask App</span>
+                      <span className="text-xs text-muted-foreground">
+                        {brokerCredentials.server_status.flask.host}:
+                        {brokerCredentials.server_status.flask.port}
+                      </span>
+                    </div>
+                    <div className="flex flex-col items-center p-3 bg-muted rounded-lg">
+                      <Badge variant="default" className="mb-2 bg-green-600">
+                        Running
+                      </Badge>
+                      <span className="text-sm font-medium">WebSocket</span>
+                      <span className="text-xs text-muted-foreground">
+                        {brokerCredentials.server_status.websocket.host}:
+                        {brokerCredentials.server_status.websocket.port}
+                      </span>
+                    </div>
+                    <div className="flex flex-col items-center p-3 bg-muted rounded-lg">
+                      <Badge variant="default" className="mb-2 bg-green-600">
+                        Running
+                      </Badge>
+                      <span className="text-sm font-medium">ZeroMQ</span>
+                      <span className="text-xs text-muted-foreground">
+                        {brokerCredentials.server_status.zmq.host}:
+                        {brokerCredentials.server_status.zmq.port}
+                      </span>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Ngrok Configuration - Separate Card */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Server Configuration</CardTitle>
+                <CardDescription>
+                  Configure ngrok for receiving webhook alerts from external services like
+                  TradingView, Chartink, GoCharting, etc.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center space-x-2">
+                  <Checkbox
+                    id="ngrok_enabled"
+                    checked={ngrokEnabled}
+                    onCheckedChange={(checked) => setNgrokEnabled(checked === true)}
+                  />
+                  <Label htmlFor="ngrok_enabled">Enable Ngrok Tunnel</Label>
+                  {ngrokEnabled !== brokerCredentials?.ngrok_allow && (
+                    <Badge variant="outline" className="text-yellow-600">
+                      Changed
+                    </Badge>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Host Server URL</Label>
+                  <Input
+                    value={hostServer}
+                    onChange={(e) => setHostServer(e.target.value)}
+                    placeholder="https://your-domain.ngrok-free.app"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Your ngrok domain or custom domain for receiving webhooks.
+                  </p>
+                  {hostServer !== brokerCredentials?.host_server && hostServer && (
+                    <Badge variant="outline" className="text-yellow-600">
+                      Changed from: {brokerCredentials?.host_server}
+                    </Badge>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label>WebSocket URL</Label>
+                  <Input
+                    value={websocketUrl}
+                    onChange={(e) => setWebsocketUrl(e.target.value)}
+                    placeholder="ws://127.0.0.1:8765"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    WebSocket server URL for real-time market data streaming.
+                  </p>
+                  {websocketUrl !== brokerCredentials?.websocket_url && websocketUrl && (
+                    <Badge variant="outline" className="text-yellow-600">
+                      Changed from: {brokerCredentials?.websocket_url}
+                    </Badge>
+                  )}
+                </div>
+
+                <Button
+                  onClick={handleNgrokSave}
+                  disabled={!hasNgrokChanges || isSavingNgrok}
+                  className="w-full"
+                >
+                  {isSavingNgrok ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                      Save Ngrok Settings
+                    </>
+                  )}
+                </Button>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
 
         {/* Broker Accounts Tab (multi-account) */}
         <TabsContent value="accounts" className="space-y-6">
@@ -1708,249 +1726,256 @@ export default function ProfilePage() {
           </Card>
         </TabsContent>
 
-        {/* Permissions Tab */}
-        <TabsContent value="permissions" className="space-y-6">
-          <Alert>
-            <FolderCheck className="h-4 w-4" />
-            <AlertTitle>File Permissions Monitor</AlertTitle>
-            <AlertDescription>
-              Check file and directory permissions for AlgoZ components. Incorrect permissions
-              may cause the application to malfunction.
-            </AlertDescription>
-          </Alert>
+        {/* Permissions Tab (admin-only) */}
+        {isAdmin && (
+          <TabsContent value="permissions" className="space-y-6">
+            <Alert>
+              <FolderCheck className="h-4 w-4" />
+              <AlertTitle>File Permissions Monitor</AlertTitle>
+              <AlertDescription>
+                Check file and directory permissions for AlgoZ components. Incorrect permissions may
+                cause the application to malfunction.
+              </AlertDescription>
+            </Alert>
 
-          {/* System Info */}
-          {permissionsData && (
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle className="flex items-center gap-2">
-                      System Status
-                      {permissionsData.all_correct ? (
-                        <Badge className="bg-green-500">All OK</Badge>
-                      ) : (
-                        <Badge variant="destructive">Issues Found</Badge>
-                      )}
-                    </CardTitle>
-                    <CardDescription>
-                      Platform: {permissionsData.platform}
-                      {permissionsData.is_windows && ' (Windows uses access-based checks)'}
-                    </CardDescription>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={fetchPermissions}
-                      disabled={isLoadingPermissions}
-                    >
-                      {isLoadingPermissions ? (
-                        <RefreshCw className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <>
-                          <RefreshCw className="h-4 w-4 mr-2" />
-                          Refresh
-                        </>
-                      )}
-                    </Button>
-                    {!permissionsData.all_correct && !permissionsData.is_windows && (
+            {/* System Info */}
+            {permissionsData && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        System Status
+                        {permissionsData.all_correct ? (
+                          <Badge className="bg-green-500">All OK</Badge>
+                        ) : (
+                          <Badge variant="destructive">Issues Found</Badge>
+                        )}
+                      </CardTitle>
+                      <CardDescription>
+                        Platform: {permissionsData.platform}
+                        {permissionsData.is_windows && ' (Windows uses access-based checks)'}
+                      </CardDescription>
+                    </div>
+                    <div className="flex gap-2">
                       <Button
+                        variant="outline"
                         size="sm"
-                        onClick={handleFixPermissions}
-                        disabled={isFixingPermissions}
+                        onClick={fetchPermissions}
+                        disabled={isLoadingPermissions}
                       >
-                        {isFixingPermissions ? (
+                        {isLoadingPermissions ? (
                           <RefreshCw className="h-4 w-4 animate-spin" />
                         ) : (
                           <>
-                            <Wrench className="h-4 w-4 mr-2" />
-                            Fix Issues
+                            <RefreshCw className="h-4 w-4 mr-2" />
+                            Refresh
                           </>
                         )}
                       </Button>
-                    )}
+                      {!permissionsData.all_correct && !permissionsData.is_windows && (
+                        <Button
+                          size="sm"
+                          onClick={handleFixPermissions}
+                          disabled={isFixingPermissions}
+                        >
+                          {isFixingPermissions ? (
+                            <RefreshCw className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <>
+                              <Wrench className="h-4 w-4 mr-2" />
+                              Fix Issues
+                            </>
+                          )}
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              </CardHeader>
-            </Card>
-          )}
+                </CardHeader>
+              </Card>
+            )}
 
-          {/* Loading State */}
-          {isLoadingPermissions && !permissionsData && (
-            <Card>
-              <CardContent className="py-12 flex items-center justify-center">
-                <div className="flex items-center gap-2">
-                  <RefreshCw className="h-5 w-5 animate-spin" />
-                  <span>Checking permissions...</span>
-                </div>
-              </CardContent>
-            </Card>
-          )}
+            {/* Loading State */}
+            {isLoadingPermissions && !permissionsData && (
+              <Card>
+                <CardContent className="py-12 flex items-center justify-center">
+                  <div className="flex items-center gap-2">
+                    <RefreshCw className="h-5 w-5 animate-spin" />
+                    <span>Checking permissions...</span>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
-          {/* Permissions List */}
-          {permissionsData && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Permission Details</CardTitle>
-                <CardDescription>
-                  Click on items with issues to see recommended fixes
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2">
-                  {permissionsData.checks.map((check) => (
-                    <div
-                      key={check.path}
-                      className={`flex items-start gap-3 p-3 rounded-lg border ${
-                        check.is_correct
-                          ? 'bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800'
-                          : 'bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800'
-                      }`}
-                    >
-                      {/* Status Icon */}
-                      <div className="mt-0.5">
-                        {check.is_correct ? (
-                          <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />
-                        ) : check.exists ? (
-                          <FileWarning className="h-5 w-5 text-red-600 dark:text-red-400" />
-                        ) : (
-                          <XCircle className="h-5 w-5 text-red-600 dark:text-red-400" />
-                        )}
-                      </div>
-
-                      {/* Details */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-medium font-mono text-sm">{check.path}</span>
-                          {check.is_sensitive && (
-                            <Badge variant="outline" className="text-xs">
-                              <Lock className="h-3 w-3 mr-1" />
-                              Sensitive
-                            </Badge>
-                          )}
-                          {check.is_directory && (
-                            <Badge variant="outline" className="text-xs">
-                              Directory
-                            </Badge>
-                          )}
-                        </div>
-                        <p className="text-sm text-muted-foreground mt-0.5">{check.description}</p>
-
-                        {/* Permission Details */}
-                        <div className="flex items-center gap-4 mt-2 text-xs">
-                          <span className="text-muted-foreground">
-                            Expected:{' '}
-                            <code className="bg-muted px-1 rounded">{check.expected_mode}</code>
-                            <span className="ml-1 text-muted-foreground/70">
-                              ({check.expected_rwx})
-                            </span>
-                          </span>
-                          {check.exists && check.actual_mode && (
-                            <span
-                              className={
-                                check.is_correct
-                                  ? 'text-green-600 dark:text-green-400'
-                                  : 'text-red-600 dark:text-red-400'
-                              }
-                            >
-                              Actual:{' '}
-                              <code
-                                className={`px-1 rounded ${check.is_correct ? 'bg-green-100 dark:bg-green-900' : 'bg-red-100 dark:bg-red-900'}`}
-                              >
-                                {check.actual_mode}
-                              </code>
-                              <span className="ml-1 opacity-70">({check.actual_rwx})</span>
-                            </span>
+            {/* Permissions List */}
+            {permissionsData && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Permission Details</CardTitle>
+                  <CardDescription>
+                    Click on items with issues to see recommended fixes
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-2">
+                    {permissionsData.checks.map((check) => (
+                      <div
+                        key={check.path}
+                        className={`flex items-start gap-3 p-3 rounded-lg border ${
+                          check.is_correct
+                            ? 'bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800'
+                            : 'bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800'
+                        }`}
+                      >
+                        {/* Status Icon */}
+                        <div className="mt-0.5">
+                          {check.is_correct ? (
+                            <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />
+                          ) : check.exists ? (
+                            <FileWarning className="h-5 w-5 text-red-600 dark:text-red-400" />
+                          ) : (
+                            <XCircle className="h-5 w-5 text-red-600 dark:text-red-400" />
                           )}
                         </div>
 
-                        {/* Issue Message */}
-                        {check.issue && (
-                          <div className="mt-2 p-2 bg-red-100 dark:bg-red-900/30 rounded text-sm">
-                            <p className="text-red-700 dark:text-red-300 font-medium">
-                              {check.issue}
-                            </p>
-                            {!permissionsData.is_windows && !check.exists && (
-                              <p className="text-red-600 dark:text-red-400 text-xs mt-1">
-                                Fix: Create the directory or file
-                              </p>
+                        {/* Details */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-medium font-mono text-sm">{check.path}</span>
+                            {check.is_sensitive && (
+                              <Badge variant="outline" className="text-xs">
+                                <Lock className="h-3 w-3 mr-1" />
+                                Sensitive
+                              </Badge>
                             )}
-                            {!permissionsData.is_windows &&
-                              check.exists &&
-                              check.actual_mode !== check.expected_mode && (
+                            {check.is_directory && (
+                              <Badge variant="outline" className="text-xs">
+                                Directory
+                              </Badge>
+                            )}
+                          </div>
+                          <p className="text-sm text-muted-foreground mt-0.5">
+                            {check.description}
+                          </p>
+
+                          {/* Permission Details */}
+                          <div className="flex items-center gap-4 mt-2 text-xs">
+                            <span className="text-muted-foreground">
+                              Expected:{' '}
+                              <code className="bg-muted px-1 rounded">{check.expected_mode}</code>
+                              <span className="ml-1 text-muted-foreground/70">
+                                ({check.expected_rwx})
+                              </span>
+                            </span>
+                            {check.exists && check.actual_mode && (
+                              <span
+                                className={
+                                  check.is_correct
+                                    ? 'text-green-600 dark:text-green-400'
+                                    : 'text-red-600 dark:text-red-400'
+                                }
+                              >
+                                Actual:{' '}
+                                <code
+                                  className={`px-1 rounded ${check.is_correct ? 'bg-green-100 dark:bg-green-900' : 'bg-red-100 dark:bg-red-900'}`}
+                                >
+                                  {check.actual_mode}
+                                </code>
+                                <span className="ml-1 opacity-70">({check.actual_rwx})</span>
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Issue Message */}
+                          {check.issue && (
+                            <div className="mt-2 p-2 bg-red-100 dark:bg-red-900/30 rounded text-sm">
+                              <p className="text-red-700 dark:text-red-300 font-medium">
+                                {check.issue}
+                              </p>
+                              {!permissionsData.is_windows && !check.exists && (
                                 <p className="text-red-600 dark:text-red-400 text-xs mt-1">
-                                  Fix:{' '}
-                                  <code className="bg-red-200 dark:bg-red-800 px-1 rounded">
-                                    chmod {check.expected_mode} {check.path}
-                                  </code>
+                                  Fix: Create the directory or file
                                 </p>
                               )}
-                          </div>
-                        )}
+                              {!permissionsData.is_windows &&
+                                check.exists &&
+                                check.actual_mode !== check.expected_mode && (
+                                  <p className="text-red-600 dark:text-red-400 text-xs mt-1">
+                                    Fix:{' '}
+                                    <code className="bg-red-200 dark:bg-red-800 px-1 rounded">
+                                      chmod {check.expected_mode} {check.path}
+                                    </code>
+                                  </p>
+                                )}
+                            </div>
+                          )}
 
-                        {/* Warning Message (doesn't affect is_correct status) */}
-                        {check.warning && !check.issue && (
-                          <div className="mt-2 p-2 bg-yellow-100 dark:bg-yellow-900/30 rounded text-sm">
-                            <p className="text-yellow-700 dark:text-yellow-300 font-medium">
-                              {check.warning}
-                            </p>
-                          </div>
-                        )}
+                          {/* Warning Message (doesn't affect is_correct status) */}
+                          {check.warning && !check.issue && (
+                            <div className="mt-2 p-2 bg-yellow-100 dark:bg-yellow-900/30 rounded text-sm">
+                              <p className="text-yellow-700 dark:text-yellow-300 font-medium">
+                                {check.warning}
+                              </p>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Help Card */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Understanding Permissions</CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm text-muted-foreground space-y-3">
+                <div>
+                  <p className="font-medium text-foreground">
+                    Permission Format (Unix/Linux/macOS)
+                  </p>
+                  <p>Permissions are shown as a 3-digit number (e.g., 755) where:</p>
+                  <ul className="list-disc list-inside mt-1 space-y-1 ml-2">
+                    <li>
+                      <code className="bg-muted px-1 rounded">7</code> = Read + Write + Execute
+                      (rwx)
+                    </li>
+                    <li>
+                      <code className="bg-muted px-1 rounded">5</code> = Read + Execute (r-x)
+                    </li>
+                    <li>
+                      <code className="bg-muted px-1 rounded">6</code> = Read + Write (rw-)
+                    </li>
+                    <li>
+                      <code className="bg-muted px-1 rounded">4</code> = Read only (r--)
+                    </li>
+                    <li>
+                      <code className="bg-muted px-1 rounded">0</code> = No permission (---)
+                    </li>
+                  </ul>
+                </div>
+                <div>
+                  <p className="font-medium text-foreground">Sensitive Files</p>
+                  <p>
+                    Files marked as sensitive (like{' '}
+                    <code className="bg-muted px-1 rounded">.env</code> and{' '}
+                    <code className="bg-muted px-1 rounded">keys/</code>) should have restricted
+                    permissions (600 or 700) to prevent unauthorized access.
+                  </p>
+                </div>
+                <div>
+                  <p className="font-medium text-foreground">Windows</p>
+                  <p>
+                    On Windows, the system checks if files/directories are readable and writable
+                    instead of Unix-style permissions.
+                  </p>
                 </div>
               </CardContent>
             </Card>
-          )}
-
-          {/* Help Card */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Understanding Permissions</CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground space-y-3">
-              <div>
-                <p className="font-medium text-foreground">Permission Format (Unix/Linux/macOS)</p>
-                <p>Permissions are shown as a 3-digit number (e.g., 755) where:</p>
-                <ul className="list-disc list-inside mt-1 space-y-1 ml-2">
-                  <li>
-                    <code className="bg-muted px-1 rounded">7</code> = Read + Write + Execute (rwx)
-                  </li>
-                  <li>
-                    <code className="bg-muted px-1 rounded">5</code> = Read + Execute (r-x)
-                  </li>
-                  <li>
-                    <code className="bg-muted px-1 rounded">6</code> = Read + Write (rw-)
-                  </li>
-                  <li>
-                    <code className="bg-muted px-1 rounded">4</code> = Read only (r--)
-                  </li>
-                  <li>
-                    <code className="bg-muted px-1 rounded">0</code> = No permission (---)
-                  </li>
-                </ul>
-              </div>
-              <div>
-                <p className="font-medium text-foreground">Sensitive Files</p>
-                <p>
-                  Files marked as sensitive (like{' '}
-                  <code className="bg-muted px-1 rounded">.env</code> and{' '}
-                  <code className="bg-muted px-1 rounded">keys/</code>) should have restricted
-                  permissions (600 or 700) to prevent unauthorized access.
-                </p>
-              </div>
-              <div>
-                <p className="font-medium text-foreground">Windows</p>
-                <p>
-                  On Windows, the system checks if files/directories are readable and writable
-                  instead of Unix-style permissions.
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
+          </TabsContent>
+        )}
 
         {/* Theme Tab */}
         <TabsContent value="theme" className="space-y-6">
@@ -2101,193 +2126,197 @@ export default function ProfilePage() {
           </Card>
         </TabsContent>
 
-        {/* SMTP Tab */}
-        <TabsContent value="smtp" className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>SMTP Configuration</CardTitle>
-              <CardDescription>
-                Configure email settings for password reset notifications
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Alert className="mb-6">
-                <Mail className="h-4 w-4" />
-                <AlertTitle>Gmail Configuration Tips</AlertTitle>
-                <AlertDescription>
-                  <ul className="text-sm list-disc list-inside mt-1 space-y-1">
-                    <li>
-                      <strong>Personal Gmail:</strong> Server: smtp.gmail.com:587
-                    </li>
-                    <li>
-                      <strong>Password:</strong> Use App Password (not your regular password)
-                    </li>
-                    <li>
-                      <strong>Setup:</strong> Google Account - Security - 2-Step Verification - App
-                      passwords
-                    </li>
-                  </ul>
-                </AlertDescription>
-              </Alert>
+        {/* SMTP Tab (admin-only) */}
+        {isAdmin && (
+          <TabsContent value="smtp" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>SMTP Configuration</CardTitle>
+                <CardDescription>
+                  Configure email settings for password reset notifications
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Alert className="mb-6">
+                  <Mail className="h-4 w-4" />
+                  <AlertTitle>Gmail Configuration Tips</AlertTitle>
+                  <AlertDescription>
+                    <ul className="text-sm list-disc list-inside mt-1 space-y-1">
+                      <li>
+                        <strong>Personal Gmail:</strong> Server: smtp.gmail.com:587
+                      </li>
+                      <li>
+                        <strong>Password:</strong> Use App Password (not your regular password)
+                      </li>
+                      <li>
+                        <strong>Setup:</strong> Google Account - Security - 2-Step Verification -
+                        App passwords
+                      </li>
+                    </ul>
+                  </AlertDescription>
+                </Alert>
 
-              <form onSubmit={handleSaveSmtp} className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
+                <form onSubmit={handleSaveSmtp} className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>SMTP Server</Label>
+                      <Input
+                        value={smtpServer}
+                        onChange={(e) => setSmtpServer(e.target.value)}
+                        placeholder="smtp.gmail.com"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>SMTP Port</Label>
+                      <Input
+                        type="number"
+                        value={smtpPort}
+                        onChange={(e) => setSmtpPort(e.target.value)}
+                        placeholder="587"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        587 (STARTTLS) or 465 (SSL/TLS)
+                      </p>
+                    </div>
+                  </div>
+
                   <div className="space-y-2">
-                    <Label>SMTP Server</Label>
+                    <Label>Username/Email</Label>
                     <Input
-                      value={smtpServer}
-                      onChange={(e) => setSmtpServer(e.target.value)}
+                      type="email"
+                      value={smtpUsername}
+                      onChange={(e) => setSmtpUsername(e.target.value)}
+                      placeholder="your-email@gmail.com"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Password/App Password</Label>
+                    <Input
+                      type="password"
+                      value={smtpPassword}
+                      onChange={(e) => setSmtpPassword(e.target.value)}
+                      placeholder={
+                        profileData?.smtp_settings?.smtp_password
+                          ? 'Password is set (enter new to change)'
+                          : 'Enter your App Password'
+                      }
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>From Email</Label>
+                    <Input
+                      type="email"
+                      value={smtpFromEmail}
+                      onChange={(e) => setSmtpFromEmail(e.target.value)}
+                      placeholder="your-email@gmail.com"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>HELO Hostname</Label>
+                    <Input
+                      value={smtpHeloHostname}
+                      onChange={(e) => setSmtpHeloHostname(e.target.value)}
                       placeholder="smtp.gmail.com"
                     />
                   </div>
-                  <div className="space-y-2">
-                    <Label>SMTP Port</Label>
-                    <Input
-                      type="number"
-                      value={smtpPort}
-                      onChange={(e) => setSmtpPort(e.target.value)}
-                      placeholder="587"
+
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="smtp_tls"
+                      checked={smtpUseTls}
+                      onCheckedChange={(checked) => setSmtpUseTls(checked === true)}
                     />
-                    <p className="text-xs text-muted-foreground">587 (STARTTLS) or 465 (SSL/TLS)</p>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Username/Email</Label>
-                  <Input
-                    type="email"
-                    value={smtpUsername}
-                    onChange={(e) => setSmtpUsername(e.target.value)}
-                    placeholder="your-email@gmail.com"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Password/App Password</Label>
-                  <Input
-                    type="password"
-                    value={smtpPassword}
-                    onChange={(e) => setSmtpPassword(e.target.value)}
-                    placeholder={
-                      profileData?.smtp_settings?.smtp_password
-                        ? 'Password is set (enter new to change)'
-                        : 'Enter your App Password'
-                    }
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label>From Email</Label>
-                  <Input
-                    type="email"
-                    value={smtpFromEmail}
-                    onChange={(e) => setSmtpFromEmail(e.target.value)}
-                    placeholder="your-email@gmail.com"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label>HELO Hostname</Label>
-                  <Input
-                    value={smtpHeloHostname}
-                    onChange={(e) => setSmtpHeloHostname(e.target.value)}
-                    placeholder="smtp.gmail.com"
-                  />
-                </div>
-
-                <div className="flex items-center space-x-2">
-                  <Checkbox
-                    id="smtp_tls"
-                    checked={smtpUseTls}
-                    onCheckedChange={(checked) => setSmtpUseTls(checked === true)}
-                  />
-                  <Label htmlFor="smtp_tls">Use TLS/SSL</Label>
-                </div>
-
-                <Button type="submit" disabled={isSavingSmtp}>
-                  {isSavingSmtp ? (
-                    <>
-                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                      Saving...
-                    </>
-                  ) : (
-                    <>
-                      <Mail className="h-4 w-4 mr-2" />
-                      Save SMTP Settings
-                    </>
-                  )}
-                </Button>
-
-                {/* Test Configuration */}
-                <div className="border-t pt-4 mt-4">
-                  <h4 className="font-medium mb-3">Test Configuration</h4>
-                  <p className="text-sm text-muted-foreground mb-4">
-                    Send a test email to verify your SMTP settings.
-                  </p>
-                  <div className="flex gap-2">
-                    <Input
-                      type="email"
-                      value={testEmail}
-                      onChange={(e) => setTestEmail(e.target.value)}
-                      placeholder="Enter email address to test"
-                      className="flex-1"
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={handleTestEmail}
-                      disabled={isSendingTest}
-                    >
-                      {isSendingTest ? (
-                        <RefreshCw className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <>
-                          <Send className="h-4 w-4 mr-1" />
-                          Send Test
-                        </>
-                      )}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      onClick={handleDebugSmtp}
-                      disabled={isDebugging}
-                    >
-                      {isDebugging ? (
-                        <RefreshCw className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <>
-                          <Bug className="h-4 w-4 mr-1" />
-                          Debug
-                        </>
-                      )}
-                    </Button>
+                    <Label htmlFor="smtp_tls">Use TLS/SSL</Label>
                   </div>
 
-                  {debugResult && (
-                    <Alert
-                      className={`mt-4 ${debugResult.success ? 'border-green-500' : 'border-yellow-500'}`}
-                    >
-                      <AlertTitle>
-                        {debugResult.success ? 'SMTP Debug Complete' : 'SMTP Connection Issues'}
-                      </AlertTitle>
-                      <AlertDescription>
-                        <p>{debugResult.message}</p>
-                        {debugResult.details && debugResult.details.length > 0 && (
-                          <ul className="text-xs mt-2 list-disc list-inside">
-                            {debugResult.details.map((detail, i) => (
-                              <li key={i}>{detail}</li>
-                            ))}
-                          </ul>
+                  <Button type="submit" disabled={isSavingSmtp}>
+                    {isSavingSmtp ? (
+                      <>
+                        <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                        Saving...
+                      </>
+                    ) : (
+                      <>
+                        <Mail className="h-4 w-4 mr-2" />
+                        Save SMTP Settings
+                      </>
+                    )}
+                  </Button>
+
+                  {/* Test Configuration */}
+                  <div className="border-t pt-4 mt-4">
+                    <h4 className="font-medium mb-3">Test Configuration</h4>
+                    <p className="text-sm text-muted-foreground mb-4">
+                      Send a test email to verify your SMTP settings.
+                    </p>
+                    <div className="flex gap-2">
+                      <Input
+                        type="email"
+                        value={testEmail}
+                        onChange={(e) => setTestEmail(e.target.value)}
+                        placeholder="Enter email address to test"
+                        className="flex-1"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handleTestEmail}
+                        disabled={isSendingTest}
+                      >
+                        {isSendingTest ? (
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <>
+                            <Send className="h-4 w-4 mr-1" />
+                            Send Test
+                          </>
                         )}
-                      </AlertDescription>
-                    </Alert>
-                  )}
-                </div>
-              </form>
-            </CardContent>
-          </Card>
-        </TabsContent>
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        onClick={handleDebugSmtp}
+                        disabled={isDebugging}
+                      >
+                        {isDebugging ? (
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <>
+                            <Bug className="h-4 w-4 mr-1" />
+                            Debug
+                          </>
+                        )}
+                      </Button>
+                    </div>
+
+                    {debugResult && (
+                      <Alert
+                        className={`mt-4 ${debugResult.success ? 'border-green-500' : 'border-yellow-500'}`}
+                      >
+                        <AlertTitle>
+                          {debugResult.success ? 'SMTP Debug Complete' : 'SMTP Connection Issues'}
+                        </AlertTitle>
+                        <AlertDescription>
+                          <p>{debugResult.message}</p>
+                          {debugResult.details && debugResult.details.length > 0 && (
+                            <ul className="text-xs mt-2 list-disc list-inside">
+                              {debugResult.details.map((detail, i) => (
+                                <li key={i}>{detail}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </AlertDescription>
+                      </Alert>
+                    )}
+                  </div>
+                </form>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
 
         {/* TOTP Tab */}
         <TabsContent value="totp" className="space-y-6">
@@ -2383,8 +2412,8 @@ export default function ProfilePage() {
                 <code className="bg-muted px-1 rounded">.env</code> file.
               </p>
               <p>
-                To apply these changes, please restart the AlgoZ application using your usual
-                method (terminal, service manager, or container orchestrator).
+                To apply these changes, please restart the AlgoZ application using your usual method
+                (terminal, service manager, or container orchestrator).
               </p>
             </AlertDialogDescription>
           </AlertDialogHeader>

@@ -37,6 +37,7 @@ export function AuthSync({ children }: AuthSyncProps) {
               broker: data.broker,
               isLoggedIn: true,
               loginTime: new Date().toISOString(),
+              isAdmin: Boolean(data.is_admin),
             })
             // Store the API key for trading API calls. Always set it (even
             // when absent) so switching to an account with no key generated
@@ -59,6 +60,7 @@ export function AuthSync({ children }: AuthSyncProps) {
               broker: null,
               isLoggedIn: false,
               loginTime: null,
+              isAdmin: Boolean(data.is_admin),
             })
             clearCapabilities()
           } else {
