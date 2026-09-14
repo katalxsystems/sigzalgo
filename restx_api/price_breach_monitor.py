@@ -6,7 +6,7 @@ from marshmallow import ValidationError
 
 from database.auth_db import verify_api_key
 from limiter import limiter
-from services.price_breach_service import create_and_activate, deactivate
+from services.price_breach_service import create_and_activate, deactivate_by_call_id
 from utils.logging import get_logger
 
 from .data_schemas import PriceBreachCreateSchema, PriceBreachDeactivateSchema
@@ -85,16 +85,21 @@ class PriceBreachCreate(Resource):
             )
 
 
-@api.route("/<int:workflow_id>/deactivate", strict_slashes=False)
+@api.route("/<string:call_id>/deactivate", strict_slashes=False)
 class PriceBreachDeactivate(Resource):
     @limiter.limit(PRICE_BREACH_LIMIT)
-    def post(self, workflow_id):
-        """Deactivate a price-breach watch by workflow id.
+    def post(self, call_id):
+        """Deactivate a price-breach call by call_id.
+
+        Tears down both of the call's workflows (sl_target and, if it
+        exists, entry_recross) together -- call_id is the identifier you
+        passed to /api/v1/pricebreach/create, not either workflow_id from
+        its response.
 
         Not usually needed -- each watch deactivates itself and its sibling
         automatically once either fires. Exposed for manual/operator use
-        (e.g. canceling a watch before it fires). Requires the same apikey
-        the watch was created with.
+        (e.g. canceling a call before it fires). Requires the same apikey
+        the call was created with.
         """
         try:
             data = deactivate_schema.load(request.json)
@@ -105,7 +110,7 @@ class PriceBreachDeactivate(Resource):
                     jsonify({"status": "error", "message": "Invalid openalgo apikey"}), 403
                 )
 
-            success, response_data, status_code = deactivate(workflow_id, api_key)
+            success, response_data, status_code = deactivate_by_call_id(call_id, api_key)
             return make_response(jsonify(response_data), status_code)
 
         except ValidationError as err:

@@ -23,14 +23,16 @@ from `call_id`, `mentor_id`, and `symbol` (the "script"), in that order:
     created) in the background, since the "breach" is already true at call
     time rather than something to wait for.
 
-Each live watch's action chain ends in [deactivate self] -> [deactivate the
-other watch, if one exists]. The deactivate calls are plain loopback HTTP
-requests to this same instance's own apikey-authenticated
-/api/v1/pricebreach/<id>/deactivate -- possible (unlike the session-cookie
-authenticated /flow/api/workflows/<id>/deactivate) specifically because that
-route takes an apikey, not a session cookie, so a Flow httpRequest node can
-call it. That means once either condition fires, both watches clean
-themselves up; nothing extra is required of the webhook receiver.
+Each live watch's action chain ends in one [deactivate call] node: a loopback
+HTTP request to this same instance's own apikey-authenticated
+/api/v1/pricebreach/<call_id>/deactivate -- possible (unlike the
+session-cookie authenticated /flow/api/workflows/<id>/deactivate)
+specifically because that route takes an apikey, not a session cookie, so a
+Flow httpRequest node can call it. Deactivating by call_id tears down both
+sibling workflows for that call together (see deactivate_by_call_id() and
+database.flow_db.PriceBreachCall), so one node is enough -- whichever watch
+fires first cleans up both itself and its sibling; nothing extra is required
+of the webhook receiver.
 
 Callable directly with an already-resolved api_key -- no session cookie
 needed. This is what lets restx_api/price_breach_monitor.py offer the
@@ -53,7 +55,13 @@ from database.flow_db import activate_workflow as db_activate_workflow
 from database.flow_db import create_workflow as db_create_workflow
 from database.flow_db import deactivate_workflow as db_deactivate_workflow
 from database.flow_db import delete_workflow as db_delete_workflow
-from database.flow_db import get_workflow, get_workflow_api_key, update_workflow
+from database.flow_db import (
+    get_workflow,
+    get_workflow_api_key,
+    get_workflow_ids_by_call_id,
+    record_price_breach_call,
+    update_workflow,
+)
 from services.flow_price_monitor_service import get_flow_price_monitor
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
@@ -153,15 +161,17 @@ def _notify_node(node_id: str, position_y: int, webhook_url: str, body_payload: 
     }
 
 
-def _deactivate_node(node_id: str, position_y: int, target_workflow_id: int, api_key: str) -> dict:
-    """An httpRequest node that calls this instance's own deactivate route.
-    Fire-and-forget: outputVariable is intentionally unset, and a failure
-    here does not roll back the workflow's own row -- the operator/receiver
-    can still deactivate manually (POST /api/v1/pricebreach/<id>/deactivate)
-    if this self-call fails for some reason (network hiccup, instance
-    restarting mid-run).
+def _deactivate_node(node_id: str, position_y: int, call_id: str, api_key: str) -> dict:
+    """An httpRequest node that calls this instance's own deactivate route by
+    call_id -- which tears down both sibling workflows for that call
+    together (see deactivate_by_call_id()), so a single node here retires
+    the whole pair. Fire-and-forget: outputVariable is intentionally unset,
+    and a failure here does not roll back the workflow's own row -- the
+    operator/receiver can still deactivate manually
+    (POST /api/v1/pricebreach/<call_id>/deactivate) if this self-call fails
+    for some reason (network hiccup, instance restarting mid-run).
     """
-    url = f"{_loopback_base_url()}/api/v1/pricebreach/{target_workflow_id}/deactivate"
+    url = f"{_loopback_base_url()}/api/v1/pricebreach/{call_id}/deactivate"
     return {
         "id": node_id,
         "type": "httpRequest",
@@ -176,26 +186,12 @@ def _deactivate_node(node_id: str, position_y: int, target_workflow_id: int, api
     }
 
 
-def _deactivate_chain(
-    own_id: int, sibling_id: int | None, api_key: str, start_y: int
-) -> tuple[list[dict], list[dict], str]:
-    """The [deactivate_self] -> [deactivate_sibling]? tail shared by every
-    watch. Returns (nodes, edges, last_node_id) so callers can wire their own
-    notify node(s) into "deactivate_self" without duplicating this part."""
-    nodes = [_deactivate_node("deactivate_self", start_y, own_id, api_key)]
-    edges: list[dict] = []
-    last = "deactivate_self"
-    if sibling_id is not None:
-        nodes.append(_deactivate_node("deactivate_sibling", start_y + 150, sibling_id, api_key))
-        edges.append(
-            {
-                "id": "edge-deactivate_self-deactivate_sibling",
-                "source": "deactivate_self",
-                "target": "deactivate_sibling",
-            }
-        )
-        last = "deactivate_sibling"
-    return nodes, edges, last
+def _deactivate_chain(call_id: str, api_key: str, start_y: int) -> tuple[list[dict], list[dict], str]:
+    """The single [deactivate_call] tail shared by every watch. Returns
+    (nodes, edges, last_node_id) so callers can wire their own notify
+    node(s) into "deactivate_call" without duplicating this part."""
+    nodes = [_deactivate_node("deactivate_call", start_y, call_id, api_key)]
+    return nodes, [], "deactivate_call"
 
 
 def _sl_target_graph(
@@ -209,7 +205,6 @@ def _sl_target_graph(
     webhook_url: str,
     api_key: str,
     own_id: int,
-    sibling_id: int | None,
     name: str,
 ) -> dict[str, Any]:
     """Trigger -> branch on which bound was crossed -> one of two notify
@@ -277,17 +272,17 @@ def _sl_target_graph(
         },
     ]
 
-    deact_nodes, deact_edges, _ = _deactivate_chain(own_id, sibling_id, api_key, start_y=300)
+    deact_nodes, deact_edges, _ = _deactivate_chain(call_id, api_key, start_y=300)
     nodes += deact_nodes
     edges += deact_edges
     edges.append(
-        {"id": "edge-notify_sl-deactivate_self", "source": "notify_sl", "target": "deactivate_self"}
+        {"id": "edge-notify_sl-deactivate_call", "source": "notify_sl", "target": "deactivate_call"}
     )
     edges.append(
         {
-            "id": "edge-notify_target-deactivate_self",
+            "id": "edge-notify_target-deactivate_call",
             "source": "notify_target",
-            "target": "deactivate_self",
+            "target": "deactivate_call",
         }
     )
 
@@ -311,7 +306,6 @@ def _entry_recross_graph(
     webhook_url: str,
     api_key: str,
     own_id: int,
-    sibling_id: int | None,
     name: str,
 ) -> dict[str, Any]:
     trigger_data = {
@@ -343,11 +337,11 @@ def _entry_recross_graph(
     ]
     edges = [{"id": "edge-trigger-notify", "source": "trigger", "target": "notify"}]
 
-    deact_nodes, deact_edges, _ = _deactivate_chain(own_id, sibling_id, api_key, start_y=300)
+    deact_nodes, deact_edges, _ = _deactivate_chain(call_id, api_key, start_y=300)
     nodes += deact_nodes
     edges += deact_edges
     edges.append(
-        {"id": "edge-notify-deactivate_self", "source": "notify", "target": "deactivate_self"}
+        {"id": "edge-notify-deactivate_call", "source": "notify", "target": "deactivate_call"}
     )
 
     return {
@@ -386,8 +380,7 @@ def create_and_activate(
     base_name = name or f"{call_id}_{mentor_id}_{symbol}"
     entry_condition = _entry_cross_condition(active_price, entry_price)
 
-    # Pass 1: create empty rows to get real ids. Both are needed before
-    # either graph can reference "my sibling", so nodes/edges start blank.
+    # Pass 1: create empty rows to get real ids, nodes/edges start blank.
     sl_target_wf = db_create_workflow(
         name=f"{base_name} (SL/Target)", description="", nodes=[], edges=[]
     )
@@ -409,8 +402,18 @@ def create_and_activate(
                 500,
             )
 
-    # Pass 2: now that both ids exist, build the real graphs (each
-    # referencing the other for auto-cleanup) and write them in.
+    # Record the call_id -> workflow_id(s) mapping so
+    # /api/v1/pricebreach/<call_id>/deactivate can resolve both of them
+    # later.
+    record_price_breach_call(
+        call_id,
+        sl_target_workflow_id=sl_target_wf.id,
+        entry_recross_workflow_id=(entry_wf.id if entry_wf else None),
+    )
+
+    # Pass 2: build the real graphs -- each watch's own deactivate chain
+    # tears down the whole call_id pair (see _deactivate_chain) -- and write
+    # them in.
     sl_target_graph = _sl_target_graph(
         call_id,
         mentor_id,
@@ -422,7 +425,6 @@ def create_and_activate(
         webhook_url,
         api_key,
         own_id=sl_target_wf.id,
-        sibling_id=(entry_wf.id if entry_wf else None),
         name=sl_target_wf.name,
     )
     update_workflow(sl_target_wf.id, nodes=sl_target_graph["nodes"], edges=sl_target_graph["edges"])
@@ -440,7 +442,6 @@ def create_and_activate(
             webhook_url,
             api_key,
             own_id=entry_wf.id,
-            sibling_id=sl_target_wf.id,
             name=entry_wf.name,
         )
         update_workflow(entry_wf.id, nodes=entry_graph["nodes"], edges=entry_graph["edges"])
@@ -540,29 +541,75 @@ def create_and_activate(
     )
 
 
-def deactivate(workflow_id: int, api_key: str) -> tuple[bool, dict[str, Any], int]:
-    """Stop the live watch (if still registered) and flip is_active off.
+def _deactivate_one(workflow_id: int, api_key: str) -> tuple[bool, str, int]:
+    """Stop one live watch (if still registered) and flip is_active off.
 
     Flow workflows have no owner column, so this is the one place this
     module adds a check the underlying /flow/api/workflows/* routes do not
     have: the caller's apikey must match the one the workflow was activated
     with, so one account's apikey cannot deactivate another account's watch
-    just by guessing a workflow id.
+    just by guessing a workflow id. Returns (success, message, status_code)
+    -- deactivate_by_call_id() aggregates this across a call_id's workflows.
     """
     workflow = get_workflow(workflow_id)
     if not workflow:
-        return False, {"status": "error", "message": "Workflow not found"}, 404
+        return False, f"Workflow {workflow_id} not found", 404
 
     stored_key = get_workflow_api_key(workflow)
     if stored_key and stored_key != api_key:
-        return (
-            False,
-            {"status": "error", "message": "This apikey did not create this workflow"},
-            403,
-        )
+        return False, "This apikey did not create this workflow", 403
 
     get_flow_price_monitor().remove_alert(workflow_id)
     db_deactivate_workflow(workflow_id)
 
     logger.info(f"Price-breach workflow {workflow_id} deactivated")
-    return True, {"status": "success", "message": f"Workflow {workflow_id} deactivated"}, 200
+    return True, f"Workflow {workflow_id} deactivated", 200
+
+
+def deactivate_by_call_id(call_id: str, api_key: str) -> tuple[bool, dict[str, Any], int]:
+    """Deactivate every workflow create_and_activate() created for call_id
+    (sl_target and, if present, entry_recross) as one unit.
+
+    Not usually needed -- each watch deactivates itself and its sibling
+    automatically once either fires. Exposed for manual/operator use (e.g.
+    canceling a call before it fires). Requires the same apikey the call was
+    created with. Ownership is verified against every workflow found for
+    call_id before any of them are deactivated, so a mismatched apikey
+    leaves all of them untouched rather than partially tearing down the
+    pair.
+    """
+    workflow_ids = get_workflow_ids_by_call_id(call_id)
+    workflows = [w for w in (get_workflow(wid) for wid in workflow_ids) if w]
+
+    if not workflows:
+        return (
+            False,
+            {"status": "error", "message": f"No price-breach watch found for call_id {call_id}"},
+            404,
+        )
+
+    for workflow in workflows:
+        stored_key = get_workflow_api_key(workflow)
+        if stored_key and stored_key != api_key:
+            return (
+                False,
+                {"status": "error", "message": "This apikey did not create this call"},
+                403,
+            )
+
+    deactivated_ids = []
+    for workflow in workflows:
+        success, _message, _status = _deactivate_one(workflow.id, api_key)
+        if success:
+            deactivated_ids.append(workflow.id)
+
+    logger.info(f"Price-breach call {call_id} deactivated (workflows={deactivated_ids})")
+    return (
+        True,
+        {
+            "status": "success",
+            "message": f"Call {call_id} deactivated",
+            "workflow_ids": deactivated_ids,
+        },
+        200,
+    )

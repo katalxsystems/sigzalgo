@@ -103,6 +103,27 @@ class FlowWorkflow(Base):
     )
 
 
+class PriceBreachCall(Base):
+    """Maps a caller-supplied call_id (POST /api/v1/pricebreach/create) to the
+    Flow workflow(s) it created.
+
+    call_id has no other queryable home -- it is only embedded (non-unique)
+    inside each workflow's notify-node JSON payload -- so
+    /api/v1/pricebreach/<call_id>/deactivate needs this table to resolve
+    which FlowWorkflow row(s) to tear down. entry_recross_workflow_id is
+    nullable because create_and_activate() does not create that workflow
+    when active_price == entry_price (see services/price_breach_service.py).
+    """
+
+    __tablename__ = "price_breach_calls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    call_id = Column(String(100), nullable=False, index=True)
+    sl_target_workflow_id = Column(Integer, ForeignKey("flow_workflows.id"), nullable=False)
+    entry_recross_workflow_id = Column(Integer, ForeignKey("flow_workflows.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class FlowWorkflowExecution(Base):
     """Model for flow workflow executions"""
 
@@ -217,6 +238,44 @@ def get_active_workflows():
         return FlowWorkflow.query.filter_by(is_active=True).all()
     except Exception as e:
         logger.exception(f"Error getting active workflows: {str(e)}")
+        return []
+
+
+def record_price_breach_call(call_id, sl_target_workflow_id, entry_recross_workflow_id=None):
+    """Persist the call_id -> workflow_id(s) mapping for one
+    /api/v1/pricebreach/create call, so it can later be resolved by
+    get_workflow_ids_by_call_id()."""
+    try:
+        row = PriceBreachCall(
+            call_id=call_id,
+            sl_target_workflow_id=sl_target_workflow_id,
+            entry_recross_workflow_id=entry_recross_workflow_id,
+        )
+        db_session.add(row)
+        db_session.commit()
+        return row
+    except Exception as e:
+        logger.exception(f"Error recording price-breach call {call_id}: {str(e)}")
+        db_session.rollback()
+        return None
+
+
+def get_workflow_ids_by_call_id(call_id):
+    """All FlowWorkflow ids ever created for this call_id (sl_target and, if
+    present, entry_recross), across every /create call that used it. Most
+    calls will resolve to exactly one row (one or two workflow ids); more
+    than one row only happens if the same call_id was reused across
+    multiple /create calls."""
+    try:
+        rows = PriceBreachCall.query.filter_by(call_id=call_id).all()
+        workflow_ids: list[int] = []
+        for row in rows:
+            workflow_ids.append(row.sl_target_workflow_id)
+            if row.entry_recross_workflow_id is not None:
+                workflow_ids.append(row.entry_recross_workflow_id)
+        return workflow_ids
+    except Exception as e:
+        logger.exception(f"Error looking up workflows for call_id {call_id}: {str(e)}")
         return []
 
 

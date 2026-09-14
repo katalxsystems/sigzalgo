@@ -16,7 +16,7 @@ other `/api/v1/` endpoint uses.
 
 ```http
 POST http://127.0.0.1:5000/api/v1/pricebreach/create
-POST http://127.0.0.1:5000/api/v1/pricebreach/<workflow_id>/deactivate
+POST http://127.0.0.1:5000/api/v1/pricebreach/<call_id>/deactivate
 ```
 
 ## What gets created
@@ -42,8 +42,9 @@ One call creates up to **two** independent Flow workflows:
 Whichever workflow fires first: it notifies `webhook_url`, then
 **deactivates both itself and the other workflow automatically** — a Flow
 `httpRequest` node calls this same instance's own
-`/api/v1/pricebreach/<id>/deactivate` for each. Your webhook receiver does
-not need to call deactivate itself.
+`/api/v1/pricebreach/<call_id>/deactivate`, which tears down both sibling
+workflows for that call together. Your webhook receiver does not need to
+call deactivate itself.
 
 ## Create
 
@@ -201,20 +202,23 @@ deactivate it if needed:
 ## Deactivate
 
 Not usually needed — the auto-cleanup above handles it. Exposed for
-manual/operator use, e.g. canceling a watch before it fires:
+manual/operator use, e.g. canceling a call before it fires. Pass the
+`call_id` from `create` in the path — not either `workflow_id` from its
+response; deactivating a call_id tears down both its `sl_target` and
+`entry_recross` workflows together:
 
 ```bash
-curl -X POST http://127.0.0.1:5000/api/v1/pricebreach/1/deactivate \
+curl -X POST http://127.0.0.1:5000/api/v1/pricebreach/CALL-001/deactivate \
   -H 'Content-Type: application/json' \
   -d '{"apikey": "<your_app_apikey>"}'
 ```
 
 ```json
-{ "status": "success", "message": "Workflow 1 deactivated" }
+{ "status": "success", "message": "Call CALL-001 deactivated", "workflow_ids": [1, 2] }
 ```
 
-Requires the same `apikey` the watch was created with — a different
-account's key gets `403`.
+Requires the same `apikey` the call was created with — a different
+account's key gets `403`. An unknown `call_id` gets `404`.
 
 ## Request Fields
 
@@ -247,14 +251,15 @@ account's key gets `403`.
   `/flow/api/workflows/*` routes) — anyone with a valid `apikey` on this
   instance can list/inspect any workflow via those routes. Deactivate here is
   the one place this surface adds a check: the caller's `apikey` must match
-  the one the workflow was created with.
-- The auto-cleanup `httpRequest` nodes call back into this same instance
+  the one every workflow for that `call_id` was created with; if any of them
+  doesn't match, nothing is deactivated.
+- The auto-cleanup `httpRequest` node calls back into this same instance
   (`MCP_LOOPBACK_URL` > `HOST_SERVER` > `http://127.0.0.1:<FLASK_PORT>`, same
-  resolution order `blueprints/mcp_http.py` uses). If that self-call fails
-  (network hiccup, instance restarting mid-run), the workflow that fired is
-  still deactivated via its own `deactivate_self` step in most failure modes,
-  but the sibling can be left stranded — call deactivate on it manually if
-  you notice a workflow still active with no counterpart.
+  resolution order `blueprints/mcp_http.py` uses) via the `call_id` deactivate
+  route, so a single self-call tears down both workflows. If that self-call
+  fails (network hiccup, instance restarting mid-run), call deactivate on the
+  `call_id` manually if you notice a workflow still active after it should
+  have fired.
 - Rate-limited via `WEBSOCKET_CONTROL_LIMIT` (default `10 per minute`),
   shared with the `/api/v1/ws/*` control endpoints.
 
