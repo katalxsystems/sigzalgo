@@ -132,8 +132,9 @@ def download_data():
         start_date = data.get("start_date")
         end_date = data.get("end_date")
 
-        # Get API key for the logged-in user
-        user = session.get("user")
+        # Get API key for the active broker account, falling back to the
+        # platform username for pre-multi-account installs
+        user = session.get("user_session_key") or session.get("user")
         api_key = get_api_key_for_tradingview(user)
 
         if not api_key:
@@ -171,8 +172,9 @@ def download_watchlist():
         start_date = data.get("start_date")
         end_date = data.get("end_date")
 
-        # Get API key for the logged-in user
-        user = session.get("user")
+        # Get API key for the active broker account, falling back to the
+        # platform username for pre-multi-account installs
+        user = session.get("user_session_key") or session.get("user")
         api_key = get_api_key_for_tradingview(user)
 
         if not api_key:
@@ -618,8 +620,9 @@ def get_intervals():
         from database.auth_db import get_api_key_for_tradingview
         from services.historify_service import get_supported_timeframes
 
-        # Get API key for the logged-in user
-        user = session.get("user")
+        # Get API key for the active broker account, falling back to the
+        # platform username for pre-multi-account installs
+        user = session.get("user_session_key") or session.get("user")
         api_key = get_api_key_for_tradingview(user)
 
         if not api_key:
@@ -1023,8 +1026,9 @@ def create_job():
         if not symbols:
             return jsonify({"status": "error", "message": "No symbols provided"}), 400
 
-        # Get API key for the logged-in user
-        user = session.get("user")
+        # Get API key for the active broker account, falling back to the
+        # platform username for pre-multi-account installs
+        user = session.get("user_session_key") or session.get("user")
         api_key = get_api_key_for_tradingview(user)
 
         if not api_key:
@@ -1115,8 +1119,9 @@ def retry_job(job_id):
         from database.auth_db import get_api_key_for_tradingview
         from services.historify_service import retry_failed_items
 
-        # Get API key for the logged-in user
-        user = session.get("user")
+        # Get API key for the active broker account, falling back to the
+        # platform username for pre-multi-account installs
+        user = session.get("user_session_key") or session.get("user")
         api_key = get_api_key_for_tradingview(user)
 
         if not api_key:
