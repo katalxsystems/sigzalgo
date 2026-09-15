@@ -17,6 +17,8 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from database.apscheduler_jobstore_db import FLOW_JOBSTORE_TABLE, ensure_jobstore_table
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,6 +53,13 @@ class FlowScheduler:
             self._api_key = api_key
 
             try:
+                # Safety net for the case where the app-boot init phase lost the
+                # write-lock race (or never ran): retries a locked database
+                # itself, so SQLAlchemyJobStore.start() below finds the table
+                # already there and its own checkfirst=True create is a
+                # read-only no-op. See database/apscheduler_jobstore_db.py.
+                ensure_jobstore_table(FLOW_JOBSTORE_TABLE, db_url)
+
                 jobstores = {
                     "default": SQLAlchemyJobStore(url=db_url, tablename="flow_apscheduler_jobs")
                 }
@@ -285,9 +294,7 @@ def execute_workflow_scheduled(
         return
 
     if market_hours_only and not is_within_market_hours():
-        logger.debug(
-            f"Skipping scheduled workflow {workflow_id}: outside market hours"
-        )
+        logger.debug(f"Skipping scheduled workflow {workflow_id}: outside market hours")
         return
 
     try:

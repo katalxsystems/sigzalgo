@@ -14,6 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from database.apscheduler_jobstore_db import HISTORIFY_JOBSTORE_TABLE, ensure_jobstore_table
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -52,6 +53,13 @@ class HistorifyScheduler:
             self._socketio = socketio
 
             try:
+                # Safety net for the case where the app-boot init phase lost the
+                # write-lock race (or never ran): retries a locked database
+                # itself, so SQLAlchemyJobStore.start() below finds the table
+                # already there and its own checkfirst=True create is a
+                # read-only no-op. See database/apscheduler_jobstore_db.py.
+                ensure_jobstore_table(HISTORIFY_JOBSTORE_TABLE, db_url)
+
                 jobstores = {
                     "default": SQLAlchemyJobStore(
                         url=db_url, tablename="historify_apscheduler_jobs"
