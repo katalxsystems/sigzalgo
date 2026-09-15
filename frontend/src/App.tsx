@@ -14,6 +14,8 @@ const Home = lazy(() => import('@/pages/Home'))
 const PortfolioBacktester = lazy(() => import('@/pages/PortfolioBacktester'))
 const PortfolioBacktesterResults = lazy(() => import('@/pages/PortfolioBacktesterResults'))
 const PortfolioAnalyzer = lazy(() => import('@/pages/PortfolioAnalyzer'))
+const Baskets = lazy(() => import('@/pages/Baskets'))
+const BasketDetail = lazy(() => import('@/pages/BasketDetail'))
 const Faq = lazy(() => import('@/pages/Faq'))
 const Setup = lazy(() => import('@/pages/Setup'))
 const Login = lazy(() => import('@/pages/Login'))
@@ -206,6 +208,8 @@ function App() {
                   element={<Navigate to="/portfolio-backtester" replace />}
                 />
                 <Route path="/portfolio-analyzer" element={<PortfolioAnalyzer />} />
+                <Route path="/baskets" element={<Baskets />} />
+                <Route path="/baskets/:basketId" element={<BasketDetail />} />
                 <Route path="/gocharting" element={<GoCharting />} />
                 <Route path="/pnl-tracker" element={<PnLTracker />} />
                 {/* Phase 4: Sandbox & Analyzer */}

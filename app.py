@@ -278,6 +278,7 @@ def create_app():
     # Warming here means the first backtest does not pay it and boot does not
     # block on it.
     from portfolio import warm_analytics
+
     warm_analytics()
 
     # Exempt API endpoints from CSRF protection (they use API key authentication)
@@ -698,6 +699,7 @@ def setup_environment(app):
             import time
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
+            from database.basket_db import ensure_basket_tables_exists
             from database.chart_prefs_db import ensure_chart_prefs_tables_exists
             from database.market_calendar_db import ensure_market_calendar_tables_exists
             from database.qty_freeze_db import ensure_qty_freeze_tables_exists
@@ -726,6 +728,7 @@ def setup_environment(app):
                 ("Scalping DB", ensure_scalping_tables_exists),
                 ("Leverage DB", ensure_leverage_tables_exists),
                 ("Strategy Portfolio DB", ensure_strategy_portfolio_tables_exists),
+                ("Basket DB", ensure_basket_tables_exists),
             ]
 
             db_init_start = time.time()

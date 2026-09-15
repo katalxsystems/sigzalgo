@@ -12,6 +12,7 @@ api = Api(
 
 # Import namespaces
 from .analyzer import api as analyzer_ns
+from .basket import api as basket_ns
 from .basket_order import api as basket_order_ns
 from .cancel_all_order import api as cancel_all_order_ns
 from .cancel_gtt_order import api as cancel_gtt_order_ns
@@ -71,6 +72,7 @@ api.add_namespace(quotes_ns, path="/quotes")
 api.add_namespace(multiquotes_ns, path="/multiquotes")
 api.add_namespace(history_ns, path="/history")
 api.add_namespace(portfolio_ns, path="/portfolio")
+api.add_namespace(basket_ns, path="/basket")
 api.add_namespace(depth_ns, path="/depth")
 api.add_namespace(option_chain_ns, path="/optionchain")
 api.add_namespace(intervals_ns, path="/intervals")
