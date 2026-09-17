@@ -828,6 +828,13 @@ def setup_environment(app):
                 logger.error(f"Failed to initialize Historify scheduler: {e}")
 
             try:
+                from services.broker_auto_login_service import start_broker_auto_login
+
+                start_broker_auto_login()
+            except Exception:
+                logger.exception("Failed to start broker auto-login monitor")
+
+            try:
                 # Server-side scalping SL / target / trailing-stop engine. Runs
                 # browser-independently so stops keep working after the user
                 # leaves /scalping or closes the tab. Idles when no SL is set.
