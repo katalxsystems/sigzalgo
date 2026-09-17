@@ -75,6 +75,14 @@ class UpstoxWebSocketClient:
         # under the cold-start race + 90s data-stall watchdog combination
         # (the watchdog reconnected 5× during a slow start, then gave up).
         self._reconnect_config = {"max_attempts": 50, "base_delay": 2, "max_delay": 30}
+        # Consecutive reconnect attempts that found no auth token at all (as
+        # opposed to a successful fetch). A few in a row means the account was
+        # revoked/logged out, not a slow daily rollover -- see
+        # _refresh_auth_token. Checked separately from _reconnect_attempts
+        # since that budget (50 attempts, up to 30s apart) would otherwise
+        # keep hammering a dead token for the better part of half an hour.
+        self._token_miss_count = 0
+        self.MAX_CONSECUTIVE_TOKEN_MISSES = 3
 
         # SSL context
         self._ssl_context = ssl.create_default_context()
@@ -123,6 +131,7 @@ class UpstoxWebSocketClient:
     def _run_websocket(self):
         """Run the WebSocket connection with reconnection logic"""
         self._reconnect_attempts = 0
+        self._token_miss_count = 0
         while self.running:
             try:
                 # Enable keepalive pings (same as Dhan/Flattrade which work reliably).
@@ -170,7 +179,10 @@ class UpstoxWebSocketClient:
             # ~3 AM IST daily token rollover would sign with the dead
             # construction-time token and the feed would stay dead until a
             # process restart.
-            self._refresh_auth_token()
+            if not self._refresh_auth_token():
+                self.running = False
+                self._trigger_error("Account revoked or logged out")
+                break
 
             # Re-fetch WebSocket URL for reconnection
             ws_url = self._get_websocket_url()
@@ -251,6 +263,7 @@ class UpstoxWebSocketClient:
         self.logger.debug("Upstox WebSocket connection opened")
         self._connected = True
         self._reconnect_attempts = 0
+        self._token_miss_count = 0
         self._last_message_time = time.time()
 
         # Start health check thread
@@ -388,28 +401,44 @@ class UpstoxWebSocketClient:
             self.auth_token and isinstance(self.auth_token, str) and len(self.auth_token) >= 10
         )
 
-    def _refresh_auth_token(self):
+    def _refresh_auth_token(self) -> bool:
         """Re-read a fresh bearer token from the database before a reconnect.
 
         Indian broker tokens roll over daily at ~3 AM IST. On reconnect we must
         re-read the current token from the database (bypassing the auth cache,
         which can hold a stale token after rollover) so the authorize request is
         signed with the live bearer. If no fresh token is available, keep the
-        existing one rather than crashing.
+        existing one rather than crashing -- unless that has now happened
+        MAX_CONSECUTIVE_TOKEN_MISSES times in a row, which means the account
+        was revoked/logged out rather than mid-rollover, so retrying with the
+        stale token is pointless (it will only fail auth forever).
+
+        Returns:
+            False when the caller should stop reconnecting; True otherwise.
         """
         if not self.user_id:
-            return
+            return True
         try:
             fresh_token = get_auth_token(self.user_id, bypass_cache=True)
             if not fresh_token:
+                self._token_miss_count += 1
+                if self._token_miss_count >= self.MAX_CONSECUTIVE_TOKEN_MISSES:
+                    self.logger.error(
+                        f"No auth token found for {self._token_miss_count} consecutive "
+                        "reconnect attempts; account is likely revoked. Giving up."
+                    )
+                    return False
                 self.logger.warning(
-                    "No fresh auth token found on reconnect - keeping existing token"
+                    "No fresh auth token found on reconnect - keeping existing token "
+                    f"(miss {self._token_miss_count}/{self.MAX_CONSECUTIVE_TOKEN_MISSES})"
                 )
-                return
+                return True
+            self._token_miss_count = 0
             self.auth_token = fresh_token
             self.logger.info("Refreshed Upstox auth token from database for reconnect")
         except Exception as e:
             self.logger.error(f"Error refreshing auth token on reconnect: {e}")
+        return True
 
     def _get_websocket_url(self) -> str | None:
         """Get WebSocket URL from Upstox authorization endpoint"""

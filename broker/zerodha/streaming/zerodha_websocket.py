@@ -150,6 +150,15 @@ class ZerodhaWebSocket:
         self._auth_refresh_retries: int = 0
         self._max_auth_refresh_retries: int = 3
 
+        # Consecutive reconnect attempts that found no auth token at all (as
+        # opposed to a successful, possibly-unchanged fetch). A few in a row
+        # means the account was revoked/logged out, not a slow daily rollover
+        # -- used by the non-fatal-error reconnect path below, which (unlike
+        # the fatal-error path above) does not otherwise check
+        # _refresh_access_token()'s return value.
+        self._token_miss_count = 0
+        self.MAX_CONSECUTIVE_TOKEN_MISSES = 3
+
         self.logger.info("Enhanced Zerodha WebSocket client initialized (sync)")
 
     def set_token_exchange_mapping(self, token_exchange_map: dict[int, str]):
@@ -207,8 +216,10 @@ class ZerodhaWebSocket:
         try:
             auth_token = get_auth_token(self.user_id, bypass_cache=True)
             if not auth_token:
+                self._token_miss_count += 1
                 self.logger.warning(
-                    "No fresh auth token found on reconnect — keeping existing token"
+                    "No fresh auth token found on reconnect — keeping existing token "
+                    f"(miss {self._token_miss_count}/{self.MAX_CONSECUTIVE_TOKEN_MISSES})"
                 )
                 return False
             # Same parsing as the adapter's initialize(): auth token format is
@@ -223,6 +234,7 @@ class ZerodhaWebSocket:
                     "Parsed empty access token on reconnect — keeping existing token"
                 )
                 return False
+            self._token_miss_count = 0
             with self.lock:
                 changed = access_token != self.access_token
                 self.access_token = access_token
@@ -315,6 +327,13 @@ class ZerodhaWebSocket:
             # dead construction-time token and the feed would stay dead until a
             # process restart.
             self._refresh_access_token()
+            if self._token_miss_count >= self.MAX_CONSECUTIVE_TOKEN_MISSES:
+                self.logger.error(
+                    f"No auth token found for {self._token_miss_count} consecutive "
+                    "reconnect attempts; account is likely revoked. Giving up."
+                )
+                self.running = False
+                break
 
         self.logger.info("WebSocket thread exited")
 
@@ -497,6 +516,7 @@ class ZerodhaWebSocket:
         self.connected = True
         self.reconnect_attempts = 0
         self._auth_refresh_retries = 0
+        self._token_miss_count = 0
         self.reconnect_delay = 2
         self.last_message_time = time.time()
         self._connection_ready.set()
