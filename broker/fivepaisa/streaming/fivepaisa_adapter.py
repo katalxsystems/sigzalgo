@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from broker.fivepaisa.streaming.fivepaisa_websocket import FivePaisaWebSocket
 from database.auth_db import get_auth_token
 from database.token_db import get_token
+from utils.config import get_broker_api_key
 
 # Add parent directory to path to allow imports
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../"))
@@ -117,23 +118,35 @@ class FivepaisaWebSocketAdapter(BaseBrokerWebSocketAdapter):
         self.running = True
 
     def _resolve_client_code(self, user_id: str) -> str:
-        """Resolve the 5Paisa client_code from BROKER_API_KEY, falling back to
-        user_id. Format: api_key:::user_id:::client_id"""
-        broker_api_key = os.getenv("BROKER_API_KEY")
+        """Resolve the 5Paisa client_code from the account's broker_api_key.
+
+        ``user_id`` here is the account_id (see initialize()), so this must
+        go through utils.config.get_broker_api_key(account_id) -- the
+        per-account DB-stored credential wins, falling back to the
+        instance-wide Settings row, then the legacy .env BROKER_API_KEY --
+        exactly like broker/fivepaisa/api/order_api.py._get_5paisa_credentials
+        does for orders. Reading os.getenv("BROKER_API_KEY") directly here
+        (as this used to) skips the per-account credential entirely, so on
+        any multi-account install it silently falls through to the "not
+        found" branch below and sends the account_id itself as ClientCode --
+        5paisa then 401s the handshake no matter how valid the auth token is.
+        Format: api_key:::user_id:::client_id.
+        """
+        broker_api_key = get_broker_api_key(user_id)
         if broker_api_key:
             try:
                 parts = broker_api_key.split(":::")
                 if len(parts) >= 3:
                     client_code = parts[2]  # client_id is the third part
-                    self.logger.debug(f"Using client_code from BROKER_API_KEY: {client_code}")
+                    self.logger.debug(f"Using client_code from broker_api_key: {client_code}")
                     return client_code
                 self.logger.warning(
-                    "BROKER_API_KEY format incorrect, using user_id as client_code"
+                    "broker_api_key format incorrect, using user_id as client_code"
                 )
             except Exception as e:
-                self.logger.error(f"Error parsing BROKER_API_KEY: {e}")
+                self.logger.error(f"Error parsing broker_api_key: {e}")
             return user_id
-        self.logger.warning("BROKER_API_KEY not found, using user_id as client_code")
+        self.logger.warning("broker_api_key not found, using user_id as client_code")
         return user_id
 
     def _rebuild_client_with_fresh_token(self) -> bool:

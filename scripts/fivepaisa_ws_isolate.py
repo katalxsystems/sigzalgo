@@ -135,24 +135,32 @@ def _credentials_from_db() -> tuple[str, str]:
         )
         sys.exit(1)
 
-    client_code = _resolve_client_code(row.user_id or row.name)
+    client_code = _resolve_client_code(row.name)
     print(f"[from-db] account_id={row.name!r} broker={row.broker!r} client_code={client_code!r}")
     print(f"[from-db] token = {_redact(token)}")
     return token, client_code
 
 
-def _resolve_client_code(fallback: str) -> str:
-    """Same resolution as fivepaisa_adapter.py._resolve_client_code:
-    BROKER_API_KEY format is api_key:::user_id:::client_id."""
-    broker_api_key = os.getenv("BROKER_API_KEY")
+def _resolve_client_code(account_id: str) -> str:
+    """Same resolution as the FIXED fivepaisa_adapter.py._resolve_client_code:
+    per-account DB-stored broker_api_key first (utils.config.get_broker_api_key),
+    falling back to instance Settings, then legacy .env BROKER_API_KEY. Format
+    is api_key:::user_id:::client_id. (The old version of both this script and
+    the adapter read os.getenv("BROKER_API_KEY") directly, which misses the
+    per-account credential entirely on a multi-account install and ends up
+    sending account_id itself as ClientCode -- that was the actual cause of
+    the 401s this script was built to chase down.)"""
+    from utils.config import get_broker_api_key
+
+    broker_api_key = get_broker_api_key(account_id)
     if broker_api_key:
         parts = broker_api_key.split(":::")
         if len(parts) >= 3:
             return parts[2]
-        print("  [warn] BROKER_API_KEY format incorrect, using fallback as client_code")
+        print("  [warn] broker_api_key format incorrect, using account_id as client_code")
     else:
-        print("  [warn] BROKER_API_KEY not set, using fallback as client_code")
-    return fallback
+        print("  [warn] broker_api_key not found (checked per-account, instance Settings, .env)")
+    return account_id
 
 
 def main() -> int:
