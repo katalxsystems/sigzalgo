@@ -17,6 +17,7 @@ other `/api/v1/` endpoint uses.
 ```http
 POST http://127.0.0.1:5000/api/v1/pricebreach/create
 POST http://127.0.0.1:5000/api/v1/pricebreach/<call_id>/deactivate
+POST http://127.0.0.1:5000/api/v1/pricebreach/workflow/<workflow_id>/deactivate
 ```
 
 ## What gets created
@@ -39,12 +40,21 @@ One call creates up to **two** independent Flow workflows:
      **immediately**, in the background — see "Immediate notification"
      below.
 
-Whichever workflow fires first: it notifies `webhook_url`, then
-**deactivates both itself and the other workflow automatically** — a Flow
-`httpRequest` node calls this same instance's own
-`/api/v1/pricebreach/<call_id>/deactivate`, which tears down both sibling
-workflows for that call together. Your webhook receiver does not need to
-call deactivate itself.
+Each workflow notifies `webhook_url` when it fires, then deactivates —
+automatically, via a Flow `httpRequest` node calling back into this same
+instance — but **at a different scope depending on which one fired**, since
+they mean different things for the call:
+
+- **`sl_target` firing is a real stop-loss/target breach — the call is
+  over.** Its cleanup node calls `/api/v1/pricebreach/<call_id>/deactivate`,
+  which tears down **both** sibling workflows together.
+- **`entry_recross` firing just means price came back to entry — the call is
+  not over** (price can still go on to hit `stop_loss` or `target1`
+  afterwards). Its cleanup node calls
+  `/api/v1/pricebreach/workflow/<workflow_id>/deactivate` with its own
+  `workflow_id`, deactivating **only itself**; `sl_target` stays live.
+
+Your webhook receiver does not need to call deactivate itself either way.
 
 ## Create
 
@@ -95,7 +105,7 @@ curl -X POST http://127.0.0.1:5000/api/v1/pricebreach/create \
     "sl_target": { "workflow_id": 1, "watching": "price outside [1160.0, 1220.0]" },
     "entry_recross": { "workflow_id": 2, "watching": "price crosses_below 1180.0" }
   },
-  "message": "Each watch fires once, notifies your webhook, then deactivates both itself and its sibling watch automatically -- no separate deactivate call needed."
+  "message": "Each watch fires once and notifies your webhook. sl_target firing ends the call and deactivates both watches; entry_recross firing deactivates only itself, since price can still go on to hit stop_loss or target1 afterwards -- no separate deactivate call needed either way."
 }
 ```
 
@@ -169,7 +179,9 @@ was breached. `alert_type` tells you which *workflow* fired
 `entry_recross` fires **at most once** — the underlying `priceAlert` trigger
 is registered as `"once"` and the live watch is removed the instant it
 fires, same as `sl_target`. It cannot re-notify while the workflow stays
-active; once it has fired, both it and its sibling are deactivated.
+active; once it has fired, only itself is deactivated — `sl_target` stays
+live so a real stop-loss/target breach afterwards still fires (see
+"What gets created" above).
 
 #### Immediate notification (`active_price == entry_price`)
 
@@ -202,9 +214,13 @@ deactivate it if needed:
 ## Deactivate
 
 Not usually needed — the auto-cleanup above handles it. Exposed for
-manual/operator use, e.g. canceling a call before it fires. Pass the
-`call_id` from `create` in the path — not either `workflow_id` from its
-response; deactivating a call_id tears down both its `sl_target` and
+manual/operator use, e.g. canceling a call before it fires. Two scopes,
+matching the two the auto-cleanup nodes use:
+
+### By call_id (both workflows)
+
+Pass the `call_id` from `create` in the path — not either `workflow_id` from
+its response; deactivating a call_id tears down both its `sl_target` and
 `entry_recross` workflows together:
 
 ```bash
@@ -220,11 +236,30 @@ curl -X POST http://127.0.0.1:5000/api/v1/pricebreach/CALL-001/deactivate \
 Requires the same `apikey` the call was created with — a different
 account's key gets `403`. An unknown `call_id` gets `404`.
 
+### By workflow_id (one workflow only)
+
+Pass a single `workflow_id` from `create`'s response — deactivates that
+workflow alone, leaving any sibling workflow for the same `call_id`
+untouched:
+
+```bash
+curl -X POST http://127.0.0.1:5000/api/v1/pricebreach/workflow/2/deactivate \
+  -H 'Content-Type: application/json' \
+  -d '{"apikey": "<your_app_apikey>"}'
+```
+
+```json
+{ "status": "success", "message": "Workflow 2 deactivated" }
+```
+
+Requires the `apikey` that workflow was created with — a different account's
+key gets `403`. An unknown `workflow_id` gets `404`.
+
 ## Request Fields
 
 | Field | Type | Endpoint | Mandatory | Description |
 |-------|------|----------|-----------|-------------|
-| apikey | string | both | Mandatory | Your OpenAlgo API key |
+| apikey | string | all | Mandatory | Your OpenAlgo API key |
 | call_id | string | create | Mandatory | Your own identifier for this call/trade — echoed back in every webhook payload and used in the default workflow name |
 | mentor_id | string | create | Mandatory | Identifier for the mentor/analyst behind this call — echoed back in every webhook payload and used in the default workflow name |
 | symbol | string | create | Mandatory | Trading symbol ("script") |
@@ -249,17 +284,20 @@ account's key gets `403`. An unknown `call_id` gets `404`.
   reference.
 - Flow workflows have no per-account ownership (same as the underlying
   `/flow/api/workflows/*` routes) — anyone with a valid `apikey` on this
-  instance can list/inspect any workflow via those routes. Deactivate here is
-  the one place this surface adds a check: the caller's `apikey` must match
-  the one every workflow for that `call_id` was created with; if any of them
-  doesn't match, nothing is deactivated.
-- The auto-cleanup `httpRequest` node calls back into this same instance
-  (`MCP_LOOPBACK_URL` > `HOST_SERVER` > `http://127.0.0.1:<FLASK_PORT>`, same
-  resolution order `blueprints/mcp_http.py` uses) via the `call_id` deactivate
-  route, so a single self-call tears down both workflows. If that self-call
-  fails (network hiccup, instance restarting mid-run), call deactivate on the
-  `call_id` manually if you notice a workflow still active after it should
-  have fired.
+  instance can list/inspect any workflow via those routes. Both deactivate
+  endpoints are where this surface adds a check: the caller's `apikey` must
+  match the one the workflow(s) were created with — for the `call_id` route,
+  every workflow found for that `call_id`; if any of them doesn't match,
+  nothing is deactivated. The `workflow_id` route checks only that one
+  workflow.
+- Each workflow's auto-cleanup `httpRequest` node calls back into this same
+  instance (`MCP_LOOPBACK_URL` > `HOST_SERVER` > `http://127.0.0.1:<FLASK_PORT>`,
+  same resolution order `blueprints/mcp_http.py` uses) — `sl_target` via the
+  `call_id` deactivate route (tears down both workflows), `entry_recross` via
+  its own `workflow_id` deactivate route (tears down only itself). If a
+  self-call fails (network hiccup, instance restarting mid-run), call
+  deactivate manually — by `call_id` or by the specific `workflow_id` — if you
+  notice a workflow still active after it should have fired.
 - Rate-limited via `WEBSOCKET_CONTROL_LIMIT` (default `10 per minute`),
   shared with the `/api/v1/ws/*` control endpoints.
 
