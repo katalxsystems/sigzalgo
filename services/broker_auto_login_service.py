@@ -164,21 +164,29 @@ def check_and_relogin() -> bool:
         if get_auth_token(account_id, bypass_cache=True) is not None:
             return False  # session already live -- nothing to do
 
+        # Checked before _account_has_active_workflow, not after: a
+        # misconfigured/nonexistent AUTO_LOGIN_ACCOUNT_ID has no active
+        # workflow either (nothing can resolve to an account that doesn't
+        # exist), so checking workflow-need first buried this genuinely
+        # actionable misconfiguration behind the same silent, DEBUG-level
+        # "nothing to do" path as the ordinary "session's fine" case.
+        auth_row = Auth.query.filter_by(name=account_id).first()
+        if auth_row is None:
+            logger.error(
+                f"Auto-login: no Auth row for account {account_id!r} -- this is not a "
+                "valid account_id (it should look like <username>_<broker>_<hash>, from "
+                "Profile > Accounts, not a display name). Auto-login cannot do anything "
+                "until AUTO_LOGIN_ACCOUNT_ID is corrected."
+            )
+            return False
+        broker = auth_row.broker
+
         if not _account_has_active_workflow(account_id):
             logger.debug(
                 f"Auto-login: account {account_id}'s session is down, but no active "
                 "workflow depends on it; not re-authenticating."
             )
             return False
-
-        auth_row = Auth.query.filter_by(name=account_id).first()
-        if auth_row is None:
-            logger.error(
-                f"Auto-login: no Auth row for account {account_id} -- connect it once "
-                "through the UI before auto-login can manage it."
-            )
-            return False
-        broker = auth_row.broker
 
         login_func = _TOTP_LOGIN_FUNCS.get(broker)
         if login_func is None:
