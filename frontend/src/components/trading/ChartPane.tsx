@@ -3,8 +3,9 @@
 // weight when the whole row opens menus, and it reads as a dated form
 // control. Reserve the glyph for where it distinguishes something.
 import { ChevronDown, RefreshCw, Search, Settings } from 'lucide-react'
-import type { LinkGroup } from 'openalgo-charts'
+import type { ChartObjects, LinkGroup } from 'openalgo-charts'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { GridIcon, PencilIcon, VolumeIcon } from '@/components/chart/menuIcons'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -17,7 +18,10 @@ import { Input } from '@/components/ui/input'
 import { CHART_TYPE_GROUPS, CHART_TYPES, chartTypeIcon } from '@/lib/trading/chartTypes'
 import type { IntervalGroup } from '@/lib/trading/intervals'
 import { lotInfoText } from '@/lib/trading/legend'
+import type { ProfileMenuAction } from '@/lib/trading/profileLayer'
+import { isProfileKind } from '@/lib/trading/profileSettings'
 import {
+  type BrandingLink,
   type ChartSettingsRequest,
   type CtxItem,
   type DrawSelection,
@@ -122,15 +126,6 @@ function IndicatorIcon({ className }: { className?: string }) {
   )
 }
 
-function PencilIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" {...glyph} className={className} aria-hidden="true">
-      <path d="M4 20.5h4L20 8.5a2.4 2.4 0 0 0-3.4-3.4L4.5 17z" />
-      <path d="M15.5 6.5 18.5 9.5" />
-    </svg>
-  )
-}
-
 /**
  * Rewind: two triangles pointing back to a bar.
  *
@@ -165,30 +160,6 @@ function UndoIcon({ className, flip }: { className?: string; flip?: boolean }) {
     >
       <path d="M9 14 4 9l5-5" />
       <path d="M4 9h10a6 6 0 0 1 0 12h-3" />
-    </svg>
-  )
-}
-
-function VolumeIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      className={className}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-      strokeLinecap="round"
-      aria-hidden="true"
-    >
-      <path d="M5 20v-6M12 20V8M19 20v-9" />
-    </svg>
-  )
-}
-
-function GridIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" {...glyph} className={className} aria-hidden="true">
-      <path d="M3 9h18M3 15h18M9 3v18M15 3v18" />
     </svg>
   )
 }
@@ -239,6 +210,8 @@ interface Props {
    * and whose rows charted nothing, on a page that looks perfectly ready.
    */
   onTerminalChange?(paneId: string, terminal: TradingTerminal | null): void
+  /** Reports the current chart generation's object inventory. */
+  onObjectsChange?(paneId: string, objects: ChartObjects | null): void
   /** Drawing state of this pane, for the shared rail's buttons. */
   onDrawStats?(stats: DrawStats): void
   /** Workspace link group this pane joins, if the page made one. */
@@ -278,6 +251,7 @@ export function ChartPane({
   onFocusPane,
   onSymbolChange,
   onTerminalChange,
+  onObjectsChange,
   onDrawStats,
   linkGroup,
   armed = false,
@@ -304,6 +278,8 @@ export function ChartPane({
   symbolCbRef.current = onSymbolChange
   const terminalCbRef = useRef(onTerminalChange)
   terminalCbRef.current = onTerminalChange
+  const objectsCbRef = useRef(onObjectsChange)
+  objectsCbRef.current = onObjectsChange
   // The flag as it stands when the terminal boots; the effect below tracks it
   // from then on. Read through a ref so the boot effect does not re-run and
   // rebuild the terminal on every toggle.
@@ -316,6 +292,7 @@ export function ChartPane({
   const [interval, setIntervalState] = useState('5m')
   const [chartType, setChartTypeState] = useState('candlestick')
   const [sym, setSym] = useState<SymbolView | null>(null)
+  const [branding, setBranding] = useState<BrandingLink | null>(null)
   const [qty, setQty] = useState(1)
   const [wsState, setWsState] = useState('connecting')
   /**
@@ -375,7 +352,12 @@ export function ChartPane({
   const [textReq, setTextReq] = useState<TextRequest | null>(null)
 
   // right-click menu: order entry, then the view actions
-  const [ctx, setCtx] = useState<{ x: number; y: number; items: CtxItem[] } | null>(null)
+  const [ctx, setCtx] = useState<{
+    x: number
+    y: number
+    items: CtxItem[]
+    profile: ProfileMenuAction | null
+  } | null>(null)
   /**
    * The order ticket, while One-Click is off. The terminal validates the
    * click and hands over what it would have sent; the same dialog the option
@@ -409,6 +391,7 @@ export function ChartPane({
         else if (kind === 'err') showToast.error(msg)
         else showToast.info(msg)
       },
+      onIntervalChange: (iv) => aliveRef.current && setIntervalState(iv),
       onWsState: (s) => aliveRef.current && setWsState(s),
       onSymbolLoaded: (view) => {
         if (!aliveRef.current) return
@@ -416,6 +399,7 @@ export function ChartPane({
         setQty(1)
         symbolCbRef.current?.(paneId, `${view.exchange}:${view.symbol}`)
       },
+      onBrandingChange: (link) => aliveRef.current && setBranding(link),
       onLtp: () => {}, // legend overlay + canvas render the live price
       onDrawChange: (s) => {
         if (!aliveRef.current) return
@@ -424,6 +408,8 @@ export function ChartPane({
       },
       onIndicatorsChange: (list) => aliveRef.current && setIndicators(list),
       onIndicatorSettings: (req) => aliveRef.current && setIndSettings(req),
+      onChartSettings: (req) => aliveRef.current && setChartSettings(req),
+      onObjectsChange: (objects) => objectsCbRef.current?.(paneId, objects),
       onDrawSelect: (sel) => aliveRef.current && setDrawSel(sel),
       // The legend readout is a second switch for the same thing as the context
       // menu row, so the menu label has to follow it.
@@ -506,12 +492,10 @@ export function ChartPane({
 
   /* ── toolbar actions ──────────────────────────────────────────────────── */
   const changeInterval = (iv: string) => {
-    setIntervalState(iv)
-    terminalRef.current?.setInterval(iv)
+    setIntervalState(terminalRef.current?.setInterval(iv) ?? iv)
   }
   const changeChartType = (v: string) => {
-    setChartTypeState(v)
-    terminalRef.current?.setChartType(v)
+    setChartTypeState(terminalRef.current?.setChartType(v) ?? v)
   }
   const changeProduct = (p: string) => {
     if (!sym) return
@@ -532,12 +516,15 @@ export function ChartPane({
     // Order rows need a tradeable instrument; the view actions below them do
     // not, so a quote-only index still gets the menu, just without them.
     const res = t.contextMenuAt(e.clientY - rect.top)
+    const profile = t.profileContextMenuAt(e.clientX - rect.left, e.clientY - rect.top)
+    // Capture prevents the engine's native-menu snapshot from freezing overlays.
     e.preventDefault()
     setGridSub(false)
     setCtx({
       x: Math.min(e.clientX, window.innerWidth - 240),
-      y: Math.min(e.clientY, window.innerHeight - 360),
+      y: Math.max(0, Math.min(e.clientY, window.innerHeight - (profile ? 425 : 360))),
       items: res ? res.items : [],
+      profile,
     })
   }
   useEffect(() => {
@@ -546,11 +533,16 @@ export function ChartPane({
       setGridSub(false)
       setCtx(null)
     }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close()
+    }
     window.addEventListener('click', close)
     window.addEventListener('scroll', close, true)
+    window.addEventListener('keydown', onKeyDown)
     return () => {
       window.removeEventListener('click', close)
       window.removeEventListener('scroll', close, true)
+      window.removeEventListener('keydown', onKeyDown)
     }
   }, [ctx])
 
@@ -613,12 +605,25 @@ export function ChartPane({
     : ''
 
   const chartTypeDef = CHART_TYPES[chartType] ?? CHART_TYPES.candlestick
+  // The three chart-owned settings editors are deliberately lightweight host
+  // overlays rather than Radix dialogs. Publish their presence on the pane so
+  // the page-level Escape handler can dismiss only the top surface.
+  const paneDialogOpen =
+    searchOpen ||
+    pickerOpen ||
+    chartSettings !== null ||
+    indSettings !== null ||
+    textReq !== null ||
+    ticket !== null ||
+    confirmLeave
 
   return (
     <section
       ref={paneRef}
+      data-trading-dialog-open={paneDialogOpen ? 'true' : undefined}
       style={style}
       className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-card"
+      onPointerDownCapture={() => onFocusPane?.(terminalRef.current, paneId)}
     >
       {/* Per-pane control row. One line: the row scrolls rather than wrapping,
           so the view actions stay beside the instrument controls instead of
@@ -685,7 +690,7 @@ export function ChartPane({
               <span className="h-4 w-4">{chartTypeIcon(chartTypeDef.iconKey)}</span>
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent container={menuHost} align="start" className="w-52">
+          <DropdownMenuContent container={menuHost} align="start" className="w-60">
             {CHART_TYPE_GROUPS.map((group, gi) => (
               <div key={group[0].value}>
                 {gi > 0 && <DropdownMenuSeparator />}
@@ -821,6 +826,17 @@ export function ChartPane({
 
         {/* Right side: connection LED + actions */}
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          {branding && (
+            <a
+              href={branding.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={branding.label}
+              className="inline-flex min-h-11 items-center whitespace-nowrap px-2 text-[11px] text-muted-foreground hover:text-foreground hover:underline sm:min-h-0 sm:px-0"
+            >
+              {branding.label}
+            </a>
+          )}
           <span
             className={cn('inline-block h-2.5 w-2.5 rounded-full', ledClass(wsState))}
             title={`WebSocket ${wsState}`}
@@ -945,12 +961,7 @@ export function ChartPane({
             <span className="text-[10px] text-muted-foreground">{lotInfoText(sym, qty)}</span>
           )}
         </div>
-        <div
-          ref={chartRef}
-          className="absolute inset-0"
-          onContextMenu={onContextMenu}
-          onPointerDownCapture={() => onFocusPane?.(terminalRef.current, paneId)}
-        />
+        <div ref={chartRef} className="absolute inset-0" onContextMenuCapture={onContextMenu} />
 
         {!ready && (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
@@ -1097,6 +1108,17 @@ export function ChartPane({
             className="fixed z-50 w-56 rounded-md border bg-popover p-1 shadow-lg"
             style={{ left: ctx.x, top: ctx.y }}
           >
+            {ctx.profile && (
+              <>
+                <div className="px-2 py-1 text-xs text-muted-foreground">
+                  {ctx.profile.sessionLabel}
+                </div>
+                <button type="button" className={ctxRow} onClick={() => run(ctx.profile!.run)}>
+                  {ctx.profile.label}
+                </button>
+                <div className="my-1 h-px bg-border" />
+              </>
+            )}
             {ctx.items.map((it) => (
               <button
                 type="button"
@@ -1152,20 +1174,22 @@ export function ChartPane({
                 {railVisible ? 'Hide drawing tools' : 'Show drawing tools'}
               </button>
             )}
-            <button
-              type="button"
-              className={ctxRow}
-              onClick={() =>
-                run(() => {
-                  const next = !volumeOn
-                  terminalRef.current?.setVolumeVisible(next)
-                  setVolumeOn(next)
-                })
-              }
-            >
-              <VolumeIcon className="h-3.5 w-3.5 opacity-70" />
-              {volumeOn ? 'Hide volume' : 'Show volume'}
-            </button>
+            {!isProfileKind(chartType) && (
+              <button
+                type="button"
+                className={ctxRow}
+                onClick={() =>
+                  run(() => {
+                    const next = !volumeOn
+                    terminalRef.current?.setVolumeVisible(next)
+                    setVolumeOn(next)
+                  })
+                }
+              >
+                <VolumeIcon className="h-3.5 w-3.5 opacity-70" />
+                {volumeOn ? 'Hide volume' : 'Show volume'}
+              </button>
+            )}
             <div className="relative" onMouseLeave={() => setGridSub(false)}>
               <button
                 type="button"

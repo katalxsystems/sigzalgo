@@ -1,5 +1,5 @@
 import { LayoutGrid, Link2 as LinkIcon } from 'lucide-react'
-import { createLinkGroup, type LinkGroup } from 'openalgo-charts'
+import { type ChartObjects, createLinkGroup, type LinkGroup } from 'openalgo-charts'
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { Navbar } from '@/components/layout/Navbar'
 
@@ -21,6 +21,7 @@ import {
   writeDockTab,
 } from '@/components/trading/dock/dockState'
 import { TradingDock } from '@/components/trading/dock/TradingDock'
+import { ObjectsPanel } from '@/components/trading/ObjectsPanel'
 import { OptionChainPanel } from '@/components/trading/OptionChainPanel'
 import { isPanelId, type PanelId, RightRail } from '@/components/trading/RightRail'
 import { TickBox } from '@/components/trading/TickBox'
@@ -35,6 +36,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import type { AgentChartCommand } from '@/lib/agent/stream'
+import { LAYOUTS, LayoutIcon } from '@/lib/chart/layouts'
 import type { DrawStats, SearchRow, TradingTerminal } from '@/lib/trading/terminal'
 import { cn } from '@/lib/utils'
 
@@ -48,72 +50,6 @@ const NO_DRAW: DrawStats = {
   tool: null,
   shortcuts: {},
 }
-
-/**
- * Grid layout presets. Each preset is a
- * CSS grid: `areas` names the cells, `cells` maps each pane (in order) to a named
- * area — so a pane can span (e.g. the big left chart in "1 + 2").
- */
-interface LayoutPreset {
-  id: string
-  label: string
-  cols: string
-  rows: string
-  areas: string
-  cells: string[]
-}
-
-const LAYOUTS: LayoutPreset[] = [
-  { id: 'single', label: 'Single', cols: '1fr', rows: '1fr', areas: '"a"', cells: ['a'] },
-  {
-    id: 'cols2',
-    label: '2 columns',
-    cols: '1fr 1fr',
-    rows: '1fr',
-    areas: '"a b"',
-    cells: ['a', 'b'],
-  },
-  {
-    id: 'rows2',
-    label: '2 rows',
-    cols: '1fr',
-    rows: '1fr 1fr',
-    areas: '"a" "b"',
-    cells: ['a', 'b'],
-  },
-  {
-    id: 'oneTwo',
-    label: '1 + 2',
-    cols: '1.4fr 1fr',
-    rows: '1fr 1fr',
-    areas: '"a b" "a c"',
-    cells: ['a', 'b', 'c'],
-  },
-  {
-    id: 'grid4',
-    label: '2 × 2',
-    cols: '1fr 1fr',
-    rows: '1fr 1fr',
-    areas: '"a b" "c d"',
-    cells: ['a', 'b', 'c', 'd'],
-  },
-  {
-    id: 'grid6',
-    label: '3 × 2',
-    cols: '1fr 1fr 1fr',
-    rows: '1fr 1fr',
-    areas: '"a b c" "d e f"',
-    cells: ['a', 'b', 'c', 'd', 'e', 'f'],
-  },
-  {
-    id: 'grid8',
-    label: '4 × 2',
-    cols: '1fr 1fr 1fr 1fr',
-    rows: '1fr 1fr',
-    areas: '"a b c d" "e f g h"',
-    cells: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'],
-  },
-]
 
 const LAYOUT_KEY = 'oa-trading-layout'
 const SYNC_KEY = 'oa-trading-sync'
@@ -165,25 +101,6 @@ function readSync(): SyncState {
   } catch {
     return SYNC_DEFAULT
   }
-}
-
-/** Mini glyph that previews a layout preset (renders the actual grid arrangement). */
-function LayoutIcon({ preset, className }: { preset: LayoutPreset; className?: string }) {
-  return (
-    <span
-      className={cn('grid h-4 w-4 gap-px', className)}
-      style={{
-        gridTemplateColumns: preset.cols,
-        gridTemplateRows: preset.rows,
-        gridTemplateAreas: preset.areas,
-      }}
-      aria-hidden="true"
-    >
-      {preset.cells.map((c) => (
-        <span key={c} style={{ gridArea: c }} className="rounded-[1px] bg-current" />
-      ))}
-    </span>
-  )
 }
 
 export default function Trading() {
@@ -241,6 +158,7 @@ export default function Trading() {
    */
   const [focusedPane, setFocusedPane] = useState('p0')
   const [paneSymbols, setPaneSymbols] = useState<Record<string, string | null>>({})
+  const [paneObjects, setPaneObjects] = useState<Record<string, ChartObjects>>({})
   /**
    * Every live pane's terminal, keyed by pane id.
    *
@@ -254,6 +172,19 @@ export default function Trading() {
   const noteTerminal = useCallback((paneId: string, terminal: TradingTerminal | null) => {
     if (terminal) terminalsRef.current[paneId] = terminal
     else delete terminalsRef.current[paneId]
+  }, [])
+
+  const noteObjects = useCallback((paneId: string, objects: ChartObjects | null) => {
+    setPaneObjects((previous) => {
+      if (objects) {
+        if (previous[paneId] === objects) return previous
+        return { ...previous, [paneId]: objects }
+      }
+      if (!(paneId in previous)) return previous
+      const next = { ...previous }
+      delete next[paneId]
+      return next
+    })
   }, [])
 
   /** The pane a panel acts on: the focused one, else any pane that is up. */
@@ -342,6 +273,12 @@ export default function Trading() {
     () => panelTarget()?.snapshotPng() ?? Promise.resolve(null),
     [panelTarget]
   )
+  const objectsPaneId = paneObjects[focusedPane]
+    ? focusedPane
+    : (Object.keys(paneObjects)[0] ?? focusedPane)
+  const objectsPaneLabel = `Pane ${Number(objectsPaneId.slice(1)) + 1}${
+    paneSymbols[objectsPaneId] ? ` · ${paneSymbols[objectsPaneId]}` : ''
+  }`
   const railStats: DrawStats = { ...stats, tool, magnet, stay }
   /**
    * Hand a key event to the focused pane; it reports whether the drawing tier
@@ -419,7 +356,8 @@ export default function Trading() {
       if (document.body.hasAttribute('data-scroll-locked')) return
       if (
         document.querySelector(
-          '[data-state="open"][role="dialog"],' +
+          '[data-trading-dialog-open="true"],' +
+            '[data-state="open"][role="dialog"],' +
             '[data-state="open"][data-slot="popover-content"],' +
             '[data-state="open"][role="menu"],' +
             '[data-state="open"][role="listbox"]'
@@ -436,8 +374,11 @@ export default function Trading() {
       if (closes === 'dock') setDock(null)
       else if (closes === 'panel') setPanel(null)
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    // Capture sees an open pane dialog before that dialog's own window-level
+    // Escape listener unmounts it. In bubble order the dialog could disappear
+    // first, making this handler also close the panel underneath it.
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
   }, [panel, dock, tool])
 
   useEffect(() => {
@@ -670,6 +611,7 @@ export default function Trading() {
                     onFocusPane={focusPane}
                     onSymbolChange={noteSymbol}
                     onTerminalChange={noteTerminal}
+                    onObjectsChange={noteObjects}
                     onDrawStats={setStats}
                     onToggleRail={() => setShowRail((v) => !v)}
                     railVisible={showRail}
@@ -720,6 +662,9 @@ export default function Trading() {
                 onCaptureChart={captureChart}
               />
             </Suspense>
+          )}
+          {apiKey && wsUrl && panel === 'objects' && (
+            <ObjectsPanel model={paneObjects[objectsPaneId] ?? null} paneLabel={objectsPaneLabel} />
           )}
 
           {apiKey && wsUrl && <RightRail active={panel} onSelect={setPanel} />}
