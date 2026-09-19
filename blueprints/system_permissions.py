@@ -27,11 +27,16 @@ def get_permission_checks():
 
     # Extract database paths from environment variables
     # Format: 'sqlite:///db/openalgo.db' -> 'db/openalgo.db'
+    # A non-SQLite value (e.g. a CockroachDB URL) is not a local path at all,
+    # and typically embeds credentials -- returning it unchanged would leak
+    # the DB password into this admin API's JSON response. Report None so the
+    # caller omits that check entirely rather than stat()-ing a connection
+    # string or echoing it back.
     def extract_db_path(env_var, default):
         value = os.getenv(env_var, default)
         if value.startswith("sqlite:///"):
             return value[len("sqlite:///") :]
-        return value
+        return None
 
     main_db = extract_db_path("DATABASE_URL", "db/openalgo.db")
     latency_db = extract_db_path("LATENCY_DATABASE_URL", "db/latency.db")
@@ -58,7 +63,9 @@ def get_permission_checks():
 
     # Define expected permissions for each path
     # Format: (relative_path, expected_unix_mode, description, is_sensitive)
-    return [
+    # DB entries are None when that DATABASE_URL is not a local SQLite file
+    # (e.g. CockroachDB) -- filtered out rather than passed to check_permission.
+    checks = [
         (db_dir, 0o755, "Database directory", False),
         (main_db, 0o644, "Main database file (SQLite)", False),
         (latency_db, 0o644, "Latency database file (SQLite)", False),
@@ -74,6 +81,7 @@ def get_permission_checks():
         ("strategies/examples", 0o755, "Strategy examples directory", False),
         ("tmp", 0o755, "Temporary files directory", False),
     ]
+    return [c for c in checks if c[0] is not None]
 
 
 def get_base_path():

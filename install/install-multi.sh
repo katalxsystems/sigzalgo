@@ -92,6 +92,72 @@ check_timezone() {
     fi
 }
 
+# Function to choose the database backend for all instances (one choice,
+# shared by every instance in this run -- SQLite isolates instances by giving
+# each its own file; CockroachDB isolates them by giving each its own
+# database name on one shared cluster instead).
+choose_db_backend() {
+    log_message "\nDatabase backend for these instances:" "$BLUE"
+    log_message "  1) SQLite (default) - one set of local .db files per instance" "$BLUE"
+    log_message "  2) CockroachDB - shared cluster, one database per instance" "$BLUE"
+    read -p "Choose [1]: " db_choice
+    if [[ "$db_choice" == "2" ]]; then
+        DB_BACKEND="cockroachdb"
+    else
+        DB_BACKEND="sqlite"
+    fi
+}
+
+# Function to collect connection details for a CockroachDB cluster that will
+# host every instance's databases. Asked once, not per-instance: instances
+# on the same host normally share one cluster and are isolated from each
+# other by database name (openalgo$i, sandbox$i), not by cluster.
+collect_cockroachdb_config() {
+    log_message "\n=== COCKROACHDB CLUSTER CONNECTION ===" "$YELLOW"
+    log_message "This cluster must already exist (self-hosted or CockroachDB Cloud)." "$BLUE"
+    log_message "Each instance gets its own database on it: openalgo<N> (main+logs+latency+health) and sandbox<N>." "$BLUE"
+
+    read -p "CockroachDB host: " CRDB_HOST
+    while [ -z "$CRDB_HOST" ]; do
+        log_message "Error: host is required" "$RED"
+        read -p "CockroachDB host: " CRDB_HOST
+    done
+
+    read -p "CockroachDB port [26257]: " CRDB_PORT
+    CRDB_PORT="${CRDB_PORT:-26257}"
+
+    read -p "CockroachDB user: " CRDB_USER
+    while [ -z "$CRDB_USER" ]; do
+        log_message "Error: user is required" "$RED"
+        read -p "CockroachDB user: " CRDB_USER
+    done
+
+    # The password is later embedded both in a sed 's|...|...|g' replacement
+    # (| is the delimiter, & means "whole match" on the replacement side) and
+    # in a single-quoted Python string literal (the CREATE DATABASE step) --
+    # | & ' or \ in it would corrupt the sed command or break out of the
+    # Python string, so those characters are rejected here rather than
+    # causing a hard-to-diagnose failure mid-install.
+    while true; do
+        read -s -p "CockroachDB password: " CRDB_PASSWORD
+        echo ""
+        if [ -z "$CRDB_PASSWORD" ]; then
+            log_message "Error: password is required" "$RED"
+            continue
+        fi
+        if [[ "$CRDB_PASSWORD" == *"|"* || "$CRDB_PASSWORD" == *"&"* || "$CRDB_PASSWORD" == *"'"* || "$CRDB_PASSWORD" == *"\\"* ]]; then
+            log_message "Error: password must not contain |, &, ' or \\ (breaks this script's .env templating)" "$RED"
+            continue
+        fi
+        break
+    done
+
+    read -p "SSL mode [verify-full] (use 'disable' only for a local/dev cluster): " CRDB_SSLMODE
+    CRDB_SSLMODE="${CRDB_SSLMODE:-verify-full}"
+
+    log_message "CockroachDB cluster configured: $CRDB_HOST:$CRDB_PORT (sslmode=$CRDB_SSLMODE)" "$GREEN"
+}
+
 # Start logging
 log_message "Starting OpenAlgo Multi-Instance installation" "$BLUE"
 log_message "Log file: $LOG_FILE" "$BLUE"
@@ -111,6 +177,13 @@ while true; do
 done
 
 log_message "Setting up $INSTANCES OpenAlgo instances" "$GREEN"
+
+# Choose DB backend once, shared by all instances in this run
+DB_BACKEND="sqlite"
+choose_db_backend
+if [ "$DB_BACKEND" = "cockroachdb" ]; then
+    collect_cockroachdb_config
+fi
 
 # Base configuration
 BASE_DIR="/var/python/openalgo-flask"
@@ -310,6 +383,13 @@ for ((i=1; i<=INSTANCES; i++)); do
     # Ensure gunicorn and eventlet
     sudo bash -c "$ACTIVATE_CMD && uv pip install 'gunicorn>=25.0,<26' eventlet"
 
+    # CockroachDB driver -- only needed when this run uses that backend
+    if [ "$DB_BACKEND" = "cockroachdb" ]; then
+        log_message "Installing CockroachDB driver..." "$BLUE"
+        sudo bash -c "$ACTIVATE_CMD && uv pip install 'sqlalchemy-cockroachdb>=2.0.2' 'psycopg2-binary>=2.9.10'"
+        check_status "Failed to install CockroachDB driver"
+    fi
+
     # Configure .env file
     log_message "Configuring environment file..." "$BLUE"
     ENV_FILE="$INSTANCE_DIR/.env"
@@ -324,13 +404,30 @@ for ((i=1; i<=INSTANCES; i++)); do
     APP_KEY=$(generate_hex)
     API_KEY_PEPPER=$(generate_hex)
 
-    # Database paths (unique per instance for complete isolation)
-    DB_PATH="sqlite:///db/openalgo${i}.db"
-    LATENCY_DB="sqlite:///db/latency${i}.db"
-    LOGS_DB="sqlite:///db/logs${i}.db"
-    HEALTH_DB="sqlite:///db/health${i}.db"
-    SANDBOX_DB="sqlite:///db/sandbox${i}.db"
+    # Database paths (unique per instance for complete isolation).
+    # historify stays a local DuckDB file either way -- out of CockroachDB
+    # migration scope regardless of backend.
     HISTORIFY_DB="db/historify${i}.duckdb"
+
+    if [ "$DB_BACKEND" = "cockroachdb" ]; then
+        # One database per instance on the shared cluster. logs/latency/health
+        # merge into the same database as the main one (they were split from
+        # it on SQLite only to avoid single-writer lock contention, which
+        # CockroachDB's MVCC engine doesn't have); sandbox stays a separate
+        # database, preserving its hard isolation from live trading data.
+        CRDB_MAIN_URL="cockroachdb://$CRDB_USER:$CRDB_PASSWORD@$CRDB_HOST:$CRDB_PORT/openalgo$i?sslmode=$CRDB_SSLMODE"
+        DB_PATH="$CRDB_MAIN_URL"
+        LATENCY_DB="$CRDB_MAIN_URL"
+        LOGS_DB="$CRDB_MAIN_URL"
+        HEALTH_DB="$CRDB_MAIN_URL"
+        SANDBOX_DB="cockroachdb://$CRDB_USER:$CRDB_PASSWORD@$CRDB_HOST:$CRDB_PORT/sandbox$i?sslmode=$CRDB_SSLMODE"
+    else
+        DB_PATH="sqlite:///db/openalgo${i}.db"
+        LATENCY_DB="sqlite:///db/latency${i}.db"
+        LOGS_DB="sqlite:///db/logs${i}.db"
+        HEALTH_DB="sqlite:///db/health${i}.db"
+        SANDBOX_DB="sqlite:///db/sandbox${i}.db"
+    fi
 
     # Session/CSRF cookie names
     SESSION_COOKIE="session${i}"
@@ -422,6 +519,26 @@ for ((i=1; i<=INSTANCES; i++)); do
     # it world-readable on shared multi-tenant boxes.
     sudo chmod 600 "$ENV_FILE"
     [ -S "$SOCKET_FILE" ] && sudo rm -f "$SOCKET_FILE"
+
+    # Create this instance's CockroachDB databases. The app's own startup
+    # (database/db_init_helper.py) creates TABLES inside a database via
+    # Base.metadata.create_all, but CockroachDB (unlike SQLite, where the
+    # file itself is the database) needs the database itself created first.
+    if [ "$DB_BACKEND" = "cockroachdb" ]; then
+        log_message "Creating CockroachDB databases for instance $i..." "$BLUE"
+        sudo bash -c "$ACTIVATE_CMD && python3 -c \"
+import psycopg2
+conn = psycopg2.connect(host='$CRDB_HOST', port=$CRDB_PORT, user='$CRDB_USER', password='$CRDB_PASSWORD', dbname='defaultdb', sslmode='$CRDB_SSLMODE')
+conn.autocommit = True
+cur = conn.cursor()
+cur.execute('CREATE DATABASE IF NOT EXISTS openalgo$i')
+cur.execute('CREATE DATABASE IF NOT EXISTS sandbox$i')
+cur.close()
+conn.close()
+print('Databases ready: openalgo$i, sandbox$i')
+\""
+        check_status "Failed to create CockroachDB databases for instance $i"
+    fi
 
     # Configure Nginx (initial for SSL)
     log_message "Configuring Nginx for SSL..." "$BLUE"
@@ -628,6 +745,11 @@ EOL
     log_message "   URL: https://$DOMAIN" "$BLUE"
     log_message "   Flask:$FLASK_PORT | WS:$WS_PORT | ZMQ:$ZMQ_PORT" "$BLUE"
     log_message "   Service: $SERVICE_NAME" "$BLUE"
+    if [ "$DB_BACKEND" = "cockroachdb" ]; then
+        log_message "   Database: CockroachDB ($CRDB_HOST:$CRDB_PORT) - openalgo$i, sandbox$i" "$BLUE"
+    else
+        log_message "   Database: SQLite (db/openalgo${i}.db, ...)" "$BLUE"
+    fi
     if [ "$ENABLE_REMOTE_MCP" = "true" ]; then
         log_message "   Remote MCP: Enabled at https://$DOMAIN/mcp" "$BLUE"
     else
@@ -645,6 +767,11 @@ log_message "║          MULTI-INSTANCE INSTALLATION COMPLETE          ║" "$G
 log_message "╚════════════════════════════════════════════════════════╝" "$GREEN"
 
 log_message "\n INSTANCE SUMMARY:" "$YELLOW"
+if [ "$DB_BACKEND" = "cockroachdb" ]; then
+    log_message "Database backend: CockroachDB ($CRDB_HOST:$CRDB_PORT)" "$BLUE"
+else
+    log_message "Database backend: SQLite" "$BLUE"
+fi
 for ((i=1; i<=INSTANCES; i++)); do
     idx=$((i-1))
     log_message "\nInstance $i:" "$BLUE"
@@ -652,6 +779,9 @@ for ((i=1; i<=INSTANCES; i++)); do
     log_message "  Broker: ${BROKERS[$idx]}" "$BLUE"
     log_message "  Service: openalgo$i" "$BLUE"
     log_message "  Directory: $BASE_DIR/openalgo$i" "$BLUE"
+    if [ "$DB_BACKEND" = "cockroachdb" ]; then
+        log_message "  Databases: openalgo$i, sandbox$i" "$BLUE"
+    fi
     if [ "${MCP_ENABLED_LIST[$idx]}" = "true" ]; then
         log_message "  Remote MCP: Enabled at https://${DOMAINS[$idx]}/mcp" "$BLUE"
     else

@@ -1381,17 +1381,29 @@ def _broker_snapshot():
 
 
 def _database_snapshot():
-    """File presence/size/mtime for each known DB. No live queries."""
-    db_files = [
-        ("openalgo", "db/openalgo.db"),
-        ("logs", "db/logs.db"),
-        ("latency", "db/latency.db"),
-        ("health", "db/health.db"),
-        ("sandbox", "db/sandbox.db"),
-        ("historify", "db/historify.duckdb"),
+    """File presence/size/mtime for each known DB. No live queries.
+
+    Reads the actual configured *_DATABASE_URL env vars rather than assuming
+    the default db/*.db paths, and reports a non-SQLite backend (e.g.
+    CockroachDB) as such instead of misleadingly showing it as "missing" --
+    there is no local file to stat once DATABASE_URL points at a remote DB.
+    """
+    db_env_vars = [
+        ("openalgo", "DATABASE_URL", "sqlite:///db/openalgo.db"),
+        ("logs", "LOGS_DATABASE_URL", "sqlite:///db/logs.db"),
+        ("latency", "LATENCY_DATABASE_URL", "sqlite:///db/latency.db"),
+        ("health", "HEALTH_DATABASE_URL", "sqlite:///db/health.db"),
+        ("sandbox", "SANDBOX_DATABASE_URL", "sqlite:///db/sandbox.db"),
+        ("historify", "HISTORIFY_DATABASE_URL", "db/historify.duckdb"),
     ]
     out = []
-    for name, rel in db_files:
+    for name, env_var, default in db_env_vars:
+        url = os.getenv(env_var, default)
+        is_sqlite = url.startswith("sqlite:///")
+        if not is_sqlite and name != "historify":
+            out.append({"name": name, "exists": None, "size_mb": None, "modified": None, "backend": "remote"})
+            continue
+        rel = url.replace("sqlite:///", "", 1) if is_sqlite else url
         p = Path(rel)
         try:
             if p.exists():
@@ -1495,24 +1507,27 @@ def api_system_info():
 
 
 def _check_db_read():
-    """Open a SQLite connection and run SELECT 1. Returns ms or error."""
-    import sqlite3
+    """Run SELECT 1 against the main database's configured engine.
+
+    Backend-agnostic (SQLite or CockroachDB) -- uses the app's own engine
+    rather than a hardcoded sqlite3 connection, so this reflects the actual
+    configured DATABASE_URL instead of always failing "Not found" once that
+    URL stops being a local file.
+    """
     import time
 
-    db_path = Path("db/openalgo.db")
-    if not db_path.exists():
-        return {"name": "DB read (openalgo.db)", "ok": False, "ms": None, "detail": "Not found"}
+    from sqlalchemy import text
+
+    from database.auth_db import engine
+
     started = time.perf_counter()
     try:
-        conn = sqlite3.connect(str(db_path), timeout=2.0)
-        try:
-            conn.execute("SELECT 1").fetchone()
-        finally:
-            conn.close()
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1")).fetchone()
         elapsed = round((time.perf_counter() - started) * 1000, 1)
-        return {"name": "DB read (openalgo.db)", "ok": True, "ms": elapsed, "detail": "OK"}
+        return {"name": "DB read (main)", "ok": True, "ms": elapsed, "detail": "OK"}
     except Exception as e:
-        return {"name": "DB read (openalgo.db)", "ok": False, "ms": None, "detail": str(e)[:200]}
+        return {"name": "DB read (main)", "ok": False, "ms": None, "detail": str(e)[:200]}
 
 
 def _check_loopback_http():

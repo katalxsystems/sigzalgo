@@ -42,14 +42,13 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
-    create_engine,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, scoped_session, sessionmaker
-from sqlalchemy.pool import NullPool
 from sqlalchemy.sql import func
 
 from database.auth_db import PEPPER
+from database.engine_factory import create_db_engine
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -96,14 +95,9 @@ fernet = _build_fernet()
 
 
 # SQLAlchemy engine — same NullPool pattern as the rest of OpenAlgo SQLite usage.
-if DATABASE_URL and "sqlite" in DATABASE_URL:
-    engine = create_engine(
-        DATABASE_URL, poolclass=NullPool, connect_args={"check_same_thread": False}
-    )
-else:
-    engine = create_engine(
-        DATABASE_URL, pool_pre_ping=True, pool_recycle=3600, pool_size=50, max_overflow=100
-    )
+engine = create_db_engine(
+    DATABASE_URL, pool_kwargs={"pool_pre_ping": True, "pool_recycle": 3600}
+)
 
 db_session = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=engine))
 Base = declarative_base()

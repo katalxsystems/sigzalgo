@@ -3,28 +3,18 @@ import os
 from datetime import datetime, timedelta
 
 from cachetools import TTLCache
-from sqlalchemy import JSON, Column, DateTime, Float, Integer, String, create_engine
+from sqlalchemy import JSON, Column, DateTime, Float, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import scoped_session, sessionmaker
-from sqlalchemy.pool import NullPool
 from sqlalchemy.sql import func
+
+from database.engine_factory import create_db_engine
 
 logger = logging.getLogger(__name__)
 
 # Use a separate database for latency logs
 LATENCY_DATABASE_URL = os.getenv("LATENCY_DATABASE_URL", "sqlite:///db/latency.db")
-
-# Conditionally create engine based on DB type
-if LATENCY_DATABASE_URL and "sqlite" in LATENCY_DATABASE_URL:
-    # SQLite: Use NullPool to prevent connection pool exhaustion
-    latency_engine = create_engine(
-        LATENCY_DATABASE_URL, poolclass=NullPool, connect_args={"check_same_thread": False}
-    )
-else:
-    # For other databases like PostgreSQL, use connection pooling
-    latency_engine = create_engine(
-        LATENCY_DATABASE_URL, pool_size=50, max_overflow=100, pool_timeout=10
-    )
+latency_engine = create_db_engine(LATENCY_DATABASE_URL)
 
 latency_session = scoped_session(
     sessionmaker(autocommit=False, autoflush=False, bind=latency_engine)

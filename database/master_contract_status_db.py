@@ -3,10 +3,11 @@ import logging
 import os
 from datetime import datetime, date, timedelta
 
-from sqlalchemy import Boolean, Column, Date, DateTime, Integer, String, Text, create_engine, text
+from sqlalchemy import Boolean, Column, Date, DateTime, Integer, String, Text, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import NullPool
+
+from database.engine_factory import create_db_engine
 
 logger = logging.getLogger(__name__)
 
@@ -16,22 +17,15 @@ DOWNLOAD_TIMEOUT_MINUTES = 5
 # Get the database path from environment variable or use default
 DB_PATH = os.getenv("DATABASE_URL", "sqlite:///db/openalgo.db")
 
-# Ensure the directory exists
-os.makedirs(os.path.dirname(DB_PATH.replace("sqlite:///", "")), exist_ok=True)
+# Ensure the directory exists (SQLite only -- other backends have no local path)
+if DB_PATH.startswith("sqlite:///"):
+    os.makedirs(os.path.dirname(DB_PATH.replace("sqlite:///", "")), exist_ok=True)
 
-# Create the engine and session
-# Conditionally create engine based on DB type
-if DB_PATH and "sqlite" in DB_PATH:
-    # SQLite: Use NullPool to prevent connection pool exhaustion
-    engine = create_engine(
-        DB_PATH,
-        echo=False,
-        poolclass=NullPool,
-        connect_args={"check_same_thread": False, "timeout": 30},
-    )
-else:
-    # For other databases like PostgreSQL, use connection pooling
-    engine = create_engine(DB_PATH, echo=False, pool_size=50, max_overflow=100, pool_timeout=10)
+# Create the engine and session. The extra 30s connect-time timeout (SQLite
+# branch only) is this module's own long-standing busy-wait budget, on top of
+# the 15s PRAGMA busy_timeout database/__init__.py's connect listener applies
+# process-wide -- kept as-is rather than reconciling the two here.
+engine = create_db_engine(DB_PATH, echo=False, sqlite_connect_args={"timeout": 30})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()

@@ -241,3 +241,12 @@ dev = [
     "pytest-timeout>=2.4.0",
     "ruff>=0.14.14",
 ]
+# CockroachDB driver, needed only for a `DATABASE_URL=cockroachdb://...`
+# deployment or to run scripts/migrate_sqlite_to_cockroachdb.py. Kept out of
+# the main dependency list so a plain SQLite install never pulls in a
+# Postgres wire-protocol driver. Install with `uv sync --group cockroachdb`,
+# run with `uv run --group cockroachdb python scripts/migrate_sqlite_to_cockroachdb.py`.
+cockroachdb = [
+    "sqlalchemy-cockroachdb>=2.0.2",
+    "psycopg2-binary>=2.9.10",
+]

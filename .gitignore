@@ -50,6 +50,10 @@ db/strategy_encryption.key
 # DB backup files (created by upgrade/rotate_pepper.py and other migrations)
 db/backups/
 
+# CockroachDB test connection string (scripts/migrate_sqlite_to_cockroachdb.py
+# manual testing) -- never commit this, it contains live credentials.
+db/crdb_test_url.txt
+
 # CSV Files (except specific data files)
 *.csv
 !symbols.csv
