@@ -58,12 +58,28 @@ def delete_symtoken_table():
     logger.info("Symtoken table cleared")
 
 def copy_from_dataframe(df):
-    """Copy dataframe to database"""
+    """Copy dataframe to database.
+
+    Uses the ORM in explicit chunks rather than df.to_sql(): to_sql's own
+    chunksize= only limits rows per INSERT statement, it does not commit
+    separately per chunk when given an Engine -- the whole call stays one
+    transaction. On a 100k+ row table that hits CockroachDB's lock-tracking
+    budget (ConfigurationLimitExceeded: "locking too many rows"); SQLite has
+    no such limit, so this was invisible there. Explicit per-chunk commits
+    give each chunk its own transaction.
+    """
+    records = df.to_dict(orient="records")
+    chunk_size = 500
+    total_inserted = 0
     try:
-        df.to_sql("symtoken", con=engine, if_exists="append", index=False)
-        logger.info(f"Inserted {len(df)} records into symtoken table")
+        for i in range(0, len(records), chunk_size):
+            db_session.bulk_insert_mappings(SymToken, records[i : i + chunk_size])
+            db_session.commit()
+            total_inserted += len(records[i : i + chunk_size])
+        logger.info(f"Inserted {total_inserted} records into symtoken table")
     except Exception as e:
         logger.error(f"Error copying dataframe to database: {e}")
+        db_session.rollback()
         raise
 
 

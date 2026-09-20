@@ -78,8 +78,12 @@ def copy_from_dataframe(df):
     # Insert in bulk the filtered records
     try:
         if filtered_data_dict:  # Proceed only if there's anything to insert
-            db_session.bulk_insert_mappings(SymToken, filtered_data_dict)
-            db_session.commit()
+            # Chunked: a single unchunked bulk_insert_mappings over a 100k+ row table
+            # hits CockroachDB's lock-tracking budget (ConfigurationLimitExceeded);
+            # SQLite has no such limit, so this was invisible there.
+            for _ins_i in range(0, len(filtered_data_dict), 500):
+                db_session.bulk_insert_mappings(SymToken, filtered_data_dict[_ins_i : _ins_i + 500])
+                db_session.commit()
             logger.info(f"Bulk insert completed successfully with {len(filtered_data_dict)} new records.")
         else:
             logger.info("No new records to insert.")

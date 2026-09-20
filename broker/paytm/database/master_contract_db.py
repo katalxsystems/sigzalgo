@@ -96,8 +96,13 @@ def copy_from_dataframe(df):
                         valid_records.append(record)
 
             if valid_records:
-                db_session.bulk_insert_mappings(SymToken, valid_records)
-                db_session.commit()
+                # Chunked: a single unchunked bulk_insert_mappings over a
+                # 100k+ row table hits CockroachDB's lock-tracking budget
+                # (ConfigurationLimitExceeded); SQLite has no such limit.
+                chunk_size = 500
+                for i in range(0, len(valid_records), chunk_size):
+                    db_session.bulk_insert_mappings(SymToken, valid_records[i : i + chunk_size])
+                    db_session.commit()
                 logger.info(
                     f"Bulk insert completed successfully with {len(valid_records)} new records."
                 )

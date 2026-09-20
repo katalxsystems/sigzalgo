@@ -74,8 +74,16 @@ def copy_from_dataframe(df):
     # Filter out data_dict entries with tokens that already exist
     filtered_data_dict = [row for row in data_dict if row["token"] not in existing_tokens]
 
-    # Insert in batches to avoid memory spikes and SQLite locking
-    BATCH_SIZE = 10000
+    # Insert in batches, each its own transaction. BATCH_SIZE used to be
+    # 10000 with a flush()-then-commit-once-at-the-end structure: flush()
+    # sends pending rows to the DB but does not end the transaction, so all
+    # batches actually shared one transaction regardless of BATCH_SIZE. That
+    # single transaction hits CockroachDB's lock-tracking budget on a
+    # 100k+ row table (ConfigurationLimitExceeded: "locking too many rows");
+    # SQLite has no such limit, so this was invisible there. Committing per
+    # batch at a smaller size fixes both: each batch is its own transaction.
+    BATCH_SIZE = 500
+    total_inserted = 0
     try:
         if filtered_data_dict:
             total = len(filtered_data_dict)
@@ -83,16 +91,15 @@ def copy_from_dataframe(df):
             for i in range(0, total, BATCH_SIZE):
                 batch = filtered_data_dict[i : i + BATCH_SIZE]
                 db_session.bulk_insert_mappings(SymToken, batch)
-                db_session.flush()
+                db_session.commit()
+                total_inserted += len(batch)
                 logger.info(f"Inserted batch {i // BATCH_SIZE + 1} ({min(i + BATCH_SIZE, total)}/{total} records)")
-            db_session.commit()
-            logger.info(f"Bulk insert completed successfully with {total} new records.")
+            logger.info(f"Bulk insert completed successfully with {total_inserted} new records.")
         else:
             logger.info("No new records to insert")
     except Exception as e:
-        db_session.rollback()
-        raise
         logger.error(f"Error during bulk insert: {e}")
+        db_session.rollback()
         raise
 
 
