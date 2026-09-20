@@ -215,7 +215,7 @@ def process_dhan_csv(path):
 
     # Now, format all non-NaT datetime objects to the desired format "DD-MMM-YY"
     # NaT values will remain as NaT and can be handled separately if needed
-    df["SEM_EXPIRY_DATE"] = df["SEM_EXPIRY_DATE"].dt.strftime("%d-%b-%y")
+    df["SEM_EXPIRY_DATE"] = df["SEM_EXPIRY_DATE"].dt.strftime("%d-%b-%y").fillna("")
 
     # Optionally, handle NaT values by replacing them with a placeholder or removing them
     # For example, replacing NaT with 'Unknown Date':

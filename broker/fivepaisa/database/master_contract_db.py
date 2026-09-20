@@ -198,8 +198,13 @@ def process_5paisa_csv(path):
     # Convert 'Expiry' to datetime format
     filtered_df["Expiry"] = pd.to_datetime(filtered_df["Expiry"])
 
-    # Format 'Expiry' to 'DD-MMM-YY'
-    filtered_df["Expiry"] = filtered_df["Expiry"].dt.strftime("%d-%b-%y").str.upper()
+    # Format 'Expiry' to 'DD-MMM-YY'. dt.strftime() returns NaN (a float, not a
+    # string) for a NaT row -- equities have no expiry and parse to NaT, while
+    # F&O rows get a real date string. Left as NaN, that mix of str/float in
+    # the same column breaks a multi-row INSERT on Postgres-family backends
+    # (CockroachDB: "VALUES types string and float cannot be matched"); SQLite
+    # tolerates it silently since it doesn't enforce column types per row.
+    filtered_df["Expiry"] = filtered_df["Expiry"].dt.strftime("%d-%b-%y").str.upper().fillna("")
 
     # Function to format StrikeRate
     def format_strike(strike):

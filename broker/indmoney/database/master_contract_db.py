@@ -414,7 +414,7 @@ def process_indmoney_csv(path):
         # Convert expiry date to standard format
         if "EXPIRY_DATE" in df.columns:
             df["EXPIRY_DATE"] = pd.to_datetime(df["EXPIRY_DATE"], errors="coerce")
-            df["EXPIRY_DATE"] = df["EXPIRY_DATE"].dt.strftime("%d-%b-%y")
+            df["EXPIRY_DATE"] = df["EXPIRY_DATE"].dt.strftime("%d-%b-%y").fillna("")
             df["EXPIRY_DATE"] = df["EXPIRY_DATE"].fillna("-1")
         else:
             df["EXPIRY_DATE"] = "-1"

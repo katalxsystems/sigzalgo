@@ -295,7 +295,7 @@ def process_pocketful_nfo_csv(path):
     token_df["exchange"] = df["exchange"].values
     token_df["brexchange"] = df["exchange"].values
     token_df["token"] = df["exchange_token"].values
-    token_df["expiry"] = df["Expiry Date"].dt.strftime("%d-%b-%y").str.upper()
+    token_df["expiry"] = df["Expiry Date"].dt.strftime("%d-%b-%y").str.upper().fillna("")
     token_df["strike"] = df["strike"].values
     token_df["lotsize"] = df["lot_size"].values
     token_df["instrumenttype"] = df["option_type"].map({"XX": "FUT", "CE": "CE", "PE": "PE"})
@@ -352,7 +352,7 @@ def process_pocketful_bfo_csv(path):
     token_df["exchange"] = df["exchange"].values
     token_df["brexchange"] = df["exchange"].values
     token_df["token"] = df["exchange_token"].values
-    token_df["expiry"] = df["Expiry Date"].dt.strftime("%d-%b-%y").str.upper()
+    token_df["expiry"] = df["Expiry Date"].dt.strftime("%d-%b-%y").str.upper().fillna("")
     token_df["strike"] = df["strike"].values
     token_df["lotsize"] = df["lot_size"].values
     token_df["instrumenttype"] = df["option_type"].map({"XX": "FUT", "CE": "CE", "PE": "PE"})
@@ -431,7 +431,7 @@ def process_pocketful_mcx_csv(path):
     token_df["exchange"] = df["exchange"].values
     token_df["brexchange"] = df["exchange"].values
     token_df["token"] = df["exchange_token"].values
-    token_df["expiry"] = df["Expiry Date"].dt.strftime("%d-%b-%y").str.upper()
+    token_df["expiry"] = df["Expiry Date"].dt.strftime("%d-%b-%y").str.upper().fillna("")
     token_df["strike"] = df["strike"].values
     token_df["lotsize"] = df["lot_size"].values
     token_df["instrumenttype"] = df["option_type"].map({"XX": "FUT", "CE": "CE", "PE": "PE"})

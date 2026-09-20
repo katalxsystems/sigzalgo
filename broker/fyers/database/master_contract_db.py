@@ -423,7 +423,7 @@ def process_fyers_nfo_csv(path):
     df["expiry"] = pd.to_datetime(pd.to_numeric(df["Expiry date"], errors="coerce"), unit="s")
 
     # Format the datetime object to the desired format '15-APR-24'
-    df["expiry"] = df["expiry"].dt.strftime("%d-%b-%y").str.upper()
+    df["expiry"] = df["expiry"].dt.strftime("%d-%b-%y").str.upper().fillna("")
 
     df["strike"] = df["Strike price"]
     df["lotsize"] = df["Minimum lot size"]
@@ -497,7 +497,7 @@ def process_fyers_cds_json(path):
 
     # Convert 'expiryDate' from Unix timestamp to datetime
     df["expiry"] = pd.to_datetime(pd.to_numeric(df["expiryDate"], errors="coerce"), unit="s")
-    df["expiry"] = df["expiry"].dt.strftime("%d-%b-%y").str.upper()
+    df["expiry"] = df["expiry"].dt.strftime("%d-%b-%y").str.upper().fillna("")
 
     df["strike"] = df["strikePrice"]
     df["lotsize"] = df["qtyMultiplier"].astype(int)
@@ -557,7 +557,7 @@ def process_fyers_bfo_csv(path):
     df["expiry"] = pd.to_datetime(pd.to_numeric(df["Expiry date"], errors="coerce"), unit="s")
 
     # Format the datetime object to the desired format '15-APR-24'
-    df["expiry"] = df["expiry"].dt.strftime("%d-%b-%y").str.upper()
+    df["expiry"] = df["expiry"].dt.strftime("%d-%b-%y").str.upper().fillna("")
 
     df["strike"] = df["Strike price"]
     df["lotsize"] = df["Minimum lot size"]
@@ -631,7 +631,7 @@ def process_fyers_mcx_json(path):
 
     # Convert 'expiryDate' from Unix timestamp to datetime
     df["expiry"] = pd.to_datetime(pd.to_numeric(df["expiryDate"], errors="coerce"), unit="s")
-    df["expiry"] = df["expiry"].dt.strftime("%d-%b-%y").str.upper()
+    df["expiry"] = df["expiry"].dt.strftime("%d-%b-%y").str.upper().fillna("")
 
     df["strike"] = df["strikePrice"]
     df["lotsize"] = df["qtyMultiplier"].astype(int)

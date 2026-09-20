@@ -191,7 +191,7 @@ def process_zerodha_csv(path):
     df.loc[(df['segment'] == 'INDICES') & (df['exchange'] == 'CDS'), 'exchange'] = 'CDS_INDEX'
 
     # Format expiry date
-    df['expiry'] = pd.to_datetime(df['expiry']).dt.strftime('%d-%b-%y').str.upper()
+    df['expiry'] = pd.to_datetime(df['expiry']).dt.strftime('%d-%b-%y').str.upper().fillna("")
 
     # Combine instrument_token and exchange_token
     df['token'] = df['instrument_token'].astype(str) + '::::' + df['exchange_token'].astype(str)

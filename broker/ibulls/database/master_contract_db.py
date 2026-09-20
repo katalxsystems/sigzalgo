@@ -320,7 +320,7 @@ def process_compositedge_nfo_csv(path):
     token_df["token"] = df["ExchangeInstrumentID"].values
 
     # Convert 'Expiry Date' to desired format
-    token_df["expiry"] = df["ContractExpiration"].dt.strftime("%d-%b-%y").str.upper()
+    token_df["expiry"] = df["ContractExpiration"].dt.strftime("%d-%b-%y").str.upper().fillna("")
     token_df["strike"] = df["StrikePrice"].values
     token_df["lotsize"] = df["LotSize"].values
     token_df["instrumenttype"] = df["OptionType"].map({1: "FUT", 3: "CE", 4: "PE"})
@@ -362,7 +362,7 @@ def process_compositedge_bfo_csv(path):
     token_df["token"] = df["ExchangeInstrumentID"].values
 
     # Convert 'Expiry Date' to desired format
-    token_df["expiry"] = df["ContractExpiration"].dt.strftime("%d-%b-%y").str.upper()
+    token_df["expiry"] = df["ContractExpiration"].dt.strftime("%d-%b-%y").str.upper().fillna("")
     token_df["strike"] = df["StrikePrice"].values
     token_df["lotsize"] = df["LotSize"].values
     token_df["instrumenttype"] = df["OptionType"].map({1: "FUT", 3: "CE", 4: "PE"})
@@ -404,7 +404,7 @@ def process_compositedge_mcx_csv(path):
     token_df["token"] = df["ExchangeInstrumentID"].values
 
     # Convert 'Expiry Date' to desired format
-    token_df["expiry"] = df["ContractExpiration"].dt.strftime("%d-%b-%y").str.upper()
+    token_df["expiry"] = df["ContractExpiration"].dt.strftime("%d-%b-%y").str.upper().fillna("")
     token_df["strike"] = df["StrikePrice"].values
     token_df["lotsize"] = df["LotSize"].values
     token_df["instrumenttype"] = df["OptionType"].map({1: "FUT", 3: "CE", 4: "PE"})

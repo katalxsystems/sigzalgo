@@ -258,7 +258,7 @@ def process_kotak_nfo_csv(path):
     tokensymbols["expiry"] = pd.to_datetime(df["lExpiryDate"], unit="s")
 
     # Format the datetime object to the desired format '15-APR-24'
-    tokensymbols["expiry"] = tokensymbols["expiry"].dt.strftime("%d-%b-%y").str.upper()
+    tokensymbols["expiry"] = tokensymbols["expiry"].dt.strftime("%d-%b-%y").str.upper().fillna("")
 
     tokensymbols["strike"] = df["dStrikePrice"] / 100
     tokensymbols["strike"] = tokensymbols["strike"].apply(lambda x: int(x) if x.is_integer() else x)
@@ -436,7 +436,7 @@ def process_kotak_cds_csv(path):
     tokensymbols["expiry"] = pd.to_datetime(df["lExpiryDate"], unit="s")
 
     # Format the datetime object to the desired format '15-APR-24'
-    tokensymbols["expiry"] = tokensymbols["expiry"].dt.strftime("%d-%b-%y").str.upper()
+    tokensymbols["expiry"] = tokensymbols["expiry"].dt.strftime("%d-%b-%y").str.upper().fillna("")
 
     tokensymbols["strike"] = df["dStrikePrice"] / 100
     tokensymbols["strike"] = tokensymbols["strike"].apply(lambda x: int(x) if x.is_integer() else x)
@@ -475,7 +475,7 @@ def process_kotak_mcx_csv(path):
     tokensymbols["expiry"] = pd.to_datetime(df["lExpiryDate"], unit="s")
 
     # Format the datetime object to the desired format '15-APR-24'
-    tokensymbols["expiry"] = tokensymbols["expiry"].dt.strftime("%d-%b-%y").str.upper()
+    tokensymbols["expiry"] = tokensymbols["expiry"].dt.strftime("%d-%b-%y").str.upper().fillna("")
 
     tokensymbols["strike"] = df["dStrikePrice"] / 100
     tokensymbols["strike"] = tokensymbols["strike"].apply(lambda x: int(x) if x.is_integer() else x)
@@ -514,7 +514,7 @@ def process_kotak_bfo_csv(path):
     tokensymbols["expiry"] = pd.to_datetime(df["lExpiryDate"], unit="s")
 
     # Format the datetime object to the desired format '15-APR-24'
-    tokensymbols["expiry"] = tokensymbols["expiry"].dt.strftime("%d-%b-%y").str.upper()
+    tokensymbols["expiry"] = tokensymbols["expiry"].dt.strftime("%d-%b-%y").str.upper().fillna("")
 
     tokensymbols["strike"] = df["dStrikePrice"] / 100
     tokensymbols["strike"] = tokensymbols["strike"].apply(lambda x: int(x) if x.is_integer() else x)

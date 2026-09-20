@@ -149,7 +149,7 @@ def process_upstox_json(path):
     }
     segment_copy = df["segment"].copy()
     df["segment"] = df["segment"].map(exchange_map)
-    df["expiry"] = pd.to_datetime(df["expiry"], unit="ms").dt.strftime("%d-%b-%y").str.upper()
+    df["expiry"] = pd.to_datetime(df["expiry"], unit="ms").dt.strftime("%d-%b-%y").str.upper().fillna("")
 
     df = df[
         [

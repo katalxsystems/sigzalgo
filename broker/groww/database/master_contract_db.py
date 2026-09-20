@@ -629,7 +629,7 @@ def process_groww_data(path):
         expiry_parsed = pd.to_datetime(df_mapped["expiry"], errors="coerce")
         valid_expiry = expiry_parsed.notna()
         if valid_expiry.any():
-            df_mapped.loc[valid_expiry, "expiry"] = expiry_parsed[valid_expiry].dt.strftime("%d-%b-%y").str.upper()
+            df_mapped.loc[valid_expiry, "expiry"] = expiry_parsed[valid_expiry].dt.strftime("%d-%b-%y").str.upper().fillna("")
         df_mapped["expiry"] = df_mapped["expiry"].fillna("")
 
         # Map instrument types directly from Groww's data
@@ -713,7 +713,7 @@ def process_groww_data(path):
         if fno_data_mask.any():
             # Parse expiry dates for FNO rows and format as DDMMMYY
             fno_expiry = pd.to_datetime(df_mapped.loc[fno_data_mask, "expiry"], format="%d-%b-%y", errors="coerce")
-            expiry_str = fno_expiry.dt.strftime("%d%b%y").str.upper()
+            expiry_str = fno_expiry.dt.strftime("%d%b%y").str.upper().fillna("")
 
             # Use underlying symbol where available, else trading_symbol
             underlying = df_mapped.loc[fno_data_mask, "underlying"]

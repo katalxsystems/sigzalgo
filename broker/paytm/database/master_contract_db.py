@@ -261,7 +261,7 @@ def process_paytm_csv(path):
     df["expiry_date"] = pd.to_datetime(df["expiry_date"], errors="coerce")
 
     # Format all non-NaT datetime objects to the desired format "DD-MMM-YY"
-    df["expiry_date"] = df["expiry_date"].dt.strftime("%d-%b-%y")
+    df["expiry_date"] = df["expiry_date"].dt.strftime("%d-%b-%y").fillna("")
 
     # Handle NaT values by replacing them with '-1'
     df["expiry_date"] = df["expiry_date"].fillna("-1")
