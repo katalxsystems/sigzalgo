@@ -120,6 +120,7 @@ dependencies = [
   "pyzmq==27.1.0",
   "qrcode==8.2",
   "referencing==0.37.0",
+  "reportlab>=4.4.4",
   "requests==2.34.2",
   "rich==13.7.1",
   "rpds-py==0.30.0",

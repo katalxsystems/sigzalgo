@@ -1,21 +1,14 @@
 # database/master_contract_db.py
 
-import gzip
-import http.client
-import io
-import json
 import os
-import shutil
 import time
 
-import numpy as np
 import pandas as pd
 import requests
-from sqlalchemy import Column, Float, Index, Integer, Sequence, String, text
+from sqlalchemy import Column, Float, Index, Integer, String, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import scoped_session, sessionmaker
 
-from database.auth_db import get_auth_token
 from database.engine_factory import create_db_engine
 from extensions import socketio  # Import SocketIO
 from utils.logging import get_logger
@@ -48,7 +41,7 @@ Base.query = db_session.query_property()
 
 class SymToken(Base):
     __tablename__ = "symtoken"
-    id = Column(Integer, Sequence("symtoken_id_seq"), primary_key=True)
+    id = Column(Integer, primary_key=True)
     symbol = Column(String, nullable=False, index=True)  # Single column index
     brsymbol = Column(String, nullable=False, index=True)  # Single column index
     name = Column(String)
@@ -168,7 +161,7 @@ def download_csv_indmoney_data(output_path):
 
     # Get the access token for Indmoney broker from the database
     try:
-        from database.auth_db import Auth, db_session
+        from database.auth_db import Auth
         auth_obj = Auth.query.filter_by(broker="indmoney", is_revoked=False).first()
         if auth_obj:
             from database.auth_db import decrypt_token

@@ -4,7 +4,7 @@ import os
 import time
 
 import pandas as pd
-from sqlalchemy import Column, Float, Index, Integer, Sequence, String, text
+from sqlalchemy import Column, Float, Index, Integer, String, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import scoped_session, sessionmaker
 
@@ -41,7 +41,7 @@ Base.query = db_session.query_property()
 
 class SymToken(Base):
     __tablename__ = "symtoken"
-    id = Column(Integer, Sequence("symtoken_id_seq"), primary_key=True)
+    id = Column(Integer, primary_key=True)
     symbol = Column(String, nullable=False, index=True)  # Single column index
     brsymbol = Column(String, nullable=False, index=True)  # Single column index
     name = Column(String)
@@ -394,7 +394,7 @@ def process_delta_products(products):
         instrumenttype ← contract_type         (mapped via CONTRACT_TYPE_MAP)
         tick_size      ← tick_size             (string → float)
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     if not products:
         logger.error("No products to process")

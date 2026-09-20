@@ -162,6 +162,7 @@ class BasketBacktestSchema(Schema):
     end_date = fields.Str(load_default=None, allow_none=True)
     risk_free_rate = fields.Float(load_default=0.0, validate=validate.Range(min=0, max=0.5))
     source = fields.Str(load_default="db", validate=validate.OneOf(["db", "api"]))
+    format = fields.Str(load_default="json", validate=validate.OneOf(["json", "pdf"]))
 
 
 create_schema = BasketCreateSchema()
@@ -317,13 +318,19 @@ class BasketDelete(Resource):
 class BasketBacktest(Resource):
     @limiter.limit(BACKTEST_RATE_LIMIT)
     def post(self):
-        """Run the basket's whole rebalance history and compare it to its benchmark."""
+        """Run the basket's whole rebalance history and compare it to its benchmark.
+
+        ``format: "pdf"`` returns the same result rendered as a downloadable
+        PDF report instead of JSON; an error result is always returned as
+        JSON regardless of ``format``, since there is nothing to render.
+        """
         try:
             data = backtest_schema.load(request.json or {})
         except ValidationError as err:
             return _failure(err.messages, 400)
 
         api_key = data.pop("apikey")
+        response_format = data.pop("format")
         user_id, error = _resolve_owner(api_key)
         if error:
             return error
@@ -349,4 +356,24 @@ class BasketBacktest(Resource):
             feed_token=feed_token,
             broker=broker,
         )
+        if _ok and response_format == "pdf":
+            return _backtest_pdf_response(payload)
         return _dispatch(_ok, payload, status)
+
+
+def _backtest_pdf_response(payload: dict):
+    """Render a successful backtest payload as a downloadable PDF."""
+    from services.basket_report_service import render_backtest_pdf
+
+    try:
+        pdf_bytes = render_backtest_pdf(payload)
+    except Exception:
+        logger.exception("basket backtest PDF render failed")
+        return _failure("Failed to render PDF report.", 500)
+
+    basket_name = payload.get("basket", {}).get("name", "basket")
+    safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in basket_name).strip() or "basket"
+    response = make_response(pdf_bytes)
+    response.headers["Content-Type"] = "application/pdf"
+    response.headers["Content-Disposition"] = f'attachment; filename="{safe_name}_backtest.pdf"'
+    return response

@@ -1,18 +1,12 @@
 # database/master_contract_db.py
 
-import gzip
-import io
-import json
 import os
-import shutil
 
-import numpy as np
 import pandas as pd
-from sqlalchemy import Column, Float, Index, Integer, Sequence, String
+from sqlalchemy import Column, Float, Index, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import scoped_session, sessionmaker
 
-from database.auth_db import get_auth_token
 from database.engine_factory import create_db_engine
 from extensions import socketio  # Import SocketIO
 from utils.httpx_client import get_httpx_client
@@ -81,7 +75,7 @@ Base.query = db_session.query_property()
 
 class SymToken(Base):
     __tablename__ = "symtoken"
-    id = Column(Integer, Sequence("symtoken_id_seq"), primary_key=True)
+    id = Column(Integer, primary_key=True)
     symbol = Column(String, nullable=False, index=True)  # Single column index
     brsymbol = Column(String, nullable=False, index=True)  # Single column index
     name = Column(String)
