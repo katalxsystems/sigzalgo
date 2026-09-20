@@ -165,12 +165,22 @@ def copy_from_dataframe(df):
                 # Small delay to allow other operations
                 time.sleep(0.005)  # 5ms delay between chunks (reduced from 10ms)
 
+            if total_inserted == 0:
+                # Every chunk failed (each is caught and skipped above via
+                # 'continue' so the loop itself never raises) -- without this
+                # check the caller would log "completed successfully" despite
+                # nothing having been written.
+                raise RuntimeError(
+                    f"All {len(filtered_data_dict)} record(s) failed to insert "
+                    f"(see per-chunk errors above)"
+                )
             logger.info(f"Bulk insert completed successfully with {total_inserted} new records.")
         else:
             logger.info("No new records to insert.")
     except Exception as e:
         logger.exception(f"Error during bulk insert: {e}")
         db_session.rollback()
+        raise
 
 
 def _to_canonical_symbol(delta_symbol: str, instrument_type: str, expiry: str) -> str:

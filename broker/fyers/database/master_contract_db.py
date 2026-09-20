@@ -129,6 +129,7 @@ def copy_from_dataframe(df):
     except Exception as e:
         logger.exception(f"Error during bulk insert: {e}")
         db_session.rollback()
+        raise
 
 
 def download_csv_fyers_data(output_path: str) -> tuple[bool, list[str], str | None]:

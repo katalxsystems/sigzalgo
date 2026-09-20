@@ -70,6 +70,7 @@ def copy_from_dataframe(df):
     except Exception as e:
         logger.error(f"Error during bulk insert: {e}")
         db_session.rollback()
+        raise
 
 
 # Firstock V1 URLs for downloading symbol files

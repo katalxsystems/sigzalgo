@@ -103,6 +103,7 @@ def copy_from_dataframe(df):
         if hasattr(e, "__cause__"):
             logger.error(f"Caused by: {e.__cause__}")
         db_session.rollback()
+        raise
 
 
 def download_csv_paytm_data(output_path):

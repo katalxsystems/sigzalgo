@@ -147,12 +147,21 @@ def copy_from_dataframe(df, broker="indmoney"):
                 # Small delay to allow other operations
                 time.sleep(0.005)  # 5ms delay between chunks (reduced from 10ms)
 
+            if total_inserted == 0:
+                # Every chunk failed (each is caught and skipped above via
+                # 'continue' so the loop itself never raises) -- without this
+                # check the caller would log "completed successfully" despite
+                # nothing having been written.
+                raise RuntimeError(
+                    f"All {total_to_insert} record(s) failed to insert (see per-chunk errors above)"
+                )
             logger.info(f"Bulk insert completed successfully with {total_inserted} new records.")
         else:
             logger.info("No new records to insert.")
     except Exception as e:
         logger.exception(f"Error during bulk insert: {e}")
         db_session.rollback()
+        raise
 
 
 def download_csv_indmoney_data(output_path):

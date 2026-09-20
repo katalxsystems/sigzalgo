@@ -81,6 +81,7 @@ def copy_from_dataframe(df):
             logger.info("No new records to insert")
     except Exception as e:
         db_session.rollback()
+        raise
         logger.error(f"Error during bulk insert: {e}")
         raise
 

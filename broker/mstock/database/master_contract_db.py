@@ -82,6 +82,7 @@ def copy_from_dataframe(df):
     except Exception as e:
         logger.error(f"Error during MStock bulk insert: {e}")
         db_session.rollback()
+        raise
 
 
 # -------------------------------------------------------------------

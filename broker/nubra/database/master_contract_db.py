@@ -72,6 +72,7 @@ def copy_from_dataframe(df):
     except Exception as e:
         logger.error(f"Error during bulk insert: {e}")
         db_session.rollback()
+        raise
 
 
 def download_nubra_instruments(output_path):

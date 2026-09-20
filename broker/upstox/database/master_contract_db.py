@@ -79,6 +79,7 @@ def copy_from_dataframe(df):
     except Exception as e:
         logger.error(f"Error during bulk insert: {e}")
         db_session.rollback()
+        raise
 
 
 def download_and_unzip_upstox_data(url, input_path, output_path):

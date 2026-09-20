@@ -59,6 +59,7 @@ def copy_from_dataframe(df):
         logger.info(f"Inserted {len(df)} records into symtoken table")
     except Exception as e:
         logger.error(f"Error copying dataframe to database: {e}")
+        raise
 
 
 def download_definedge_master_files(auth_token, output_path):
