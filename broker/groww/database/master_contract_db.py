@@ -49,9 +49,19 @@ def init_db():
 
 def delete_symtoken_table():
     logger.info("Deleting Symtoken Table")
-    SymToken.query.delete()
-    db_session.commit()
-
+    # Delete in chunks: CockroachDB caps how many rows a single transaction
+    # can lock (~1MB lock-tracking budget), which a one-shot DELETE FROM
+    # symtoken with no WHERE clause blows through once the table has ~100k+
+    # rows (ConfigurationLimitExceeded: 'locking too many rows'). SQLite has
+    # no such limit, so this was invisible there.
+    chunk_size = 2000
+    while True:
+        ids = [row[0] for row in db_session.query(SymToken.id).limit(chunk_size).all()]
+        if not ids:
+            break
+        db_session.query(SymToken).filter(SymToken.id.in_(ids)).delete(synchronize_session=False)
+        db_session.commit()
+    logger.info("Symtoken table cleared")
 
 def copy_from_dataframe(df):
     logger.info("Performing Bulk Insert")
