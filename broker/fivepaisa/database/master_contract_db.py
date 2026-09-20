@@ -76,14 +76,41 @@ def copy_from_dataframe(df):
     # Filter out data_dict entries with tokens that already exist
     filtered_data_dict = [row for row in data_dict if row["token"] not in existing_tokens]
 
-    # Insert in bulk the filtered records
+    # Insert in chunks: a single unchunked bulk_insert_mappings over the full
+    # (often 100k+ row) result hits the same CockroachDB lock-tracking budget
+    # as the unchunked delete above (ConfigurationLimitExceeded). SQLite has
+    # no such limit, so this was invisible there.
+    chunk_size = 500
+    total_inserted = 0
     try:
         if filtered_data_dict:  # Proceed only if there's anything to insert
-            db_session.bulk_insert_mappings(SymToken, filtered_data_dict)
-            db_session.commit()
-            logger.info(
-                f"Bulk insert completed successfully with {len(filtered_data_dict)} new records."
-            )
+            for i in range(0, len(filtered_data_dict), chunk_size):
+                chunk = filtered_data_dict[i : i + chunk_size]
+                try:
+                    db_session.bulk_insert_mappings(SymToken, chunk)
+                    db_session.commit()
+                    total_inserted += len(chunk)
+                except Exception as chunk_error:
+                    logger.warning(
+                        f"Error inserting chunk {i // chunk_size + 1}, retrying: {chunk_error}"
+                    )
+                    db_session.rollback()
+                    try:
+                        db_session.bulk_insert_mappings(SymToken, chunk)
+                        db_session.commit()
+                        total_inserted += len(chunk)
+                    except Exception as retry_error:
+                        logger.error(
+                            f"Failed to insert chunk {i // chunk_size + 1} after retry: {retry_error}"
+                        )
+                        db_session.rollback()
+                        continue
+            if total_inserted == 0:
+                raise RuntimeError(
+                    f"All {len(filtered_data_dict)} record(s) failed to insert "
+                    f"(see per-chunk errors above)"
+                )
+            logger.info(f"Bulk insert completed successfully with {total_inserted} new records.")
         else:
             logger.info("No new records to insert.")
     except Exception as e:
