@@ -60,10 +60,20 @@ def broker_callback(broker, para=None):
 
     # The broker account_id this login is connecting. "pending_account_id" is
     # set by the account-management UI (POST /api/accounts, then redirect
-    # here) when adding a specific account; without it, this falls back to
-    # the platform username, exactly reproducing pre-multi-account behavior
-    # (one implicit account per user, account_id == username).
-    account_id = session.get("pending_account_id") or session.get("user")
+    # here) when adding a specific account. Without it — a plain password
+    # login or the CMS SSO hand-off, neither of which route through that UI
+    # — fall back to this platform user's default account for THIS broker
+    # (scoped, because their overall default account may be a different
+    # broker entirely, whose credentials would be wrong here). Only when
+    # the user has no account at all for this broker does this drop back to
+    # the platform username, reproducing pre-multi-account behavior (one
+    # implicit account per user, account_id == username).
+    account_id = session.get("pending_account_id")
+    if not account_id:
+        from database.auth_db import get_default_account_id_for_broker
+
+        account_id = get_default_account_id_for_broker(session.get("user"), broker)
+    account_id = account_id or session.get("user")
 
     if session.get("logged_in") and not session.get("pending_account_id"):
         # Single-account-era shortcut: already fully logged in and this

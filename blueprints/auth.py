@@ -470,22 +470,6 @@ def cms_sso_login():
         log_login_attempt(username, ip, ua, status="success", login_type="cms_sso", broker=session.get("broker"))
         return redirect("/dashboard")
 
-    # No valid session to resume — falling through to the broker login form.
-    # Without pending_account_id, blueprints/brlogin.py's broker_callback
-    # resolves account_id to the bare username, which only matches an Auth
-    # row for a user's original pre-multi-account connection. A user with
-    # explicit multi-account rows (account_id == "{username}_{broker}_...")
-    # has no such row, so that lookup misses and silently falls back to the
-    # instance-wide BROKER_API_KEY instead of this account's own credentials.
-    # Point this hand-off at the same default account _try_resume_broker_session
-    # just checked, matching how the account-management UI's "connect" flow
-    # sets this same session key.
-    from database.auth_db import get_default_account_id
-
-    default_account_id = get_default_account_id(username)
-    if default_account_id:
-        session["pending_account_id"] = default_account_id
-
     log_login_attempt(username, ip, ua, status="success", login_type="cms_sso")
     return redirect("/broker")
 

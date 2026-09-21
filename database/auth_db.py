@@ -1003,6 +1003,45 @@ def get_default_account_id(owner_username):
         return None
 
 
+def get_default_account_id_for_broker(owner_username, broker):
+    """Same resolution as get_default_account_id, scoped to one broker.
+
+    Used where the broker being connected is already known (the
+    account_id fallback in blueprints/brlogin.py's broker_callback) but the
+    session wasn't routed to a specific account first (a plain password
+    login or the CMS SSO hand-off, as opposed to the account-management
+    UI's explicit "connect this account" action, which sets
+    pending_account_id itself). A user's overall default account
+    (get_default_account_id) may belong to a *different* broker than the
+    one they're connecting right now, and handing that account's
+    credentials to this broker's login would authenticate with the wrong
+    app registration entirely — this scopes every step of the same
+    fallback chain to `broker` so that can't happen.
+    """
+    try:
+        default = Auth.query.filter_by(
+            owner_username=owner_username, broker=broker, is_default=True
+        ).first()
+        if default:
+            return default.name
+        fallback = (
+            Auth.query.filter_by(owner_username=owner_username, broker=broker, is_revoked=False)
+            .order_by(Auth.id.asc())
+            .first()
+        )
+        if fallback:
+            return fallback.name
+        any_account = (
+            Auth.query.filter_by(owner_username=owner_username, broker=broker)
+            .order_by(Auth.id.asc())
+            .first()
+        )
+        return any_account.name if any_account else None
+    except Exception as e:
+        logger.exception(f"Error resolving default {broker} account for {owner_username}: {e}")
+        return None
+
+
 def get_owner_username(account_id):
     """Get the platform username that owns a broker account."""
     try:
