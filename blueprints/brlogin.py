@@ -73,7 +73,32 @@ def broker_callback(broker, para=None):
         from database.auth_db import get_default_account_id_for_broker
 
         account_id = get_default_account_id_for_broker(session.get("user"), broker)
-    account_id = account_id or session.get("user")
+    if not account_id:
+        # Neither an explicit selection nor an existing account for this
+        # broker. The bare platform username is the pre-multi-account
+        # fallback identifier, but it may already name a REAL Auth row for
+        # a DIFFERENT broker -- a legacy single-account connection from
+        # before this user adopted multi-account. Reusing that row here
+        # would silently authenticate THIS broker with the OTHER broker's
+        # stored app-registration credentials (observed: a user's
+        # username-named Angel row made a fresh fivepaisa login fail with
+        # Angel's BROKER_API_KEY format, since get_broker_api_key looks up
+        # by name only and doesn't know which broker it's being asked for).
+        # Only take the bare-username fallback when that's actually safe --
+        # no such row exists yet, or it does and already belongs to this
+        # same broker; otherwise mint a proper multi-account id, the same
+        # scheme database.auth_db.create_broker_account uses, so this
+        # broker gets its own row instead of colliding with the other one.
+        username = session.get("user")
+        from database.auth_db import Auth
+
+        existing = Auth.query.filter_by(name=username).first() if username else None
+        if not existing or existing.broker == broker:
+            account_id = username
+        else:
+            import secrets as _secrets
+
+            account_id = f"{username}_{broker}_{_secrets.token_hex(4)}"
     logger.info(f"Resolved account_id={account_id!r} for broker={broker}")
 
     if session.get("logged_in") and not session.get("pending_account_id"):
