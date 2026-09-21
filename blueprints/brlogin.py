@@ -74,6 +74,7 @@ def broker_callback(broker, para=None):
 
         account_id = get_default_account_id_for_broker(session.get("user"), broker)
     account_id = account_id or session.get("user")
+    logger.info(f"Resolved account_id={account_id!r} for broker={broker}")
 
     if session.get("logged_in") and not session.get("pending_account_id"):
         # Single-account-era shortcut: already fully logged in and this
