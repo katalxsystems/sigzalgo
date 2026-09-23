@@ -172,6 +172,11 @@ def get_broker_api_secret_market(
     return _instance_broker_fallback("broker_api_secret_market", "BROKER_API_SECRET_MARKET", broker)
 
 
+# (broker, account_id) pairs already warned about by resolve_broker_api_key.
+# Bounded by the number of broker accounts on the instance.
+_warned_missing_credentials: set[tuple[str, str | None]] = set()
+
+
 def resolve_broker_api_key(
     auth_token: str | None, broker: str, account_id: str | None = None
 ) -> tuple[str | None, str | None]:
@@ -192,9 +197,41 @@ def resolve_broker_api_key(
         from database.auth_db import get_account_id_from_auth_token
 
         account_id = get_account_id_from_auth_token(auth_token, broker=broker)
-    return get_broker_api_key(account_id, broker=broker), get_broker_api_secret(
-        account_id, broker=broker
-    )
+    api_key = get_broker_api_key(account_id, broker=broker)
+    api_secret = get_broker_api_secret(account_id, broker=broker)
+    if not api_key and not api_secret and (broker, account_id) not in _warned_missing_credentials:
+        # Once per account: per-request paths (quotes, orders) would
+        # otherwise log this on every call.
+        _warned_missing_credentials.add((broker, account_id))
+        from utils.logging import get_logger
+
+        get_logger(__name__).warning(
+            f"No {broker} API credentials for account {account_id!r}"
+            + ("" if account_id else " (no connected account matches this auth token)")
+            + ". Set them in Profile > Accounts."
+        )
+    return api_key, api_secret
+
+
+class BrokerCredentialsMissing(Exception):
+    """Raised when a broker call needs this account's own API key and the
+    account has none (there is no instance-wide fallback)."""
+
+
+def require_broker_api_key(
+    auth_token: str | None, broker: str, account_id: str | None = None
+) -> tuple[str, str | None]:
+    """resolve_broker_api_key(), but raise BrokerCredentialsMissing with a
+    user-facing message when there is no API key -- for plugins that send
+    the key in a request header, where None would otherwise surface as an
+    opaque httpx "Header value must be str or bytes" TypeError."""
+    api_key, api_secret = resolve_broker_api_key(auth_token, broker, account_id)
+    if not api_key:
+        raise BrokerCredentialsMissing(
+            f"Broker API key not configured for this {broker} account. "
+            f"Set it in Profile > Accounts and log in to the broker again."
+        )
+    return api_key, api_secret
 
 
 def resolve_broker_api_key_market(
