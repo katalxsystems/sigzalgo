@@ -27,8 +27,8 @@ def authenticate_broker(
     response_data = {"status": "error", "message": "Authentication failed", "data": None}
 
     # Get credentials (DB-first, .env fallback)
-    broker_api_key = get_broker_api_key(account_id)
-    broker_api_secret = get_broker_api_secret(account_id)
+    broker_api_key = get_broker_api_key(account_id, broker="fyers")
+    broker_api_secret = get_broker_api_secret(account_id, broker="fyers")
 
     # Validate environment variables
     if not broker_api_key or not broker_api_secret:

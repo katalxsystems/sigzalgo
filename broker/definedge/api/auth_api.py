@@ -26,8 +26,8 @@ def authenticate_broker(otp_token, otp, api_secret=None, account_id=None):
     try:
         # Get API credentials from environment if not provided
         if not api_secret:
-            api_secret = get_broker_api_secret(account_id)
-        api_token = get_broker_api_key(account_id)
+            api_secret = get_broker_api_secret(account_id, broker="definedge")
+        api_token = get_broker_api_key(account_id, broker="definedge")
 
         # Step 2: Verify OTP with auth code to get session keys
         session_response = login_step2(otp_token, otp, api_secret)
@@ -62,9 +62,9 @@ def login_step1(api_token=None, api_secret=None, account_id=None):
     try:
         # Get credentials from environment if not provided
         if not api_token:
-            api_token = get_broker_api_key(account_id)
+            api_token = get_broker_api_key(account_id, broker="definedge")
         if not api_secret:
-            api_secret = get_broker_api_secret(account_id)
+            api_secret = get_broker_api_secret(account_id, broker="definedge")
 
         # Get the shared httpx client with connection pooling
         client = get_httpx_client()

@@ -121,7 +121,7 @@ class FivepaisaWebSocketAdapter(BaseBrokerWebSocketAdapter):
         """Resolve the 5Paisa client_code from the account's broker_api_key.
 
         ``user_id`` here is the account_id (see initialize()), so this must
-        go through utils.config.get_broker_api_key(account_id) -- the
+        go through utils.config.get_broker_api_key(account_id, broker="fivepaisa") -- the
         per-account DB-stored credential wins, falling back to the
         instance-wide Settings row, then the legacy .env BROKER_API_KEY --
         exactly like broker/fivepaisa/api/order_api.py._get_5paisa_credentials
@@ -132,7 +132,7 @@ class FivepaisaWebSocketAdapter(BaseBrokerWebSocketAdapter):
         5paisa then 401s the handshake no matter how valid the auth token is.
         Format: api_key:::user_id:::client_id.
         """
-        broker_api_key = get_broker_api_key(user_id)
+        broker_api_key = get_broker_api_key(user_id, broker="fivepaisa")
         if broker_api_key:
             try:
                 parts = broker_api_key.split(":::")

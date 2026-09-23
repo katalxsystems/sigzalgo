@@ -37,7 +37,7 @@ def validate_broker_api_key_format(broker: str, broker_api_key: str) -> str | No
     return None
 
 
-def get_broker_api_key(account_id: str | None = None) -> str | None:
+def get_broker_api_key(account_id: str | None = None, broker: str | None = None) -> str | None:
     """
     Retrieve the broker API key: DB-first, .env fallback.
 
@@ -52,12 +52,16 @@ def get_broker_api_key(account_id: str | None = None) -> str | None:
 
     Returns:
         str | None: The broker API key, or None if not set anywhere.
+
+    Pass ``broker`` (the broker this key is being used for) so an account
+    row belonging to a different broker never supplies its credentials --
+    see database.auth_db.get_broker_credentials.
     """
     if account_id:
         try:
             from database.auth_db import get_broker_credentials
 
-            api_key, _ = get_broker_credentials(account_id)
+            api_key, _ = get_broker_credentials(account_id, broker=broker)
             if api_key:
                 return api_key
         except Exception:
@@ -69,7 +73,7 @@ def get_broker_api_key(account_id: str | None = None) -> str | None:
     return _instance_broker_setting("broker_api_key") or os.getenv("BROKER_API_KEY")
 
 
-def get_broker_api_secret(account_id: str | None = None) -> str | None:
+def get_broker_api_secret(account_id: str | None = None, broker: str | None = None) -> str | None:
     """
     Retrieve the broker API secret: DB-first, .env fallback.
 
@@ -82,7 +86,7 @@ def get_broker_api_secret(account_id: str | None = None) -> str | None:
         try:
             from database.auth_db import get_broker_credentials
 
-            _, api_secret = get_broker_credentials(account_id)
+            _, api_secret = get_broker_credentials(account_id, broker=broker)
             if api_secret:
                 return api_secret
         except Exception:
@@ -111,7 +115,9 @@ def _instance_broker_setting(field: str) -> str | None:
         return None
 
 
-def get_broker_api_key_market(account_id: str | None = None) -> str | None:
+def get_broker_api_key_market(
+    account_id: str | None = None, broker: str | None = None
+) -> str | None:
     """Retrieve the market-data-specific broker API key (used by the XTS-
     family brokers' separate market-feed login: compositedge, rmoney,
     fivepaisaxts, ibulls, iifl, jainamxts, wisdom).
@@ -128,7 +134,7 @@ def get_broker_api_key_market(account_id: str | None = None) -> str | None:
         try:
             from database.auth_db import get_broker_credentials_market
 
-            api_key, _ = get_broker_credentials_market(account_id)
+            api_key, _ = get_broker_credentials_market(account_id, broker=broker)
             if api_key:
                 return api_key
         except Exception:
@@ -140,14 +146,16 @@ def get_broker_api_key_market(account_id: str | None = None) -> str | None:
     return _instance_broker_setting("broker_api_key_market") or os.getenv("BROKER_API_KEY_MARKET")
 
 
-def get_broker_api_secret_market(account_id: str | None = None) -> str | None:
+def get_broker_api_secret_market(
+    account_id: str | None = None, broker: str | None = None
+) -> str | None:
     """Retrieve the market-data-specific broker API secret. See
     get_broker_api_key_market() for the resolution order."""
     if account_id:
         try:
             from database.auth_db import get_broker_credentials_market
 
-            _, api_secret = get_broker_credentials_market(account_id)
+            _, api_secret = get_broker_credentials_market(account_id, broker=broker)
             if api_secret:
                 return api_secret
         except Exception:
@@ -181,7 +189,9 @@ def resolve_broker_api_key(
         from database.auth_db import get_account_id_from_auth_token
 
         account_id = get_account_id_from_auth_token(auth_token, broker=broker)
-    return get_broker_api_key(account_id), get_broker_api_secret(account_id)
+    return get_broker_api_key(account_id, broker=broker), get_broker_api_secret(
+        account_id, broker=broker
+    )
 
 
 def resolve_broker_api_key_market(
@@ -198,7 +208,9 @@ def resolve_broker_api_key_market(
         from database.auth_db import get_account_id_from_auth_token
 
         account_id = get_account_id_from_auth_token(auth_token, broker=broker)
-    return get_broker_api_key_market(account_id), get_broker_api_secret_market(account_id)
+    return get_broker_api_key_market(account_id, broker=broker), get_broker_api_secret_market(
+        account_id, broker=broker
+    )
 
 
 def get_broker_redirect_url() -> str | None:

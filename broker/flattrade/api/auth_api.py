@@ -20,12 +20,12 @@ def authenticate_broker(code, password=None, totp_code=None, account_id=None):
     Authenticate with Flattrade using OAuth flow
     """
     try:
-        full_api_key = get_broker_api_key(account_id)
+        full_api_key = get_broker_api_key(account_id, broker="flattrade")
         logger.debug(f"Full API Key: {full_api_key}")  # Debug print
 
         # Split the API key to get the actual key part
         BROKER_API_KEY = full_api_key.split(":::")[1]
-        BROKER_API_SECRET = get_broker_api_secret(account_id)
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="flattrade")
 
         logger.debug(f"Using API Key: {BROKER_API_KEY}")  # Debug print
         logger.debug(f"Request Code: {code}")  # Debug print
@@ -76,8 +76,8 @@ def authenticate_broker(code, password=None, totp_code=None, account_id=None):
 
 def authenticate_broker_oauth(code, account_id=None):
     try:
-        BROKER_API_KEY = get_broker_api_key(account_id).split(":::")[1]  # Get only the API key part
-        BROKER_API_SECRET = get_broker_api_secret(account_id)
+        BROKER_API_KEY = get_broker_api_key(account_id, broker="flattrade").split(":::")[1]  # Get only the API key part
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="flattrade")
 
         # Create the security hash as per Flattrade docs
         # api_secret:SHA-256 hash of (api_key + request_token + api_secret)

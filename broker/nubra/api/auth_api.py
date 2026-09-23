@@ -95,8 +95,8 @@ def authenticate_broker(totp_code, account_id=None):
                - error_message: Error message if authentication failed
     """
     # Get credentials from environment
-    phone = get_broker_api_key(account_id)  # Mobile number
-    mpin = get_broker_api_secret(account_id)  # MPIN
+    phone = get_broker_api_key(account_id, broker="nubra")  # Mobile number
+    mpin = get_broker_api_secret(account_id, broker="nubra")  # MPIN
 
     if not phone or not mpin:
         return (

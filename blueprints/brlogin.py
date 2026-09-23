@@ -218,7 +218,7 @@ def broker_callback(broker, para=None):
         else:
             # Initial visit — redirect to AliceBlue login page
             logger.info("Redirecting to AliceBlue login page")
-            appcode = get_broker_api_key(account_id)
+            appcode = get_broker_api_key(account_id, broker=broker)
             if not appcode:
                 return handle_auth_failure(
                     "BROKER_API_KEY (appCode) not configured in environment",
@@ -390,7 +390,7 @@ def broker_callback(broker, para=None):
         # Some callback variants may not include clientId explicitly.
         # Fall back to BROKER_API_KEY to avoid false failures.
         if not client_id:
-            broker_api_key = (get_broker_api_key(account_id) or "").strip()
+            broker_api_key = (get_broker_api_key(account_id, broker=broker) or "").strip()
             if ":::" in broker_api_key:
                 client_id = broker_api_key.split(":::", 1)[0].strip()
             elif broker_api_key:
@@ -596,7 +596,7 @@ def broker_callback(broker, para=None):
             # Initial visit — redirect to Zebu OAuth login page
             logger.info("Redirecting to Zebu OAuth login page")
             # BROKER_API_KEY format: userid:::client_id
-            full_api_key = get_broker_api_key(account_id)
+            full_api_key = get_broker_api_key(account_id, broker=broker)
             if not full_api_key:
                 return handle_auth_failure(
                     "BROKER_API_KEY not configured in environment",
@@ -616,7 +616,7 @@ def broker_callback(broker, para=None):
             # Initial visit — redirect to Shoonya OAuth login page
             logger.info("Redirecting to Shoonya OAuth login page")
             # BROKER_API_KEY format: userid:::client_id
-            full_api_key = get_broker_api_key(account_id)
+            full_api_key = get_broker_api_key(account_id, broker=broker)
             if not full_api_key:
                 return handle_auth_failure(
                     "BROKER_API_KEY not configured in environment",
@@ -726,7 +726,7 @@ def broker_callback(broker, para=None):
         else:
             # Initial visit — redirect to the TradeSmart OAuth login page.
             logger.info("Redirecting to TradeSmart OAuth login page")
-            full_api_key = get_broker_api_key(account_id)
+            full_api_key = get_broker_api_key(account_id, broker=broker)
             if not full_api_key:
                 return handle_auth_failure(
                     "BROKER_API_KEY not configured in environment",
@@ -807,8 +807,8 @@ def broker_callback(broker, para=None):
     elif broker == "definedge":
         if request.method == "GET":
             # Trigger OTP generation and redirect to React page
-            api_token = get_broker_api_key(account_id)
-            api_secret = get_broker_api_secret(account_id)
+            api_token = get_broker_api_key(account_id, broker=broker)
+            api_secret = get_broker_api_secret(account_id, broker=broker)
 
             # Import the step1 function to trigger OTP
             from broker.definedge.api.auth_api import login_step1
@@ -836,8 +836,8 @@ def broker_callback(broker, para=None):
 
             # Handle OTP resend request
             if action == "resend":
-                api_token = get_broker_api_key(account_id)
-                api_secret = get_broker_api_secret(account_id)
+                api_token = get_broker_api_key(account_id, broker=broker)
+                api_secret = get_broker_api_secret(account_id, broker=broker)
 
                 from broker.definedge.api.auth_api import login_step1
 
@@ -869,7 +869,7 @@ def broker_callback(broker, para=None):
                     ), 401
 
                 # Get api_secret for authentication
-                api_secret = get_broker_api_secret(account_id)
+                api_secret = get_broker_api_secret(account_id, broker=broker)
 
                 # Use authenticate_broker for OTP verification
                 from broker.definedge.api.auth_api import authenticate_broker
@@ -943,7 +943,7 @@ def broker_callback(broker, para=None):
                 # No session data - initial request, redirect to RMoney OAuth login
                 from broker.rmoney.baseurl import INTERACTIVE_URL as RMONEY_INTERACTIVE_URL
 
-                BROKER_API_KEY_LOCAL = get_broker_api_key(account_id)
+                BROKER_API_KEY_LOCAL = get_broker_api_key(account_id, broker=broker)
                 callback_url = url_for(
                     "brlogin.broker_callback", broker="rmoney", _external=True
                 )
@@ -996,7 +996,7 @@ def broker_callback(broker, para=None):
         session["broker"] = broker
         logger.info(f"Successfully connected broker: {broker}")
         if broker == "zerodha":
-            auth_token = f"{get_broker_api_key(account_id)}:{auth_token}"
+            auth_token = f"{get_broker_api_key(account_id, broker=broker)}:{auth_token}"
         if broker == "dhan":
             auth_token = f"{auth_token}"
 
@@ -1085,7 +1085,7 @@ def dhan_initiate_oauth():
 
     # Get client_id from BROKER_API_KEY (format: client_id:::api_key), DB-first
     # for the target account, falling back to .env
-    broker_api_key = get_broker_api_key(account_id)
+    broker_api_key = get_broker_api_key(account_id, broker="dhan")
     client_id = None
 
     if broker_api_key and ":::" in broker_api_key:
@@ -1134,7 +1134,7 @@ def _require_account_api_key(broker: str):
         return None, None, redirect(url_for("auth.login"))
 
     account_id = _oauth_account_id()
-    api_key = get_broker_api_key(account_id)
+    api_key = get_broker_api_key(account_id, broker=broker)
     if not api_key:
         error_message = f"Broker API key not configured for this {broker} account."
         logger.error(error_message)
