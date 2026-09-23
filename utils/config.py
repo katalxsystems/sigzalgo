@@ -39,23 +39,23 @@ def validate_broker_api_key_format(broker: str, broker_api_key: str) -> str | No
 
 def get_broker_api_key(account_id: str | None = None, broker: str | None = None) -> str | None:
     """
-    Retrieve the broker API key: DB-first, .env fallback.
+    Retrieve the broker API key.
 
-    Multi-account support stores a credential pair per connected broker
-    account (database.auth_db.Auth.broker_api_key/broker_api_secret) so two
-    accounts on the same broker can use different app registrations. When
-    ``account_id`` is given and that account has a DB-stored key, it wins.
-    Otherwise this falls back to the instance-wide default, itself DB-first:
-    database.settings_db's Settings row (set from Profile > Broker, takes
-    effect immediately) and only then the legacy ``.env`` value, which keeps
-    non-interactive scripts and not-yet-migrated installs unchanged.
+    Every user brings their own broker account, so credentials are
+    per-account (database.auth_db.Auth.broker_api_key/broker_api_secret).
+    Broker-scoped callers -- every broker plugin, resolve_broker_api_key and
+    the login flow -- pass ``broker`` and get ONLY that account's own key,
+    or None: never an instance-wide one, which would be some other user's
+    (or some other broker's) app registration. An account row belonging to
+    a different broker never supplies its credentials either -- see
+    database.auth_db.get_broker_credentials.
+
+    Callers that pass no ``broker`` (the Profile > Broker admin view,
+    ad-hoc scripts) still fall back to the instance-wide values: the
+    Settings row, then ``.env``.
 
     Returns:
-        str | None: The broker API key, or None if not set anywhere.
-
-    Pass ``broker`` (the broker this key is being used for) so an account
-    row belonging to a different broker never supplies its credentials --
-    see database.auth_db.get_broker_credentials.
+        str | None: The broker API key, or None if not configured.
     """
     if account_id:
         try:
@@ -70,7 +70,7 @@ def get_broker_api_key(account_id: str | None = None, broker: str | None = None)
             get_logger(__name__).exception(
                 f"Error reading DB-stored broker_api_key for account {account_id}"
             )
-    return _instance_broker_setting("broker_api_key") or os.getenv("BROKER_API_KEY")
+    return _instance_broker_fallback("broker_api_key", "BROKER_API_KEY", broker)
 
 
 def get_broker_api_secret(account_id: str | None = None, broker: str | None = None) -> str | None:
@@ -95,7 +95,7 @@ def get_broker_api_secret(account_id: str | None = None, broker: str | None = No
             get_logger(__name__).exception(
                 f"Error reading DB-stored broker_api_secret for account {account_id}"
             )
-    return _instance_broker_setting("broker_api_secret") or os.getenv("BROKER_API_SECRET")
+    return _instance_broker_fallback("broker_api_secret", "BROKER_API_SECRET", broker)
 
 
 def _instance_broker_setting(field: str) -> str | None:
@@ -115,6 +115,15 @@ def _instance_broker_setting(field: str) -> str | None:
         return None
 
 
+def _instance_broker_fallback(field: str, env_var: str, broker: str | None) -> str | None:
+    """Instance-wide value for ``field`` (Settings row, then ``.env``), only
+    for callers that aren't scoped to a broker. Broker-scoped callers get
+    None: see get_broker_api_key() for why there is no shared fallback."""
+    if broker:
+        return None
+    return _instance_broker_setting(field) or os.getenv(env_var)
+
+
 def get_broker_api_key_market(
     account_id: str | None = None, broker: str | None = None
 ) -> str | None:
@@ -122,13 +131,9 @@ def get_broker_api_key_market(
     family brokers' separate market-feed login: compositedge, rmoney,
     fivepaisaxts, ibulls, iifl, jainamxts, wisdom).
 
-    Per-account first (database.auth_db.Auth.broker_api_key_market), falling
-    back to the instance-wide default during the per-account migration --
-    see get_broker_api_key() for the same resolution shape. The
-    instance-wide fallback here is transitional: it goes away once every
-    XTS-family broker's get_feed_token() threads account_id and the
-    one-time backfill migration has populated broker_api_key_market for
-    every existing account (see the SaaS per-account credentials plan).
+    Per-account (database.auth_db.Auth.broker_api_key_market), with the
+    same no-shared-fallback rule for broker-scoped callers as
+    get_broker_api_key().
     """
     if account_id:
         try:
@@ -143,7 +148,7 @@ def get_broker_api_key_market(
             get_logger(__name__).exception(
                 f"Error reading DB-stored broker_api_key_market for account {account_id}"
             )
-    return _instance_broker_setting("broker_api_key_market") or os.getenv("BROKER_API_KEY_MARKET")
+    return _instance_broker_fallback("broker_api_key_market", "BROKER_API_KEY_MARKET", broker)
 
 
 def get_broker_api_secret_market(
@@ -164,9 +169,7 @@ def get_broker_api_secret_market(
             get_logger(__name__).exception(
                 f"Error reading DB-stored broker_api_secret_market for account {account_id}"
             )
-    return _instance_broker_setting("broker_api_secret_market") or os.getenv(
-        "BROKER_API_SECRET_MARKET"
-    )
+    return _instance_broker_fallback("broker_api_secret_market", "BROKER_API_SECRET_MARKET", broker)
 
 
 def resolve_broker_api_key(

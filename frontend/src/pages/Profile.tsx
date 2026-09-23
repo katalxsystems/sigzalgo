@@ -116,14 +116,6 @@ interface PasswordRequirements {
 }
 
 interface BrokerCredentials {
-  broker_api_key: string
-  broker_api_key_raw_length: number
-  broker_api_secret: string
-  broker_api_secret_raw_length: number
-  broker_api_key_market: string
-  broker_api_key_market_raw_length: number
-  broker_api_secret_market: string
-  broker_api_secret_market_raw_length: number
   redirect_url: string
   current_broker: string
   valid_brokers: string[]
@@ -321,10 +313,6 @@ export default function ProfilePage() {
 
   // Broker credentials state
   const [brokerCredentials, setBrokerCredentials] = useState<BrokerCredentials | null>(null)
-  const [brokerApiKey, setBrokerApiKey] = useState('')
-  const [brokerApiSecret, setBrokerApiSecret] = useState('')
-  const [brokerApiKeyMarket, setBrokerApiKeyMarket] = useState('')
-  const [brokerApiSecretMarket, setBrokerApiSecretMarket] = useState('')
   const [selectedBroker, setSelectedBroker] = useState('')
   const [ngrokEnabled, setNgrokEnabled] = useState(false)
   const [hostServer, setHostServer] = useState('')
@@ -506,10 +494,6 @@ export default function ProfilePage() {
     setIsSavingBroker(true)
     try {
       const formData = new FormData()
-      if (brokerApiKey) formData.append('broker_api_key', brokerApiKey)
-      if (brokerApiSecret) formData.append('broker_api_secret', brokerApiSecret)
-      if (brokerApiKeyMarket) formData.append('broker_api_key_market', brokerApiKeyMarket)
-      if (brokerApiSecretMarket) formData.append('broker_api_secret_market', brokerApiSecretMarket)
       if (selectedBroker && selectedBroker !== brokerCredentials?.current_broker) {
         formData.append('redirect_url', getRedirectUrl(selectedBroker))
       }
@@ -522,9 +506,8 @@ export default function ProfilePage() {
 
       if (response.data.status === 'success') {
         showToast.success(response.data.message, 'admin')
-        // Update local state to reflect saved values directly rather than
-        // re-fetching (the masked display value is derived client-side
-        // from what was just typed, same result either way)
+        // Update local state to reflect the saved broker/redirect URL
+        // directly rather than re-fetching
         if (brokerCredentials) {
           setBrokerCredentials({
             ...brokerCredentials,
@@ -533,29 +516,8 @@ export default function ProfilePage() {
               selectedBroker !== brokerCredentials.current_broker
                 ? getRedirectUrl(selectedBroker)
                 : brokerCredentials.redirect_url,
-            // Update masked values to show something was changed.
-            // Use a FIXED-length mask (prefix + 8 asterisks) so the rendered
-            // value cannot leak the secret's true length and cannot overflow
-            // the column layout. Mirrors blueprints/broker_credentials.py:mask_secret.
-            broker_api_key: brokerApiKey
-              ? `${brokerApiKey.slice(0, 6)}${'*'.repeat(8)}`
-              : brokerCredentials.broker_api_key,
-            broker_api_key_raw_length: brokerApiKey
-              ? brokerApiKey.length
-              : brokerCredentials.broker_api_key_raw_length,
-            broker_api_secret: brokerApiSecret
-              ? `${brokerApiSecret.slice(0, 4)}${'*'.repeat(8)}`
-              : brokerCredentials.broker_api_secret,
-            broker_api_secret_raw_length: brokerApiSecret
-              ? brokerApiSecret.length
-              : brokerCredentials.broker_api_secret_raw_length,
           })
         }
-        // Clear form fields
-        setBrokerApiKey('')
-        setBrokerApiSecret('')
-        setBrokerApiKeyMarket('')
-        setBrokerApiSecretMarket('')
         // Broker-identity fields are DB-backed now and take effect
         // immediately -- only show the restart dialog if an infra field
         // (host/websocket URL) was also touched in this save.
@@ -574,11 +536,7 @@ export default function ProfilePage() {
   }
 
   const hasCredentialChanges = Boolean(
-    brokerApiKey ||
-      brokerApiSecret ||
-      brokerApiKeyMarket ||
-      brokerApiSecretMarket ||
-      (selectedBroker && selectedBroker !== brokerCredentials?.current_broker)
+    selectedBroker && selectedBroker !== brokerCredentials?.current_broker
   )
 
   const hasNgrokChanges = Boolean(
@@ -1025,10 +983,11 @@ export default function ProfilePage() {
           <TabsContent value="broker" className="space-y-6">
             <Alert>
               <Key className="h-4 w-4" />
-              <AlertTitle>Broker API Credentials</AlertTitle>
+              <AlertTitle>Instance Broker Settings</AlertTitle>
               <AlertDescription>
-                Update your broker API credentials. Changes require an application restart to take
-                effect. You will be logged out after saving.
+                Broker API keys and secrets are per account: each user sets their own in the
+                Accounts tab, and there is no instance-wide fallback. This tab only sets the
+                instance's default broker and OAuth redirect URL.
               </AlertDescription>
             </Alert>
 
@@ -1036,7 +995,7 @@ export default function ProfilePage() {
             <Card>
               <CardHeader>
                 <CardTitle>Current Configuration</CardTitle>
-                <CardDescription>Your currently configured broker and credentials</CardDescription>
+                <CardDescription>The instance's default broker and redirect URL</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
@@ -1055,39 +1014,6 @@ export default function ProfilePage() {
                     </code>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-4 pt-2">
-                  <div className="space-y-2 min-w-0">
-                    <Label>API Key</Label>
-                    {/* block truncate clamps long masked values to their column;
-                      backend mask is fixed-length but defence-in-depth in case
-                      a future change emits a longer string. */}
-                    <code className="block truncate text-xs text-muted-foreground">
-                      {brokerCredentials?.broker_api_key || '(not set)'}
-                    </code>
-                  </div>
-                  <div className="space-y-2 min-w-0">
-                    <Label>API Secret</Label>
-                    <code className="block truncate text-xs text-muted-foreground">
-                      {brokerCredentials?.broker_api_secret || '(not set)'}
-                    </code>
-                  </div>
-                </div>
-                {(brokerCredentials?.broker_api_key_market_raw_length ?? 0) > 0 && (
-                  <div className="grid grid-cols-2 gap-4 pt-2">
-                    <div className="space-y-2 min-w-0">
-                      <Label>Market API Key</Label>
-                      <code className="block truncate text-xs text-muted-foreground">
-                        {brokerCredentials?.broker_api_key_market || '(not set)'}
-                      </code>
-                    </div>
-                    <div className="space-y-2 min-w-0">
-                      <Label>Market API Secret</Label>
-                      <code className="block truncate text-xs text-muted-foreground">
-                        {brokerCredentials?.broker_api_secret_market || '(not set)'}
-                      </code>
-                    </div>
-                  </div>
-                )}
                 <div className="grid grid-cols-2 gap-4 pt-2 border-t">
                   <div className="space-y-2">
                     <Label>Ngrok Status</Label>
@@ -1108,9 +1034,10 @@ export default function ProfilePage() {
             {/* Update Credentials */}
             <Card>
               <CardHeader>
-                <CardTitle>Update Credentials</CardTitle>
+                <CardTitle>Update Broker</CardTitle>
                 <CardDescription>
-                  Enter new values to update. Leave fields empty to keep existing values.
+                  Changes the default broker in the redirect URL. API keys are set per account in
+                  the Accounts tab.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -1136,95 +1063,6 @@ export default function ProfilePage() {
                   )}
                 </div>
 
-                {/* API Credentials */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Broker API Key</Label>
-                    <Input
-                      type="password"
-                      value={brokerApiKey}
-                      onChange={(e) => setBrokerApiKey(e.target.value)}
-                      placeholder="Enter new API key"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      {(brokerCredentials?.broker_api_key_raw_length ?? 0) > 0
-                        ? `Current: ${brokerCredentials?.broker_api_key_raw_length} chars`
-                        : 'Not currently set'}
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Broker API Secret</Label>
-                    <Input
-                      type="password"
-                      value={brokerApiSecret}
-                      onChange={(e) => setBrokerApiSecret(e.target.value)}
-                      placeholder="Enter new API secret"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      {(brokerCredentials?.broker_api_secret_raw_length ?? 0) > 0
-                        ? `Current: ${brokerCredentials?.broker_api_secret_raw_length} chars`
-                        : 'Not currently set'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Market API Credentials (optional) */}
-                <div className="pt-4 border-t">
-                  <h4 className="font-medium mb-3">Market Data API (Optional)</h4>
-                  <p className="text-sm text-muted-foreground mb-4">
-                    Required only for XTS API supported brokers (e.g., 5paisa XTS, Jainam XTS)
-                  </p>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label>Market API Key</Label>
-                      <Input
-                        type="password"
-                        value={brokerApiKeyMarket}
-                        onChange={(e) => setBrokerApiKeyMarket(e.target.value)}
-                        placeholder="Enter market API key"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Market API Secret</Label>
-                      <Input
-                        type="password"
-                        value={brokerApiSecretMarket}
-                        onChange={(e) => setBrokerApiSecretMarket(e.target.value)}
-                        placeholder="Enter market API secret"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Broker-specific hints */}
-                {selectedBroker === 'fivepaisa' && (
-                  <Alert className="bg-blue-50 dark:bg-blue-950 border-blue-200">
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertTitle>5paisa API Key Format</AlertTitle>
-                    <AlertDescription>
-                      Format: <code>User_Key:::User_ID:::client_id</code>
-                    </AlertDescription>
-                  </Alert>
-                )}
-                {selectedBroker === 'flattrade' && (
-                  <Alert className="bg-blue-50 dark:bg-blue-950 border-blue-200">
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertTitle>Flattrade API Key Format</AlertTitle>
-                    <AlertDescription>
-                      Format: <code>client_id:::api_key</code>
-                    </AlertDescription>
-                  </Alert>
-                )}
-                {selectedBroker === 'dhan' && (
-                  <Alert className="bg-blue-50 dark:bg-blue-950 border-blue-200">
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertTitle>Dhan API Key Format</AlertTitle>
-                    <AlertDescription>
-                      Format: <code>client_id:::api_key</code>
-                    </AlertDescription>
-                  </Alert>
-                )}
-
                 {/* Save Button */}
                 <Button
                   onClick={handleBrokerSave}
@@ -1239,7 +1077,7 @@ export default function ProfilePage() {
                   ) : (
                     <>
                       <Key className="h-4 w-4 mr-2" />
-                      Save Broker Credentials
+                      Save Broker
                     </>
                   )}
                 </Button>

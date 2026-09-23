@@ -15,6 +15,7 @@ from limiter import limiter  # Import the limiter instance
 from utils.auth_utils import handle_auth_failure, handle_auth_success
 from utils.config import (
     get_broker_api_key,
+    get_broker_api_key_market,
     get_broker_api_secret,
     get_broker_redirect_url,
     get_login_rate_limit_hour,
@@ -117,6 +118,21 @@ def broker_callback(broker, para=None):
         # form, with no error and nothing in the network tab to explain it.
         session["broker"] = broker
         return redirect(url_for("dashboard_bp.dashboard"))
+
+    # Every broker's login needs this account's own app credential (API key,
+    # secret, or market-feed key -- which one varies by broker). There is no
+    # instance-wide fallback (see utils.config.get_broker_api_key), so fail
+    # here with a clear message instead of letting the broker reject the
+    # login -- or, like Angel, accept it and then answer "Invalid API Key"
+    # on every funds/quotes call afterwards. Skipped for the session-less
+    # external-auth callbacks above, which have no account to check yet.
+    if "user" in session and not _account_has_broker_credentials(account_id, broker):
+        error_message = (
+            f"Broker API key not configured for this {broker} account. "
+            f"Set it in Profile > Accounts."
+        )
+        logger.error(f"{error_message} (account_id={account_id!r})")
+        return handle_auth_failure(error_message, forward_url="broker.html")
 
     broker_auth_functions = app.broker_auth_functions
     auth_function = broker_auth_functions.get(f"{broker}_auth")
@@ -1123,6 +1139,17 @@ def dhan_initiate_oauth():
         )
         logger.error(error_message)
         return handle_auth_failure(error_message, forward_url="broker.html")
+
+
+def _account_has_broker_credentials(account_id, broker: str) -> bool:
+    """Whether this account has any app credential of its own for ``broker``."""
+    if not account_id:
+        return False
+    return bool(
+        get_broker_api_key(account_id, broker=broker)
+        or get_broker_api_secret(account_id, broker=broker)
+        or get_broker_api_key_market(account_id, broker=broker)
+    )
 
 
 def _require_account_api_key(broker: str):
