@@ -23,7 +23,7 @@ def authenticate_with_totp(password, totp_code, account_id=None):
     logger.info("Starting mStock Type B TOTP authentication (single-step)")
 
     # Get credentials from environment variables
-    clientcode = get_broker_api_key(account_id)
+    clientcode = get_broker_api_key(account_id, broker="mstock")
 
     if not clientcode:
         return None, None, "BROKER_API_KEY (clientcode) not found in environment variables."
@@ -80,7 +80,7 @@ def authenticate_with_totp(password, totp_code, account_id=None):
         logger.info("Login with TOTP successful, now verifying TOTP to get final token")
 
         # Step 2: Verify TOTP with refresh token to get the final authentication token
-        api_key = get_broker_api_secret(account_id)
+        api_key = get_broker_api_secret(account_id, broker="mstock")
         verify_headers = {
             "X-Mirae-Version": "1",
             "X-PrivateKey": api_key,
@@ -151,7 +151,7 @@ def send_otp(password, account_id=None):
     logger.info("Starting mStock Type B authentication - Step 1: Send OTP")
 
     # Get credentials from environment variables
-    clientcode = get_broker_api_key(account_id)
+    clientcode = get_broker_api_key(account_id, broker="mstock")
 
     if not clientcode:
         return None, None, "BROKER_API_KEY (clientcode) not found in environment variables."
@@ -234,7 +234,7 @@ def verify_otp(otp_code, refresh_token, account_id=None):
     """
     logger.info("Starting mStock Type B authentication - Step 2: Verify OTP")
 
-    api_key = get_broker_api_secret(account_id)
+    api_key = get_broker_api_secret(account_id, broker="mstock")
 
     if not api_key:
         return None, None, "BROKER_API_SECRET (API key) not found in environment variables."

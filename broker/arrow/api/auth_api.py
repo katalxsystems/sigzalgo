@@ -32,8 +32,8 @@ def authenticate_broker(request_token, account_id=None):
         (auth_token, None) on success, (None, error_message) on failure.
     """
     try:
-        app_id = get_broker_api_key(account_id)
-        app_secret = get_broker_api_secret(account_id)
+        app_id = get_broker_api_key(account_id, broker="arrow")
+        app_secret = get_broker_api_secret(account_id, broker="arrow")
 
         if not app_id or not app_secret:
             return None, "Configuration error: BROKER_API_KEY / BROKER_API_SECRET not set."

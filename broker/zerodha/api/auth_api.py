@@ -9,8 +9,8 @@ def authenticate_broker(request_token, account_id=None):
     try:
         # DB-first (per broker account), falling back to .env when no
         # account_id is given or the account has no stored credentials.
-        BROKER_API_KEY = get_broker_api_key(account_id)
-        BROKER_API_SECRET = get_broker_api_secret(account_id)
+        BROKER_API_KEY = get_broker_api_key(account_id, broker="zerodha")
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="zerodha")
 
         # Zerodha's endpoint for session token exchange
         url = "https://api.kite.trade/session/token"

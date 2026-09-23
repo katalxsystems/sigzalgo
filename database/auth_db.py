@@ -626,6 +626,22 @@ def upsert_auth(
         # Preserve the existing value in that specific case; a real broker
         # name (or a genuine login, revoke=False) still updates normally.
         if not (revoke and not broker):
+            if auth_obj.broker and broker and auth_obj.broker != broker:
+                # The row is being re-pointed at a different broker (e.g. a
+                # legacy username-named row reused by a login for another
+                # broker). Its stored app credentials belong to the OLD
+                # broker's registration; keeping them would make every
+                # later login/request for the new broker send the old
+                # broker's key (observed: a 5paisa "key:::user:::client"
+                # key sent to Angel -> AG8004 Invalid API Key).
+                logger.warning(
+                    f"Account {name} broker changed {auth_obj.broker} -> {broker}; "
+                    f"clearing its stored broker app credentials"
+                )
+                auth_obj.broker_api_key = None
+                auth_obj.broker_api_secret = None
+                auth_obj.broker_api_key_market = None
+                auth_obj.broker_api_secret_market = None
             auth_obj.broker = broker
         auth_obj.user_id = user_id
         auth_obj.is_revoked = revoke
@@ -1070,16 +1086,31 @@ def set_default_account(owner_username, account_id):
         return False
 
 
-def get_broker_credentials(account_id):
+def _account_matches_broker(account, broker):
+    """True unless ``broker`` is given and the account belongs to a different
+    broker. Stored credentials are one broker's app registration; handing
+    them to another broker's login/API call can never be right."""
+    if broker and account.broker and account.broker != broker:
+        logger.warning(
+            f"Ignoring stored credentials of account {account.name}: "
+            f"account broker is {account.broker}, requested for {broker}"
+        )
+        return False
+    return True
+
+
+def get_broker_credentials(account_id, broker=None):
     """Get the per-account broker app credentials (trading API key/secret).
 
     Returns (api_key, api_secret), either of which is None if the account
     has no DB-stored credentials. Per-account is the only source — see
-    utils.config.get_broker_api_key/get_broker_api_secret.
+    utils.config.get_broker_api_key/get_broker_api_secret. When ``broker``
+    is given and the account belongs to a different broker, returns
+    (None, None) rather than the other broker's credentials.
     """
     try:
         account = Auth.query.filter_by(name=account_id).first()
-        if not account:
+        if not account or not _account_matches_broker(account, broker):
             return None, None
         api_key = decrypt_token(account.broker_api_key) if account.broker_api_key else None
         api_secret = decrypt_token(account.broker_api_secret) if account.broker_api_secret else None
@@ -1105,7 +1136,7 @@ def set_broker_credentials(account_id, broker_api_key, broker_api_secret):
         return False
 
 
-def get_broker_credentials_market(account_id):
+def get_broker_credentials_market(account_id, broker=None):
     """Get the per-account market-data feed credentials (XTS-family
     brokers' separate quote/depth login: compositedge, rmoney, fivepaisaxts,
     ibulls, iifl, jainamxts, wisdom).
@@ -1113,10 +1144,11 @@ def get_broker_credentials_market(account_id):
     Returns (api_key, api_secret), either of which is None if the account
     has no DB-stored market credentials. Per-account is the only source —
     see utils.config.get_broker_api_key_market/get_broker_api_secret_market.
+    ``broker`` behaves as in get_broker_credentials.
     """
     try:
         account = Auth.query.filter_by(name=account_id).first()
-        if not account:
+        if not account or not _account_matches_broker(account, broker):
             return None, None
         api_key = (
             decrypt_token(account.broker_api_key_market) if account.broker_api_key_market else None

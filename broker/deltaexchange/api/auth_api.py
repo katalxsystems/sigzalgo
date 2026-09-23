@@ -23,8 +23,8 @@ def authenticate_broker(code, account_id=None):
         (None, error_message)   on failure
     """
     try:
-        api_key = (get_broker_api_key(account_id) or "").strip()
-        api_secret = (get_broker_api_secret(account_id) or "").strip()
+        api_key = (get_broker_api_key(account_id, broker="deltaexchange") or "").strip()
+        api_secret = (get_broker_api_secret(account_id, broker="deltaexchange") or "").strip()
 
         if not api_key:
             return None, "BROKER_API_KEY is not set in environment variables"

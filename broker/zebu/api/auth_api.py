@@ -14,9 +14,9 @@ def authenticate_broker(code, account_id=None):
     Exchanges the authorization code for an access token.
     """
     # BROKER_API_KEY format: userid:::client_id (e.g., Z56004:::Z56004_U)
-    full_api_key = get_broker_api_key(account_id)
+    full_api_key = get_broker_api_key(account_id, broker="zebu")
     client_id = full_api_key.split(":::")[1]  # OAuth client_id
-    secret_key = get_broker_api_secret(account_id)
+    secret_key = get_broker_api_secret(account_id, broker="zebu")
 
     try:
         # Get the shared httpx client

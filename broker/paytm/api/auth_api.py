@@ -24,8 +24,8 @@ def authenticate_broker(request_token, account_id=None):
             - error_message: Error details if authentication fails, None on success
     """
     try:
-        BROKER_API_KEY = get_broker_api_key(account_id)
-        BROKER_API_SECRET = get_broker_api_secret(account_id)
+        BROKER_API_KEY = get_broker_api_key(account_id, broker="paytm")
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="paytm")
 
         url = "https://developer.paytmmoney.com/accounts/v2/gettoken"
         data = {

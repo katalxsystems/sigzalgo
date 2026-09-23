@@ -9,8 +9,8 @@ from utils.httpx_client import get_httpx_client
 
 def authenticate_broker(code, account_id=None):
     try:
-        BROKER_API_KEY = get_broker_api_key(account_id)
-        BROKER_API_SECRET = get_broker_api_secret(account_id)
+        BROKER_API_KEY = get_broker_api_key(account_id, broker="indmoney")
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="indmoney")
         REDIRECT_URL = get_broker_redirect_url()
 
         # For IndMoney, the access token is directly provided in BROKER_API_SECRET

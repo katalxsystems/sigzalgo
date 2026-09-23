@@ -39,7 +39,7 @@ def authenticate_broker(code, password=None, totp_code=None, account_id=None):
     """
     try:
         api_key = get_api_key()
-        secret_key = get_broker_api_secret(account_id)
+        secret_key = get_broker_api_secret(account_id, broker="tradesmart")
 
         if not api_key or not secret_key:
             return None, "BROKER_API_KEY / BROKER_API_SECRET not configured"

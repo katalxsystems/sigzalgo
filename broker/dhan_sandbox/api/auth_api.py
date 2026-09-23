@@ -23,8 +23,8 @@ def _get_app_credentials(account_id=None):
     1) api_key
     2) client_id:::api_key
     """
-    broker_api_key = get_broker_api_key(account_id)
-    broker_api_secret = get_broker_api_secret(account_id)
+    broker_api_key = get_broker_api_key(account_id, broker="dhan_sandbox")
+    broker_api_secret = get_broker_api_secret(account_id, broker="dhan_sandbox")
     dhan_client_id = None
 
     if broker_api_key and ":::" in broker_api_key:
@@ -429,7 +429,7 @@ def authenticate_broker(code, account_id=None):
     - If tokenId is passed, attempt consume-consent flow.
     """
     try:
-        env_access_token = get_broker_api_secret(account_id)
+        env_access_token = get_broker_api_secret(account_id, broker="dhan_sandbox")
 
         # Current dhan_sandbox callback flow in brlogin.py passes this value.
         if not code or code == "dhan_sandbox":

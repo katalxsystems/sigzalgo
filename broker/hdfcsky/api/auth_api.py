@@ -29,8 +29,8 @@ def authenticate_broker(request_token, account_id=None):
         (auth_token, error_message) -- exactly one of the two is set.
     """
     try:
-        api_key = get_broker_api_key(account_id)
-        api_secret = get_broker_api_secret(account_id)
+        api_key = get_broker_api_key(account_id, broker="hdfcsky")
+        api_secret = get_broker_api_secret(account_id, broker="hdfcsky")
 
         if not api_key or not api_secret:
             return None, "BROKER_API_KEY / BROKER_API_SECRET are not configured in .env"

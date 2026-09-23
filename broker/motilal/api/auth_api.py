@@ -20,7 +20,7 @@ def authenticate_broker(userid, broker_pin, totp_code, date_of_birth, account_id
     Returns:
         Tuple of (auth_token, None, error_message)
     """
-    api_key = get_broker_api_secret(account_id)
+    api_key = get_broker_api_secret(account_id, broker="motilal")
 
     try:
         # Get the shared httpx client

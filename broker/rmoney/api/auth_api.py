@@ -62,8 +62,8 @@ def get_feed_token(account_id=None):
     try:
         # Fetch credentials for feed token (per-account first, see
         # utils.config.get_broker_api_key_market's docstring)
-        BROKER_API_KEY_MARKET = get_broker_api_key_market(account_id)
-        BROKER_API_SECRET_MARKET = get_broker_api_secret_market(account_id)
+        BROKER_API_KEY_MARKET = get_broker_api_key_market(account_id, broker="rmoney")
+        BROKER_API_SECRET_MARKET = get_broker_api_secret_market(account_id, broker="rmoney")
 
         feed_payload = {
             "secretKey": BROKER_API_SECRET_MARKET,

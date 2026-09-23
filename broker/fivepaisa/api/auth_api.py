@@ -25,8 +25,8 @@ def authenticate_broker(
         Tuple[Optional[str], Optional[str]]: (access_token, error_message)
     """
     # Retrieve the BROKER_API_KEY and BROKER_API_SECRET (DB-first, .env fallback)
-    broker_api_key = get_broker_api_key(account_id)
-    api_secret = get_broker_api_secret(account_id)
+    broker_api_key = get_broker_api_key(account_id, broker="fivepaisa")
+    api_secret = get_broker_api_secret(account_id, broker="fivepaisa")
 
     if not broker_api_key or not api_secret:
         return None, "BROKER_API_KEY or BROKER_API_SECRET not found in environment variables"

@@ -15,11 +15,11 @@ def authenticate_broker(code, account_id=None):
     """
     try:
         # BROKER_API_KEY format: userid:::client_id
-        full_api_key = get_broker_api_key(account_id)
+        full_api_key = get_broker_api_key(account_id, broker="shoonya")
         if not full_api_key or ":::" not in full_api_key:
             return None, "BROKER_API_KEY must be in format userid:::client_id"
         client_id = full_api_key.split(":::")[1]  # appKey / client_id
-        secret_key = get_broker_api_secret(account_id)
+        secret_key = get_broker_api_secret(account_id, broker="shoonya")
         if not secret_key:
             return None, "BROKER_API_SECRET is required"
 

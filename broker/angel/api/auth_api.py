@@ -10,8 +10,8 @@ def authenticate_broker(clientcode, broker_pin, totp_code, account_id=None):
     """
     Authenticate with the broker and return the auth token.
     """
-    api_key = get_broker_api_key(account_id)
-    print(f"Authenticating with broker for clientcode: {clientcode}, account_id: {account_id} ,api_key: {api_key}")
+    api_key = get_broker_api_key(account_id, broker="angel")
+
     try:
         # Get the shared httpx client
         client = get_httpx_client()
