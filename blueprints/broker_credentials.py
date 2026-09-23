@@ -17,14 +17,7 @@ import re
 from flask import Blueprint, jsonify, request
 
 from database.settings_db import set_broker_settings
-from utils.config import (
-    get_broker_api_key,
-    get_broker_api_key_market,
-    get_broker_api_secret,
-    get_broker_api_secret_market,
-    get_broker_redirect_url,
-    validate_broker_api_key_format,
-)
+from utils.config import get_broker_redirect_url
 from utils.logging import get_logger
 from utils.session import admin_required, require_app_session
 
@@ -94,33 +87,6 @@ def get_env_value(key: str) -> str:
     return os.getenv(key, "")
 
 
-def mask_secret(value: str, show_chars: int = 4) -> str:
-    """Mask a secret value, showing only the first few characters.
-
-    Returns a FIXED-length output (``prefix + '*' * 8``) regardless of the
-    original secret's length. This intentionally hides the secret's true
-    length so an over-the-shoulder viewer (or a screenshot) cannot infer
-    "this is a 64-char Zerodha API secret" vs "this is a 32-char Fyers
-    secret" from the asterisk count.
-
-    The fixed-length mask also keeps the rendered value bounded so a long
-    secret (some brokers issue 80+ char tokens) cannot overflow the
-    Profile UI's column layout — the bug originally reported in the
-    Current Configuration card where the asterisks ran past the right
-    edge of the card.
-
-    For empty values, returns "" so the frontend can detect "not set" and
-    show its placeholder copy.
-    """
-    if not value:
-        return ""
-    if len(value) <= show_chars:
-        # Edge case: secret shorter than the prefix budget. Show only the
-        # mask suffix to avoid revealing the entire short value.
-        return "*" * 8
-    return value[:show_chars] + "*" * 8
-
-
 def get_broker_from_redirect_url(redirect_url: str) -> str:
     """Extract broker name from redirect URL."""
     try:
@@ -144,13 +110,10 @@ def get_credentials():
     user needs to add another account from the Profile page's Accounts tab.
     """
     try:
-        # Broker-identity fields: DB-first (Profile > Broker save), falling
-        # back to .env for installs that haven't saved via the DB-backed UI
-        # yet — same resolution utils.config uses everywhere else.
-        broker_api_key = get_broker_api_key() or ""
-        broker_api_secret = get_broker_api_secret() or ""
-        broker_api_key_market = get_broker_api_key_market() or ""
-        broker_api_secret_market = get_broker_api_secret_market() or ""
+        # Broker API keys/secrets are per-account only (see
+        # utils.config.get_broker_api_key) and deliberately not returned:
+        # any logged-in user can call this route, and an instance-wide key
+        # is some other user's app registration.
         redirect_url = get_broker_redirect_url() or ""
         valid_brokers = get_env_value("VALID_BROKERS")
         ngrok_allow = get_env_value("NGROK_ALLOW")
@@ -175,14 +138,6 @@ def get_credentials():
             {
                 "status": "success",
                 "data": {
-                    "broker_api_key": mask_secret(broker_api_key, 6),
-                    "broker_api_key_raw_length": len(broker_api_key),
-                    "broker_api_secret": mask_secret(broker_api_secret, 4),
-                    "broker_api_secret_raw_length": len(broker_api_secret),
-                    "broker_api_key_market": mask_secret(broker_api_key_market, 6),
-                    "broker_api_key_market_raw_length": len(broker_api_key_market),
-                    "broker_api_secret_market": mask_secret(broker_api_secret_market, 4),
-                    "broker_api_secret_market_raw_length": len(broker_api_secret_market),
                     "redirect_url": redirect_url,
                     "current_broker": current_broker,
                     "valid_brokers": brokers_list,
@@ -206,14 +161,14 @@ def get_credentials():
 @broker_credentials_bp.route("/credentials", methods=["POST"])
 @admin_required
 def update_credentials():
-    """Update broker credentials: broker-identity fields go to the DB
-    (immediate effect), infra fields go to .env (restart required).
+    """Update the instance's default broker (REDIRECT_URL, DB-backed,
+    immediate effect) and infra fields (.env, restart required).
 
-    Admin-only: this mutates the instance-wide default (BROKER_API_KEY/
-    SECRET/REDIRECT_URL) that every account without its own per-account
-    override falls back to, plus shared infra (.env HOST_SERVER/
-    WEBSOCKET_URL/NGROK_ALLOW). A non-admin tenant must not be able to
-    change what every other tenant's connections depend on.
+    Admin-only: shared infra (.env HOST_SERVER/WEBSOCKET_URL/NGROK_ALLOW)
+    and the redirect URL affect every tenant. Broker API keys/secrets are
+    NOT accepted here: they are per-account only (Profile > Accounts, see
+    utils.config.get_broker_api_key), because an instance-wide key would be
+    handed to other users' accounts.
     """
     try:
         # Support both JSON and form data
@@ -240,6 +195,17 @@ def update_credentials():
             websocket_url = request.form.get("websocket_url", "").strip()
             has_ngrok_key = "ngrok_allow" in request.form
 
+        if any(
+            (broker_api_key, broker_api_secret, broker_api_key_market, broker_api_secret_market)
+        ):
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": "Broker API keys are set per account in Profile > Accounts, "
+                    "not instance-wide.",
+                }
+            ), 400
+
         # Validate redirect URL format
         if redirect_url:
             if not re.match(r"^https?://.+/[^/]+/callback$", redirect_url):
@@ -265,23 +231,6 @@ def update_credentials():
                     }
                 ), 400
 
-        # Validate broker-specific API key formats (fivepaisa/flattrade/dhan
-        # pack more than one credential into a single ":::"-delimited
-        # value). Runs whenever a key is submitted, independent of whether
-        # redirect_url is also in this request -- otherwise saving just the
-        # key by itself (redirect_url already set from a prior save) would
-        # skip this check entirely. broker_name comes from redirect_url when
-        # given here, else the instance's already-configured broker.
-        if broker_api_key:
-            broker_name = (
-                get_broker_from_redirect_url(redirect_url)
-                if redirect_url
-                else get_broker_from_redirect_url(get_broker_redirect_url() or "")
-            )
-            format_error = validate_broker_api_key_format(broker_name, broker_api_key)
-            if format_error:
-                return jsonify({"status": "error", "message": format_error}), 400
-
         # Validate the infra fields up front (alongside the redirect_url
         # validation above) so nothing is persisted -- DB or .env -- if any
         # field fails validation.
@@ -306,18 +255,6 @@ def update_credentials():
         updated_fields = []
         db_kwargs = {}
 
-        if broker_api_key:
-            db_kwargs["broker_api_key"] = broker_api_key
-            updated_fields.append("BROKER_API_KEY")
-        if broker_api_secret:
-            db_kwargs["broker_api_secret"] = broker_api_secret
-            updated_fields.append("BROKER_API_SECRET")
-        if broker_api_key_market:
-            db_kwargs["broker_api_key_market"] = broker_api_key_market
-            updated_fields.append("BROKER_API_KEY_MARKET")
-        if broker_api_secret_market:
-            db_kwargs["broker_api_secret_market"] = broker_api_secret_market
-            updated_fields.append("BROKER_API_SECRET_MARKET")
         if redirect_url:
             db_kwargs["redirect_url"] = redirect_url
             updated_fields.append("REDIRECT_URL")
