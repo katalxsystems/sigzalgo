@@ -1425,6 +1425,19 @@ def get_broker_name(provided_api_key):
 
 
 def get_auth_token_broker(provided_api_key, include_feed_token=False):
+    """Resolve an API key to its account's auth token and broker, and scope the
+    current request's symbol lookups to that broker (see
+    database.broker_context). Details in _get_auth_token_broker."""
+    result = _get_auth_token_broker(provided_api_key, include_feed_token)
+    broker = result[-1] if result else None
+    if broker:
+        from database.broker_context import set_request_broker
+
+        set_request_broker(broker)
+    return result
+
+
+def _get_auth_token_broker(provided_api_key, include_feed_token=False):
     """
     Get auth token, feed token (optional) and broker for a valid API key with caching.
 

@@ -3,7 +3,7 @@ import os
 import re
 import time
 from datetime import date, datetime
-from threading import Thread
+from threading import Lock, Thread
 
 import pytz
 from flask import current_app as app
@@ -11,10 +11,10 @@ from flask import jsonify, redirect, request, session, url_for
 
 from database.auth_db import get_feed_token as db_get_feed_token
 from database.auth_db import upsert_auth
+from database.broker_context import broker_scope, invalidate_present_brokers
 from database.master_contract_status_db import (
     get_exchange_stats_from_db,
     get_last_download_time,
-    get_last_downloaded_broker,
     init_broker_status,
     mark_status_ready_without_download,
     update_download_stats,
@@ -98,10 +98,9 @@ def should_download_master_contract(broker):
     if last_download is None:
         return True, "No previous download found"
 
-    # Check if a different broker downloaded more recently (symtoken has stale data)
-    last_broker = get_last_downloaded_broker()
-    if last_broker and last_broker != broker:
-        return True, f"Broker changed from {last_broker} to {broker}, symtoken needs refresh"
+    # No "a different broker downloaded since" rule: symtoken keeps each
+    # broker's rows separately (SymToken.broker), so another broker's
+    # download never invalidates this one's.
 
     # Get cutoff time and reference timezone for this broker
     cutoff_hour, cutoff_minute, tz = get_master_contract_cutoff(broker)
@@ -137,6 +136,12 @@ def should_download_master_contract(broker):
 
 
 def load_existing_master_contract(broker):
+    """Load ``broker``'s existing master contract; see _load_existing_master_contract."""
+    with broker_scope(broker):
+        return _load_existing_master_contract(broker)
+
+
+def _load_existing_master_contract(broker):
     """
     Load existing master contract data without re-downloading.
 
@@ -268,13 +273,41 @@ def mask_api_credential(credential, show_chars=4):
     return credential[:show_chars] + "*" * 8
 
 
+# One lock per broker: two users of the same broker logging in together must
+# not both delete and re-insert that broker's rows. Bounded by the number of
+# broker plugins.
+_download_locks: dict[str, Lock] = {}
+_download_locks_guard = Lock()
+
+
+def _download_lock(broker):
+    with _download_locks_guard:
+        return _download_locks.setdefault(broker, Lock())
+
+
 def async_master_contract_download(broker):
     """
     Asynchronously download the master contract and emit a WebSocket event upon completion,
     with the 'broker' parameter specifying the broker for which to download the contract.
 
-    Tracks download duration and exchange-wise statistics for smart download feature.
+    Runs inside broker_scope(broker), so the plugin's delete/insert and every
+    lookup below touch only this broker's symtoken rows. Skips (returns None)
+    when the same broker's download is already running.
     """
+    lock = _download_lock(broker)
+    if not lock.acquire(blocking=False):
+        logger.info(f"Master contract download for {broker} already in progress; skipping")
+        return None
+    try:
+        with broker_scope(broker):
+            return _async_master_contract_download(broker)
+    finally:
+        invalidate_present_brokers()
+        lock.release()
+
+
+def _async_master_contract_download(broker):
+    """Tracks download duration and exchange-wise statistics for smart download feature."""
     start_time = time.time()
 
     # Update status to downloading
@@ -314,7 +347,7 @@ def async_master_contract_download(broker):
 
         # Calculate download duration and get exchange stats
         duration_seconds = int(time.time() - start_time)
-        exchange_stats = get_exchange_stats_from_db()
+        exchange_stats = get_exchange_stats_from_db(broker)
 
         # Update download statistics for smart download tracking
         update_download_stats(broker, duration_seconds, exchange_stats)

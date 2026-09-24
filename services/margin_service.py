@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from database.apilog_db import async_log_order, executor
 from database.auth_db import get_auth_token_broker
+from database.broker_context import scoped_to_broker_arg
 from utils.constants import VALID_ACTIONS, VALID_EXCHANGES, VALID_PRICE_TYPES, VALID_PRODUCT_TYPES
 from utils.logging import get_logger
 
@@ -14,6 +15,7 @@ logger = get_logger(__name__)
 REQUIRED_POSITION_FIELDS = ["exchange", "symbol", "action", "quantity", "product", "pricetype"]
 
 
+@scoped_to_broker_arg
 def import_broker_module(broker_name: str) -> Any | None:
     """
     Dynamically import the broker-specific margin API module.
@@ -151,6 +153,7 @@ def validate_margin_data(
     return True, validated_positions, None
 
 
+@scoped_to_broker_arg
 def calculate_margin_with_auth(
     positions: list[dict[str, Any]], auth_token: str, broker: str, original_data: dict[str, Any]
 ) -> tuple[bool, dict[str, Any], int]:
@@ -228,6 +231,7 @@ def calculate_margin_with_auth(
         return False, error_response, status_code if status_code != 200 else 500
 
 
+@scoped_to_broker_arg
 def calculate_margin(
     margin_data: dict[str, Any],
     api_key: str | None = None,

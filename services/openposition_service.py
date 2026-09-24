@@ -5,6 +5,7 @@ from database.analyzer_db import async_log_analyzer
 from database.apilog_db import async_log_order
 from database.apilog_db import executor as log_executor
 from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from extensions import socketio
 from utils.logging import get_logger
@@ -43,6 +44,7 @@ def emit_analyzer_error(request_data: dict[str, Any], error_message: str) -> dic
     return error_response
 
 
+@scoped_to_broker_arg
 def get_open_position_with_auth(
     position_data: dict[str, Any], auth_token: str, broker: str, original_data: dict[str, Any]
 ) -> tuple[bool, dict[str, Any], int]:
@@ -164,6 +166,7 @@ def get_open_position_with_auth(
         return False, error_response, 500
 
 
+@scoped_to_broker_arg
 def get_open_position(
     position_data: dict[str, Any],
     api_key: str | None = None,

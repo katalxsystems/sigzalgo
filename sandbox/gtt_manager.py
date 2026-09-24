@@ -31,6 +31,7 @@ from decimal import Decimal
 
 from sqlalchemy import select, update
 
+from database.broker_context import scoped_to_account_broker
 from database.sandbox_db import (
     SandboxGTT,
     SandboxGTTLeg,
@@ -146,6 +147,7 @@ def leg_is_triggered_by(direction: str, trigger_price, ltp) -> bool:
     return price <= trigger
 
 
+@scoped_to_account_broker
 class GTTManager:
     """Owns the sandbox GTT lifecycle for one user."""
 

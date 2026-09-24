@@ -1,11 +1,30 @@
 import os
 from typing import List
 
-from sqlalchemy import Column, Float, Index, Integer, Sequence, String, and_, create_engine, or_
+from sqlalchemy import (
+    Column,
+    Float,
+    Index,
+    Integer,
+    Sequence,
+    String,
+    and_,
+    event,
+    inspect,
+    or_,
+    text,
+)
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import scoped_session, sessionmaker
-from sqlalchemy.pool import NullPool
+from sqlalchemy.orm import Session, scoped_session, sessionmaker, with_loader_criteria
 
+from database.broker_context import (
+    BrokerContextMissing,
+    current_broker,
+    invalidate_present_brokers,
+    present_brokers,
+    require_broker,
+)
+from database.engine_factory import create_db_engine
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -16,23 +35,29 @@ def _escape_like(term: str) -> str:
     return term.replace("%", r"\%").replace("_", r"\_")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-# Conditionally create engine based on DB type
-if DATABASE_URL and "sqlite" in DATABASE_URL:
-    # SQLite: Use NullPool to prevent connection pool exhaustion
-    engine = create_engine(
-        DATABASE_URL, poolclass=NullPool, connect_args={"check_same_thread": False}
-    )
-else:
-    # For other databases like PostgreSQL, use connection pooling
-    engine = create_engine(DATABASE_URL, pool_size=50, max_overflow=100, pool_timeout=10)
+# The one engine/session/model for symtoken. Every broker plugin's
+# master_contract_db imports these instead of declaring its own copy, so the
+# broker scoping below applies to all of them.
+engine = create_db_engine(DATABASE_URL)
 db_session = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=engine))
 Base = declarative_base()
 Base.query = db_session.query_property()
 
 
+def _broker_for_insert():
+    # Stamped on every inserted row: the broker whose master contract is
+    # being downloaded (broker_scope in utils.auth_utils, or the calling
+    # plugin's own package).
+    return require_broker()
+
+
 class SymToken(Base):
     __tablename__ = "symtoken"
     id = Column(Integer, Sequence("symtoken_id_seq"), primary_key=True)
+    # Which broker's master contract this row belongs to. token/brsymbol/
+    # brexchange are broker-specific, so several brokers' rows coexist and
+    # every query is scoped to one broker (see _scope_symtoken_to_broker).
+    broker = Column(String(32), nullable=False, default=_broker_for_insert)
     symbol = Column(String, nullable=False, index=True)
     brsymbol = Column(String, nullable=False, index=True)
     name = Column(String)
@@ -51,6 +76,48 @@ class SymToken(Base):
         Index("idx_symbol_exchange", "symbol", "exchange"),
         Index("idx_symbol_name", "symbol", "name"),
         Index("idx_brsymbol_exchange", "brsymbol", "exchange"),
+        Index("idx_symtoken_broker_symbol_exchange", "broker", "symbol", "exchange"),
+        Index("idx_symtoken_broker_token_exchange", "broker", "token", "exchange"),
+        Index("idx_symtoken_broker_brsymbol_exchange", "broker", "brsymbol", "exchange"),
+    )
+
+
+_SYMTOKEN_MAPPER = SymToken.__mapper__
+
+
+@event.listens_for(Session, "do_orm_execute")
+def _scope_symtoken_to_broker(state):
+    """Add ``WHERE symtoken.broker = <current broker>`` to every ORM SELECT,
+    UPDATE and DELETE that touches SymToken, from any session.
+
+    This is what keeps each broker plugin's existing download code
+    (``SymToken.query.delete()``, its "skip tokens that already exist"
+    check) and every lookup confined to one broker's rows. Opt out with
+    ``.execution_options(all_brokers=True)`` for deliberate cross-broker
+    work (migrations, per-broker counts).
+    """
+    if not (state.is_select or state.is_update or state.is_delete):
+        return
+    if state.is_column_load or state.is_relationship_load:
+        return
+    if state.execution_options.get("all_brokers"):
+        return
+    try:
+        if _SYMTOKEN_MAPPER not in state.all_mappers:
+            return
+    except Exception:
+        return
+    broker = current_broker()
+    if broker is None:
+        if len(present_brokers()) > 1:
+            raise BrokerContextMissing(
+                "SymToken query without a broker on an instance holding several "
+                "brokers' master contracts. Pass broker=..., or run it inside "
+                "broker_scope(broker)."
+            )
+        return
+    state.statement = state.statement.options(
+        with_loader_criteria(SymToken, lambda cls: cls.broker == broker, include_aliases=True)
     )
 
 
@@ -125,6 +192,8 @@ def enhanced_search_symbols(
             results = final_query.all()
         return results
 
+    except BrokerContextMissing:
+        raise
     except Exception as e:
         logger.exception(f"Error in enhanced search: {str(e)}")
         return []
@@ -280,6 +349,8 @@ def fno_search_symbols_db(
 
         return results_dicts
 
+    except BrokerContextMissing:
+        raise
     except Exception as e:
         logger.exception(f"Error in FNO search: {str(e)}")
         return []
@@ -330,6 +401,8 @@ def get_distinct_expiries(exchange: str = None, underlying: str = None) -> list[
         expiries.sort(key=parse_expiry)
         return expiries
 
+    except BrokerContextMissing:
+        raise
     except Exception as e:
         logger.exception(f"Error fetching distinct expiries: {str(e)}")
         return []
@@ -361,6 +434,8 @@ def get_distinct_underlyings(exchange: str = None) -> list[str]:
         underlyings = sorted([r[0] for r in results if r[0]])
         return underlyings
 
+    except BrokerContextMissing:
+        raise
     except Exception as e:
         logger.exception(f"Error fetching distinct underlyings: {str(e)}")
         return []
@@ -370,8 +445,61 @@ def init_db():
     """Initialize the master contract database tables.
 
     Creates the ``symtoken`` table if it does not already exist,
-    using the shared ``db_init_helper`` for consistent startup logging.
+    using the shared ``db_init_helper`` for consistent startup logging,
+    then brings an existing table up to the per-broker schema.
     """
     from database.db_init_helper import init_db_with_logging
 
     init_db_with_logging(Base, engine, "Master Contract DB", logger)
+    ensure_broker_column()
+
+
+def ensure_broker_column() -> bool:
+    """Idempotently migrate an existing symtoken table to per-broker rows.
+
+    Adds the ``broker`` column, backfills it with the broker whose contract
+    the table currently holds (the most recent successful download -- before
+    this change the table only ever held one broker), and creates the
+    composite indexes. Rows whose broker can't be determined are deleted;
+    that broker's next login re-downloads them. Also run by
+    upgrade/migrate_symtoken_broker.py.
+    """
+    try:
+        insp = inspect(engine)
+        if "symtoken" not in insp.get_table_names():
+            return True
+        columns = {c["name"] for c in insp.get_columns("symtoken")}
+        if "broker" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE symtoken ADD COLUMN broker VARCHAR(32)"))
+            logger.info("Added symtoken.broker column")
+
+        with engine.begin() as conn:
+            unassigned = conn.execute(
+                text("SELECT COUNT(*) FROM symtoken WHERE broker IS NULL")
+            ).scalar()
+        if unassigned:
+            from database.master_contract_status_db import get_last_downloaded_broker
+
+            owner = get_last_downloaded_broker()
+            with engine.begin() as conn:
+                if owner:
+                    conn.execute(
+                        text("UPDATE symtoken SET broker = :b WHERE broker IS NULL"), {"b": owner}
+                    )
+                    logger.info(f"Assigned {unassigned} existing symtoken rows to broker {owner!r}")
+                else:
+                    conn.execute(text("DELETE FROM symtoken WHERE broker IS NULL"))
+                    logger.warning(
+                        f"Deleted {unassigned} symtoken rows with no known broker; "
+                        "they are re-downloaded at that broker's next login"
+                    )
+
+        for index in SymToken.__table__.indexes:
+            if index.name and index.name.startswith("idx_symtoken_broker_"):
+                index.create(bind=engine, checkfirst=True)
+        invalidate_present_brokers()
+        return True
+    except Exception:
+        logger.exception("Error migrating symtoken to per-broker rows")
+        return False

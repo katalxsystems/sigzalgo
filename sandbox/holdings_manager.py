@@ -20,6 +20,7 @@ import pytz
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from database.broker_context import scoped_to_account_broker
 from database.sandbox_db import SandboxHoldings, SandboxPositions, db_session
 from services.quotes_service import get_multiquotes, get_quotes
 from utils.logging import get_logger
@@ -27,6 +28,7 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+@scoped_to_account_broker
 class HoldingsManager:
     """Manages holdings and T+1 settlement"""
 

@@ -18,6 +18,7 @@ import dataclasses
 from datetime import date, datetime
 from typing import Any
 
+from database.broker_context import scoped_to_broker_arg
 from portfolio.costs import CostSchedule, schedule_for
 from portfolio.data import (
     BENCHMARK_EXCHANGES,
@@ -110,6 +111,7 @@ def list_frequencies() -> tuple[bool, dict[str, Any], int]:
     }, 200
 
 
+@scoped_to_broker_arg
 def run_sip_backtest(
     symbol: str,
     exchange: str,

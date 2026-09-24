@@ -328,7 +328,11 @@ def broker_postback(broker: str):
         return jsonify({"status": "error", "message": "Checksum validation failed"}), 403
 
     try:
-        fields = _NORMALIZERS[broker](data)
+        # Symbol mapping must use this broker's master contract.
+        from database.broker_context import broker_scope
+
+        with broker_scope(broker):
+            fields = _NORMALIZERS[broker](data)
     except Exception:
         logger.exception(f"Postback normalization failed for {broker}")
         return jsonify({"status": "error", "message": "Payload normalization failed"}), 400

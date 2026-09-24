@@ -5,6 +5,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, OrderFailedEvent, SplitCompletedEvent
 from utils.constants import (
@@ -66,6 +67,7 @@ def emit_analyzer_error(request_data: dict[str, Any], error_message: str) -> dic
     return error_response
 
 
+@scoped_to_broker_arg
 def import_broker_module(broker_name: str) -> Any | None:
     """
     Dynamically import the broker-specific order API module.
@@ -140,6 +142,7 @@ def place_single_order(
         }
 
 
+@scoped_to_broker_arg
 def split_order_with_auth(
     split_data: dict[str, Any], auth_token: str, broker: str, original_data: dict[str, Any]
 ) -> tuple[bool, dict[str, Any], int]:
@@ -416,6 +419,7 @@ def split_order_with_auth(
     return True, response_data, 200
 
 
+@scoped_to_broker_arg
 def split_order(
     split_data: dict[str, Any],
     api_key: str | None = None,

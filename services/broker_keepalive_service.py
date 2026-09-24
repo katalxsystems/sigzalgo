@@ -28,6 +28,7 @@ from datetime import datetime
 
 import pytz
 
+from database.broker_context import scoped_to_broker_arg
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -77,6 +78,7 @@ def _in_market_window():
     return _WINDOW_START <= minutes <= _WINDOW_END
 
 
+@scoped_to_broker_arg
 def _resolve_base_url(broker):
     """Return the broker's API origin from broker.{broker}.api.baseurl, if it exists."""
     if not broker:
@@ -106,6 +108,7 @@ def _get_active_broker():
         db_session.remove()
 
 
+@scoped_to_broker_arg
 def _warm_broker_modules(broker):
     """Pre-import the broker's order hot-path modules.
 

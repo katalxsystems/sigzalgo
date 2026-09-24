@@ -15,6 +15,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, OptionsOrderCompletedEvent
 from services.option_symbol_service import get_option_symbol
@@ -40,6 +41,7 @@ def get_order_rate_limit():
         return 0.1  # Default 100ms delay
 
 
+@scoped_to_broker_arg
 def place_single_split_order(
     order_data: dict[str, Any],
     api_key: str,
@@ -97,6 +99,7 @@ def place_single_split_order(
         }
 
 
+@scoped_to_broker_arg
 def place_options_order(
     options_data: dict[str, Any],
     api_key: str | None = None,

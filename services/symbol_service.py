@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional, Tuple
 from sqlalchemy.orm.exc import NoResultFound
 
 from database.auth_db import get_auth_token_broker
+from database.broker_context import scoped_to_broker_arg
 from database.symbol import SymToken, db_session
 from utils.logging import get_logger
 
@@ -10,6 +11,7 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+@scoped_to_broker_arg
 def get_symbol_info_with_auth(
     symbol: str, exchange: str, auth_token: str, broker: str
 ) -> tuple[bool, dict[str, Any], int]:
@@ -82,6 +84,7 @@ def get_symbol_info_with_auth(
         return False, error_response, 500
 
 
+@scoped_to_broker_arg
 def get_symbol_info(
     symbol: str,
     exchange: str,

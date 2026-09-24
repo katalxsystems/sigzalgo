@@ -22,6 +22,7 @@ import pytz
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from database.broker_context import scoped_to_account_broker
 from database.sandbox_db import SandboxOrders, SandboxPositions, SandboxTrades, db_session
 from database.symbol import SymToken
 from database.token_db import get_symbol_info
@@ -33,6 +34,7 @@ from utils.symbol_utils import is_future, is_option
 logger = get_logger(__name__)
 
 
+@scoped_to_account_broker
 class OrderManager:
     """Manages sandbox orders for sandbox mode"""
 
