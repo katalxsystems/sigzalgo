@@ -3,6 +3,7 @@ import importlib
 from typing import Any, Dict, Optional, Tuple
 
 from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, OrderFailedEvent, OrderPlacedEvent
 from restx_api.schemas import OrderSchema
@@ -23,6 +24,7 @@ logger = get_logger(__name__)
 order_schema = OrderSchema()
 
 
+@scoped_to_broker_arg
 def import_broker_module(broker_name: str) -> Any | None:
     """
     Dynamically import the broker-specific order API module.
@@ -114,6 +116,7 @@ def validate_order_data(data: dict[str, Any]) -> tuple[bool, dict[str, Any] | No
         return False, None, str(err)
 
 
+@scoped_to_broker_arg
 def place_order_with_auth(
     order_data: dict[str, Any],
     auth_token: str,
@@ -257,6 +260,7 @@ def place_order_with_auth(
         return False, error_response, res.status if res.status != 200 else 500
 
 
+@scoped_to_broker_arg
 def place_order(
     order_data: dict[str, Any],
     api_key: str | None = None,

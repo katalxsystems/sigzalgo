@@ -23,7 +23,13 @@ from flask import (
 )
 from flask_wtf.csrf import generate_csrf
 
-from database.auth_db import auth_cache, feed_token_cache, log_login_attempt, upsert_api_key, upsert_auth
+from database.auth_db import (
+    auth_cache,
+    feed_token_cache,
+    log_login_attempt,
+    upsert_api_key,
+    upsert_auth,
+)
 from database.settings_db import get_smtp_settings, set_smtp_settings
 from database.user_db import (  # Import the function
     User,
@@ -1533,8 +1539,8 @@ def logout():
         try:
             from database.master_contract_cache_hook import clear_cache_on_logout
 
-            clear_cache_on_logout()
-            logger.info("Cleared symbol cache on logout")
+            clear_cache_on_logout(account_id)
+            logger.info("Released symbol caches no longer in use")
         except Exception as cache_error:
             logger.exception(f"Error clearing symbol cache on logout: {cache_error}")
 

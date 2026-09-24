@@ -2,12 +2,14 @@ import importlib
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from database.auth_db import get_auth_token_broker
+from database.broker_context import scoped_to_broker_arg
 from utils.logging import get_logger
 
 # Initialize logger
 logger = get_logger(__name__)
 
 
+@scoped_to_broker_arg
 def import_broker_module(broker_name: str) -> Any | None:
     """
     Dynamically import the broker-specific data module.
@@ -27,6 +29,7 @@ def import_broker_module(broker_name: str) -> Any | None:
         return None
 
 
+@scoped_to_broker_arg
 def get_intervals_with_auth(auth_token: str, broker: str) -> tuple[bool, dict[str, Any], int]:
     """
     Get supported intervals for the broker using provided auth token.
@@ -83,6 +86,7 @@ def get_intervals_with_auth(auth_token: str, broker: str) -> tuple[bool, dict[st
         return False, {"status": "error", "message": str(e)}, 500
 
 
+@scoped_to_broker_arg
 def get_intervals(
     api_key: str | None = None, auth_token: str | None = None, broker: str | None = None
 ) -> tuple[bool, dict[str, Any], int]:

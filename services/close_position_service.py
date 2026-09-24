@@ -3,6 +3,7 @@ import importlib
 from typing import Any, Dict, Optional, Tuple
 
 from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, PositionClosedEvent
 from utils.event_bus import bus
@@ -42,6 +43,7 @@ def emit_analyzer_error(request_data: dict[str, Any], error_message: str) -> dic
     return error_response
 
 
+@scoped_to_broker_arg
 def import_broker_module(broker_name: str) -> Any | None:
     """
     Dynamically import the broker-specific order API module.
@@ -61,6 +63,7 @@ def import_broker_module(broker_name: str) -> Any | None:
         return None
 
 
+@scoped_to_broker_arg
 def close_position_with_auth(
     position_data: dict[str, Any], auth_token: str, broker: str, original_data: dict[str, Any]
 ) -> tuple[bool, dict[str, Any], int]:
@@ -185,6 +188,7 @@ def close_position_with_auth(
         return False, error_response, status_code
 
 
+@scoped_to_broker_arg
 def close_position(
     position_data: dict[str, Any] = None,
     api_key: str | None = None,

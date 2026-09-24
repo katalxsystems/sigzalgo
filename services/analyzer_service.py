@@ -5,6 +5,7 @@ from database.analyzer_db import AnalyzerLog, db_session
 from database.apilog_db import async_log_order
 from database.apilog_db import executor as log_executor
 from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode, set_analyze_mode
 from utils.logging import get_logger
 
@@ -12,6 +13,7 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+@scoped_to_broker_arg
 def get_analyzer_status_with_auth(
     analyzer_data: dict[str, Any], auth_token: str, broker: str, original_data: dict[str, Any]
 ) -> tuple[bool, dict[str, Any], int]:
@@ -61,6 +63,7 @@ def get_analyzer_status_with_auth(
         return False, error_response, 500
 
 
+@scoped_to_broker_arg
 def toggle_analyzer_mode_with_auth(
     analyzer_data: dict[str, Any], auth_token: str, broker: str, original_data: dict[str, Any]
 ) -> tuple[bool, dict[str, Any], int]:
@@ -134,6 +137,7 @@ def toggle_analyzer_mode_with_auth(
         return False, error_response, 500
 
 
+@scoped_to_broker_arg
 def get_analyzer_status(
     analyzer_data: dict[str, Any],
     api_key: str | None = None,
@@ -186,6 +190,7 @@ def get_analyzer_status(
         return False, error_response, 400
 
 
+@scoped_to_broker_arg
 def toggle_analyzer_mode(
     analyzer_data: dict[str, Any],
     api_key: str | None = None,

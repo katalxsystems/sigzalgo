@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from datetime import datetime, date, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import Boolean, Column, Date, DateTime, Integer, String, Text, text
 from sqlalchemy.ext.declarative import declarative_base
@@ -229,8 +229,9 @@ def get_last_download_time(broker):
 def get_last_downloaded_broker():
     """Get the broker that most recently downloaded master contracts successfully.
 
-    Since the symtoken table is shared (no broker column), only the most recent
-    broker's data is valid. This helps detect broker switches that require re-download.
+    Only used by database.symbol.ensure_broker_column: before symtoken had a
+    broker column it held just this broker's rows, so the one-time backfill
+    assigns them to it. Download decisions are per broker and don't use it.
     """
     session = SessionLocal()
     try:
@@ -290,19 +291,23 @@ def mark_status_ready_without_download(broker):
         session.close()
 
 
-def get_exchange_stats_from_db():
-    """Get exchange-wise symbol counts from symtoken table"""
+def get_exchange_stats_from_db(broker):
+    """Get exchange-wise symbol counts for one broker's rows in symtoken"""
     try:
-        # Query symtoken table directly using raw SQL
+        # Raw SQL bypasses the ORM broker scoping, so filter explicitly.
         with engine.connect() as conn:
-            result = conn.execute(text("""
+            result = conn.execute(
+                text("""
                 SELECT
                     exchange,
                     COUNT(*) as total
                 FROM symtoken
+                WHERE broker = :broker
                 GROUP BY exchange
                 ORDER BY total DESC
-            """)).fetchall()
+            """),
+                {"broker": broker},
+            ).fetchall()
 
             stats = {}
             for row in result:

@@ -12,6 +12,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, MultiOrderCompletedEvent
 from services.option_symbol_service import get_option_symbol, parse_underlying_symbol
@@ -130,6 +131,7 @@ def emit_analyzer_error(request_data: dict[str, Any], error_message: str) -> dic
     return error_response
 
 
+@scoped_to_broker_arg
 def place_single_split_order_for_leg(
     order_data: dict[str, Any],
     api_key: str,
@@ -190,6 +192,7 @@ def place_single_split_order_for_leg(
         }
 
 
+@scoped_to_broker_arg
 def resolve_and_place_leg(
     leg_data: dict[str, Any],
     common_data: dict[str, Any],
@@ -419,6 +422,7 @@ def resolve_and_place_leg(
         }
 
 
+@scoped_to_broker_arg
 def process_multiorder_with_auth(
     multiorder_data: dict[str, Any],
     auth_token: str,
@@ -578,6 +582,7 @@ def process_multiorder_with_auth(
     return True, response_data, 200
 
 
+@scoped_to_broker_arg
 def place_options_multiorder(
     multiorder_data: dict[str, Any],
     api_key: str | None = None,

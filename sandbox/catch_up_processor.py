@@ -89,8 +89,12 @@ def catch_up_mis_squareoff():
                     settlement_price = avg_price
 
                 # Calculate realized P&L (apply contract_value for crypto, e.g. 0.01 for ETHUSD.P)
+                from database.broker_context import broker_for_account
                 from database.token_db import get_symbol_info as _get_sym_info
-                _sym_cv = _get_sym_info(symbol, position.exchange)
+                # This account's own broker's contract (background: no request).
+                _sym_cv = _get_sym_info(
+                    symbol, position.exchange, broker=broker_for_account(user_id)
+                )
                 _cv = Decimal(str(_sym_cv.contract_value)) if _sym_cv and _sym_cv.contract_value else Decimal("1.0")
                 if quantity > 0:
                     realized_pnl = (settlement_price - avg_price) * Decimal(str(quantity)) * _cv

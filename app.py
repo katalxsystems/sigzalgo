@@ -510,6 +510,36 @@ def create_app():
             app.db_ready.wait(timeout=30)
 
     @app.before_request
+    def record_symtoken_broker():
+        """Scope this request's symbol lookups to the serving account's broker.
+
+        Logged-in UI requests use the session's broker. /api/ requests use the
+        API key's account, resolved up front so services that look symbols up
+        before they authenticate still get the right broker's contract
+        (get_auth_token_broker is cached and records the broker itself).
+        """
+        from flask import request, session
+
+        from database.broker_context import set_request_broker
+
+        if session.get("logged_in"):
+            set_request_broker(session.get("broker"))
+
+        if request.path.startswith("/api/"):
+            api_key = request.headers.get("X-API-KEY") or request.args.get("apikey")
+            if not api_key and request.is_json:
+                body = request.get_json(silent=True)
+                if isinstance(body, dict):
+                    api_key = body.get("apikey")
+            if api_key and isinstance(api_key, str):
+                try:
+                    from database.auth_db import get_auth_token_broker
+
+                    get_auth_token_broker(api_key)
+                except Exception:
+                    logger.exception("Could not resolve broker for API request")
+
+    @app.before_request
     def check_session_expiry():
         """Check session validity before each request"""
         from flask import request

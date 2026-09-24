@@ -34,7 +34,7 @@ def load_symbols_to_cache(broker: str) -> bool:
 
         if success:
             load_time = time.time() - start_time
-            stats = get_cache_stats()
+            stats = get_cache_stats(broker)
 
             logger.info(
                 f"Successfully loaded {stats['total_symbols']} symbols into cache "
@@ -109,22 +109,31 @@ def hook_into_master_contract_download(broker: str):
         logger.exception(f"Error in master contract cache hook: {e}")
 
 
-def clear_cache_on_logout():
+def clear_cache_on_logout(account_id: str | None = None):
     """
-    Clear the cache when user logs out or session expires
-    This helps free memory and ensures fresh data on next login
+    Free symbol caches no connected account needs any more.
+
+    The caches are shared by every user of the same broker, so one user's
+    logout must not empty them for everyone else. A broker's cache is
+    dropped only when no other non-revoked account (``account_id`` is the
+    one logging out) is still on that broker.
     """
     try:
-        from database.token_db_enhanced import clear_cache, get_cache_stats
+        from database.auth_db import Auth
+        from database.token_db_enhanced import clear_cache, get_cache_stats, loaded_brokers
 
-        # Get stats before clearing
-        stats = get_cache_stats()
-        symbols_cleared = stats.get("total_symbols", 0)
-
-        # Clear the cache
-        clear_cache()
-
-        logger.info(f"Cache cleared. Removed {symbols_cleared} symbols from memory")
+        for broker in loaded_brokers():
+            query = Auth.query.filter_by(broker=broker, is_revoked=False)
+            if account_id:
+                query = query.filter(Auth.name != account_id)
+            if query.first() is not None:
+                continue
+            symbols_cleared = get_cache_stats(broker).get("total_symbols", 0)
+            clear_cache(broker)
+            logger.info(
+                f"Cache cleared for {broker} (no connected accounts left). "
+                f"Removed {symbols_cleared} symbols from memory"
+            )
 
     except Exception as e:
         logger.exception(f"Error clearing cache on logout: {e}")
@@ -141,7 +150,7 @@ def refresh_cache_if_needed(broker: str):
     try:
         from database.token_db_enhanced import get_cache
 
-        cache = get_cache()
+        cache = get_cache(broker)
 
         # Check if cache is valid
         if not cache.is_cache_valid():
@@ -154,9 +163,12 @@ def refresh_cache_if_needed(broker: str):
         logger.exception(f"Error checking cache validity: {e}")
 
 
-def get_cache_health() -> dict:
+def get_cache_health(broker: str | None = None) -> dict:
     """
     Get cache health information for monitoring
+
+    For one broker when it can be resolved; otherwise per loaded broker
+    under ``brokers``, with the worst score as the overall one.
 
     Returns:
         dict: Cache health metrics
@@ -164,7 +176,17 @@ def get_cache_health() -> dict:
     try:
         from database.token_db_enhanced import get_cache_stats
 
-        stats = get_cache_stats()
+        stats = get_cache_stats(broker)
+        if "brokers" in stats:
+            per_broker = {b: get_cache_health(b) for b in stats["brokers"]}
+            worst = min((h.get("health_score", 0) for h in per_broker.values()), default=0)
+            return {
+                "health_score": worst,
+                "status": "healthy" if worst >= 75 else "degraded" if worst >= 50 else "unhealthy",
+                "cache_loaded": stats["cache_loaded"],
+                "total_symbols": stats["total_symbols"],
+                "brokers": per_broker,
+            }
 
         # Calculate health score
         hit_rate = float(stats["stats"]["hit_rate"].rstrip("%"))

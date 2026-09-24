@@ -66,7 +66,7 @@ def get_cache_status():
     try:
         from database.token_db_enhanced import get_cache_stats
 
-        cache_info = get_cache_stats()
+        cache_info = get_cache_stats(session.get("broker"))
         return jsonify(cache_info), 200
 
     except ImportError:
@@ -86,7 +86,7 @@ def get_cache_health():
     try:
         from database.master_contract_cache_hook import get_cache_health
 
-        health_info = get_cache_health()
+        health_info = get_cache_health(session.get("broker"))
         return jsonify(health_info), 200
 
     except ImportError:
@@ -147,7 +147,7 @@ def clear_cache():
     try:
         from database.token_db_enhanced import clear_cache as clear_symbol_cache
 
-        clear_symbol_cache()
+        clear_symbol_cache(session.get("broker"))
 
         return jsonify({"status": "success", "message": "Cache cleared successfully"}), 200
 

@@ -2,6 +2,7 @@ import importlib
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from database.auth_db import get_auth_token_broker
+from database.broker_context import scoped_to_broker_arg
 from utils.logging import get_logger
 
 # Initialize logger
@@ -40,6 +41,7 @@ def format_trade_data(trade_data):
     return trade_data
 
 
+@scoped_to_broker_arg
 def import_broker_module(broker_name: str) -> dict[str, Any] | None:
     """
     Dynamically import the broker-specific tradebook modules.
@@ -65,6 +67,7 @@ def import_broker_module(broker_name: str) -> dict[str, Any] | None:
         return None
 
 
+@scoped_to_broker_arg
 def get_tradebook_with_auth(
     auth_token: str, broker: str, original_data: dict[str, Any] = None
 ) -> tuple[bool, dict[str, Any], int]:
@@ -135,6 +138,7 @@ def get_tradebook_with_auth(
         return False, {"status": "error", "message": str(e)}, 500
 
 
+@scoped_to_broker_arg
 def get_tradebook(
     api_key: str | None = None, auth_token: str | None = None, broker: str | None = None
 ) -> tuple[bool, dict[str, Any], int]:

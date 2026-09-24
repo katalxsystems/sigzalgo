@@ -2,6 +2,7 @@ import importlib
 from typing import Any, Dict, List, Optional, Tuple
 
 from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from utils.logging import get_logger
 
@@ -10,6 +11,7 @@ logger = get_logger(__name__)
 API_TYPE = "gttorderbook"
 
 
+@scoped_to_broker_arg
 def import_broker_gtt_module(broker_name: str) -> Any | None:
     try:
         return importlib.import_module(f"broker.{broker_name}.api.gtt_api")
@@ -18,6 +20,7 @@ def import_broker_gtt_module(broker_name: str) -> Any | None:
         return None
 
 
+@scoped_to_broker_arg
 def get_gtt_orderbook_with_auth(
     auth_token: str, broker: str, original_data: dict[str, Any] | None = None
 ) -> tuple[bool, dict[str, Any], int]:
@@ -56,6 +59,7 @@ def get_gtt_orderbook_with_auth(
     return True, response_data, 200
 
 
+@scoped_to_broker_arg
 def get_gtt_orderbook(
     api_key: str | None = None,
     auth_token: str | None = None,

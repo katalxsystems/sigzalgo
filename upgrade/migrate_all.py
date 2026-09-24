@@ -75,6 +75,7 @@ MIGRATIONS = [
     ("migrate_account_analyze_mode.py", "Per-Account Analyzer Mode"),
     ("migrate_broker_credentials_market.py", "Per-Account Market-Data Credentials"),
     ("migrate_menu_visibility.py", "Profile Menu Visibility Settings"),
+    ("migrate_symtoken_broker.py", "Per-Broker Master Contracts (symtoken.broker)"),
 ]
 
 

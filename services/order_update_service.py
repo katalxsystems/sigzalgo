@@ -29,6 +29,7 @@ import importlib
 import os
 import threading
 
+from database.broker_context import scoped_to_broker_arg
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -88,6 +89,7 @@ def _order_updates_enabled() -> bool:
     return os.getenv("ORDER_UPDATES_ENABLED", "TRUE").upper() != "FALSE"
 
 
+@scoped_to_broker_arg
 def _build_adapter(account_id: str, broker: str):
     broker = (broker or "").lower()
 
@@ -119,6 +121,7 @@ def _build_adapter(account_id: str, broker: str):
     return factory(account_id)
 
 
+@scoped_to_broker_arg
 def start_order_update_adapter(account_id: str, broker: str) -> bool:
     """Start (or restart with fresh credentials) the order-update adapter for
     a broker account. Any previous adapter for the same account_id is

@@ -24,6 +24,7 @@ import pytz
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.auth_db import get_auth_token_broker
+from database.broker_context import scoped_to_order_account
 from database.sandbox_db import (
     SandboxHoldings,
     SandboxOrders,
@@ -303,6 +304,7 @@ class ExecutionEngine:
             # Never let event-bus failures break order execution
             logger.debug(f"Failed to publish SandboxOrderFilledEvent: {pub_err}")
 
+    @scoped_to_order_account
     def _process_order(self, order, quote):
         """
         Process a single order based on current quote
@@ -496,6 +498,7 @@ class ExecutionEngine:
         except Exception as e:
             logger.exception(f"Error processing trigger-pending order {order.orderid}: {e}")
 
+    @scoped_to_order_account
     def _execute_order(self, order, execution_price):
         """
         Execute an order - create trade, update positions, release/adjust margin

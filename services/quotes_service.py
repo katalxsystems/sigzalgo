@@ -2,6 +2,7 @@ import importlib
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from database.auth_db import get_auth_token_broker
+from database.broker_context import scoped_to_broker_arg
 from database.token_db import get_token
 from utils.constants import VALID_EXCHANGES
 from utils.logging import get_logger
@@ -75,6 +76,7 @@ def validate_symbols_bulk(
     return all_valid, validated, first_error
 
 
+@scoped_to_broker_arg
 def import_broker_module(broker_name: str) -> Any | None:
     """
     Dynamically import the broker-specific data module.
@@ -94,6 +96,7 @@ def import_broker_module(broker_name: str) -> Any | None:
         return None
 
 
+@scoped_to_broker_arg
 def get_quotes_with_auth(
     auth_token: str, feed_token: str | None, broker: str, symbol: str, exchange: str
 ) -> tuple[bool, dict[str, Any], int]:
@@ -154,6 +157,7 @@ def get_quotes_with_auth(
         return False, {"status": "error", "message": str(e)}, 500
 
 
+@scoped_to_broker_arg
 def get_quotes(
     symbol: str,
     exchange: str,
@@ -205,6 +209,7 @@ def get_quotes(
         )
 
 
+@scoped_to_broker_arg
 def get_multiquotes_with_auth(
     auth_token: str, feed_token: str | None, broker: str, symbols: list
 ) -> tuple[bool, dict[str, Any], int]:
@@ -324,6 +329,7 @@ def get_multiquotes_with_auth(
         return False, {"status": "error", "message": str(e)}, 500
 
 
+@scoped_to_broker_arg
 def get_multiquotes(
     symbols: list,
     api_key: str | None = None,

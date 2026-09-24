@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import pandas as pd
 
 from database.auth_db import get_auth_token_broker
+from database.broker_context import scoped_to_broker_arg
 from database.token_db import get_token
 from utils.constants import VALID_EXCHANGES
 from utils.logging import get_logger
@@ -55,6 +56,7 @@ def validate_symbol_exchange(symbol: str, exchange: str) -> tuple[bool, str | No
     return True, None
 
 
+@scoped_to_broker_arg
 def import_broker_module(broker_name: str) -> Any | None:
     """
     Dynamically import the broker-specific data module.
@@ -74,6 +76,7 @@ def import_broker_module(broker_name: str) -> Any | None:
         return None
 
 
+@scoped_to_broker_arg
 def get_history_with_auth(
     auth_token: str,
     feed_token: str | None,
@@ -216,6 +219,7 @@ def get_history_from_db(
         return False, {"status": "error", "message": str(e)}, 500
 
 
+@scoped_to_broker_arg
 def get_history(
     symbol: str,
     exchange: str,

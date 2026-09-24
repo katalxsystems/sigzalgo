@@ -26,6 +26,7 @@ import pytz
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from database.broker_context import scoped_to_account_broker
 from database.sandbox_db import (
     SandboxFunds,
     SandboxHoldings,
@@ -40,6 +41,7 @@ from utils.symbol_utils import is_future, is_option
 logger = get_logger(__name__)
 
 
+@scoped_to_account_broker
 class FundManager:
     """Manages sandbox funds for sandbox mode"""
 

@@ -1,10 +1,18 @@
 """
 Enhanced Token DB with Full Memory Caching for 100,000+ symbols
 Optimized for zero-config deployment with configurable session reset time (SESSION_EXPIRY_TIME)
+
+One cache per broker: symtoken holds several brokers' master contracts side by
+side, and token/brsymbol/brexchange differ per broker. Every public function
+takes an optional ``broker=`` and otherwise resolves it through
+database.broker_context.current_broker() (enclosing broker_scope, calling
+broker plugin, request, or the only broker loaded).
 """
 
+import functools
 import heapq
 import re
+import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -13,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pytz
 
+from database.broker_context import BrokerContextMissing, broker_scope, current_broker
 from utils.constants import CRYPTO_EXCHANGES, FNO_EXCHANGES
 from utils.logging import get_logger
 
@@ -190,11 +199,13 @@ class BrokerSymbolCache:
             start_time = time.time()
             logger.debug(f"Loading all symbols for broker: {broker}")
 
-            # Clear existing cache
+            # This instance is freshly built by load_cache_for_broker and swapped
+            # in when complete, so readers never see a half-loaded cache.
             self.clear_cache()
 
-            # Query all symbols from database
-            symbols = SymToken.query.all()
+            # Only this broker's rows (the ORM broker scoping reads the scope)
+            with broker_scope(broker):
+                symbols = SymToken.query.all()
 
             if not symbols:
                 logger.warning(f"No symbols found in database for broker: {broker}")
@@ -722,19 +733,49 @@ class BrokerSymbolCache:
         }
 
 
-# Global cache instance (singleton pattern)
-_cache_instance: BrokerSymbolCache | None = None
+# One cache per broker, replaced wholesale on reload. Bounded by the number
+# of broker plugins in use on this instance.
+_caches: dict[str, BrokerSymbolCache] = {}
+_caches_lock = threading.Lock()
+
+# Returned when the broker can't be resolved: never loaded, so lookups fall
+# through to the database, where the ORM broker scoping raises
+# BrokerContextMissing if several brokers are present.
+_UNRESOLVED_CACHE = BrokerSymbolCache()
 
 
-def get_cache() -> BrokerSymbolCache:
-    """Get or create the global cache instance"""
-    global _cache_instance
-    if _cache_instance is None:
-        _cache_instance = BrokerSymbolCache()
-    return _cache_instance
+def get_cache(broker: str | None = None) -> BrokerSymbolCache:
+    """Get (creating if needed) the cache for ``broker`` or the resolved current broker."""
+    resolved = current_broker(broker)
+    if not resolved:
+        return _UNRESOLVED_CACHE
+    cache = _caches.get(resolved)
+    if cache is None:
+        with _caches_lock:
+            cache = _caches.setdefault(resolved, BrokerSymbolCache())
+    return cache
+
+
+def loaded_brokers() -> list[str]:
+    """Brokers with a loaded symbol cache in this process."""
+    return sorted(b for b, c in _caches.items() if c.cache_loaded)
+
+
+def _broker_arg(func):
+    """Accept an optional ``broker=`` keyword and run ``func`` in that broker's scope."""
+
+    @functools.wraps(func)
+    def wrapper(*args, broker: str | None = None, **kwargs):
+        if broker:
+            with broker_scope(broker):
+                return func(*args, **kwargs)
+        return func(*args, **kwargs)
+
+    return wrapper
 
 
 # Public API - Drop-in replacement for existing token_db functions
+@_broker_arg
 def get_token(symbol: str, exchange: str) -> str | None:
     """
     Get token for a given symbol and exchange
@@ -753,6 +794,7 @@ def get_token(symbol: str, exchange: str) -> str | None:
     return get_token_dbquery(symbol, exchange)
 
 
+@_broker_arg
 def get_symbol(token: str, exchange: str) -> str | None:
     """
     Get symbol for a given token and exchange
@@ -768,6 +810,7 @@ def get_symbol(token: str, exchange: str) -> str | None:
     return get_symbol_dbquery(token, exchange)
 
 
+@_broker_arg
 def get_br_symbol(symbol: str, exchange: str) -> str | None:
     """
     Get broker symbol for a given symbol and exchange
@@ -783,6 +826,7 @@ def get_br_symbol(symbol: str, exchange: str) -> str | None:
     return get_br_symbol_dbquery(symbol, exchange)
 
 
+@_broker_arg
 def get_oa_symbol(brsymbol: str, exchange: str) -> str | None:
     """
     Get OpenAlgo symbol for a given broker symbol and exchange
@@ -798,6 +842,7 @@ def get_oa_symbol(brsymbol: str, exchange: str) -> str | None:
     return get_oa_symbol_dbquery(brsymbol, exchange)
 
 
+@_broker_arg
 def get_brexchange(symbol: str, exchange: str) -> str | None:
     """
     Get broker exchange for a given symbol and exchange
@@ -813,6 +858,7 @@ def get_brexchange(symbol: str, exchange: str) -> str | None:
     return get_brexchange_dbquery(symbol, exchange)
 
 
+@_broker_arg
 def get_symbol_info(symbol: str, exchange: str) -> SymbolData | None:
     """
     Get full symbol information (SymbolData object) for a given symbol and exchange
@@ -831,6 +877,7 @@ def get_symbol_info(symbol: str, exchange: str) -> SymbolData | None:
 
 
 # Database fallback functions (imported from original token_db)
+@_broker_arg
 def get_token_dbquery(symbol: str, exchange: str) -> str | None:
     """Query database for token by symbol and exchange"""
     try:
@@ -841,11 +888,14 @@ def get_token_dbquery(symbol: str, exchange: str) -> str | None:
             return sym_token.token
         else:
             return None
+    except BrokerContextMissing:
+        raise
     except Exception as e:
         logger.exception(f"Error while querying the database: {e}")
         return None
 
 
+@_broker_arg
 def get_symbol_dbquery(token: str, exchange: str) -> str | None:
     """Query database for symbol by token and exchange"""
     try:
@@ -856,11 +906,14 @@ def get_symbol_dbquery(token: str, exchange: str) -> str | None:
             return sym_token.symbol
         else:
             return None
+    except BrokerContextMissing:
+        raise
     except Exception as e:
         logger.exception(f"Error while querying the database: {e}")
         return None
 
 
+@_broker_arg
 def get_br_symbol_dbquery(symbol: str, exchange: str) -> str | None:
     """Query database for broker symbol"""
     try:
@@ -871,11 +924,14 @@ def get_br_symbol_dbquery(symbol: str, exchange: str) -> str | None:
             return sym_token.brsymbol
         else:
             return None
+    except BrokerContextMissing:
+        raise
     except Exception as e:
         logger.exception(f"Error while querying the database: {e}")
         return None
 
 
+@_broker_arg
 def get_oa_symbol_dbquery(brsymbol: str, exchange: str) -> str | None:
     """Query database for OpenAlgo symbol"""
     try:
@@ -886,11 +942,14 @@ def get_oa_symbol_dbquery(brsymbol: str, exchange: str) -> str | None:
             return sym_token.symbol
         else:
             return None
+    except BrokerContextMissing:
+        raise
     except Exception as e:
         logger.exception(f"Error while querying the database: {e}")
         return None
 
 
+@_broker_arg
 def get_brexchange_dbquery(symbol: str, exchange: str) -> str | None:
     """Query database for broker exchange"""
     try:
@@ -901,11 +960,14 @@ def get_brexchange_dbquery(symbol: str, exchange: str) -> str | None:
             return sym_token.brexchange
         else:
             return None
+    except BrokerContextMissing:
+        raise
     except Exception as e:
         logger.exception(f"Error while querying the database: {e}")
         return None
 
 
+@_broker_arg
 def get_symbol_info_dbquery(symbol: str, exchange: str) -> SymbolData | None:
     """Query database for full symbol information, returns SymbolData object"""
     try:
@@ -929,11 +991,14 @@ def get_symbol_info_dbquery(symbol: str, exchange: str) -> SymbolData | None:
             )
         else:
             return None
+    except BrokerContextMissing:
+        raise
     except Exception as e:
         logger.exception(f"Error while querying the database: {e}")
         return None
 
 
+@_broker_arg
 def get_symbol_count() -> int:
     """Get the total count of symbols in the database"""
     try:
@@ -941,6 +1006,8 @@ def get_symbol_count() -> int:
 
         count = SymToken.query.count()
         return count
+    except BrokerContextMissing:
+        raise
     except Exception as e:
         logger.exception(f"Error while counting symbols: {e}")
         return 0
@@ -951,24 +1018,54 @@ def load_cache_for_broker(broker: str) -> bool:
     """
     Load cache for a specific broker
     Called after master contract download completes
+
+    Builds a new cache from this broker's rows and swaps it in only once
+    complete; other brokers' caches are untouched.
     """
-    cache = get_cache()
-    return cache.load_all_symbols(broker)
+    fresh = BrokerSymbolCache()
+    if not fresh.load_all_symbols(broker):
+        return False
+    with _caches_lock:
+        _caches[broker] = fresh
+    return True
 
 
-def clear_cache():
-    """Clear the cache - useful for manual refresh"""
-    cache = get_cache()
-    cache.clear_cache()
+def clear_cache(broker: str | None = None):
+    """Clear one broker's cache (``broker`` or the resolved current broker)."""
+    resolved = current_broker(broker)
+    if not resolved:
+        logger.warning("clear_cache: no broker resolved; nothing cleared")
+        return
+    with _caches_lock:
+        _caches.pop(resolved, None)
 
 
-def get_cache_stats() -> dict:
-    """Get cache statistics for monitoring"""
-    cache = get_cache()
-    return cache.get_cache_info()
+def clear_all_caches():
+    """Clear every broker's cache."""
+    with _caches_lock:
+        _caches.clear()
+
+
+def get_cache_stats(broker: str | None = None) -> dict:
+    """Get cache statistics for monitoring.
+
+    For one broker when it can be resolved; otherwise a summary across every
+    loaded broker, with the per-broker details under ``brokers``.
+    """
+    resolved = current_broker(broker)
+    if resolved:
+        return get_cache(resolved).get_cache_info()
+    per_broker = {b: c.get_cache_info() for b, c in list(_caches.items())}
+    return {
+        "active_broker": None,
+        "cache_loaded": any(i["cache_loaded"] for i in per_broker.values()),
+        "total_symbols": sum(i["total_symbols"] for i in per_broker.values()),
+        "brokers": per_broker,
+    }
 
 
 # Bulk operations for performance
+@_broker_arg
 def get_tokens_bulk(symbol_exchange_pairs: list[tuple[str, str]]) -> list[str | None]:
     """Bulk retrieve tokens - optimized for performance"""
     cache = get_cache()
@@ -984,6 +1081,7 @@ def get_tokens_bulk(symbol_exchange_pairs: list[tuple[str, str]]) -> list[str | 
     return results
 
 
+@_broker_arg
 def get_symbols_bulk(token_exchange_pairs: list[tuple[str, str]]) -> list[str | None]:
     """Bulk retrieve symbols - optimized for performance"""
     cache = get_cache()
@@ -1000,6 +1098,7 @@ def get_symbols_bulk(token_exchange_pairs: list[tuple[str, str]]) -> list[str | 
 
 
 # Search functionality
+@_broker_arg
 def search_symbols(query: str, exchange: str | None = None, limit: int = 10000) -> list[dict]:
     """
     Search symbols with cache support
@@ -1041,11 +1140,14 @@ def search_symbols(query: str, exchange: str | None = None, limit: int = 10000) 
             }
             for r in results
         ]
+    except BrokerContextMissing:
+        raise
     except Exception as e:
         logger.exception(f"Error searching symbols: {e}")
         return []
 
 
+@_broker_arg
 def fno_search_symbols(
     query: str | None = None,
     exchange: str | None = None,
@@ -1126,11 +1228,14 @@ def fno_search_symbols(
             underlying=underlying,
             limit=limit,
         )
+    except BrokerContextMissing:
+        raise
     except Exception as e:
         logger.exception(f"Error in FNO search fallback: {e}")
         return []
 
 
+@_broker_arg
 def get_distinct_expiries_cached(
     exchange: str | None = None, underlying: str | None = None
 ) -> list[str]:
@@ -1182,11 +1287,14 @@ def get_distinct_expiries_cached(
         from database.symbol import get_distinct_expiries
 
         return get_distinct_expiries(exchange=exchange, underlying=underlying)
+    except BrokerContextMissing:
+        raise
     except Exception as e:
         logger.exception(f"Error getting expiries: {e}")
         return []
 
 
+@_broker_arg
 def get_distinct_underlyings_cached(
     exchange: str | None = None, include_futures: bool = False
 ) -> list[str]:
@@ -1227,6 +1335,8 @@ def get_distinct_underlyings_cached(
         from database.symbol import get_distinct_underlyings
 
         return get_distinct_underlyings(exchange=exchange)
+    except BrokerContextMissing:
+        raise
     except Exception as e:
         logger.exception(f"Error getting underlyings: {e}")
         return []

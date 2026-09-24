@@ -22,6 +22,7 @@ import pytz
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from database.broker_context import scoped_to_account_broker
 from database.sandbox_db import SandboxPositions, SandboxTrades, db_session, get_config
 from database.token_db import get_symbol_info
 from sandbox.fund_manager import FundManager
@@ -269,6 +270,7 @@ def get_expiry_settlement_price(position):
     return avg
 
 
+@scoped_to_account_broker
 class PositionManager:
     """Manages positions and MTM calculations"""
 

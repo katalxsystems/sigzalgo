@@ -63,6 +63,7 @@ import threading
 from datetime import datetime
 from typing import Callable
 
+from database.broker_context import scoped_to_broker_arg
 from utils.env_config import env_int
 from utils.logging import get_logger
 
@@ -120,6 +121,7 @@ def _account_has_active_workflow(account_id: str) -> bool:
     return False
 
 
+@scoped_to_broker_arg
 def _persist_relogin(account_id: str, broker: str, auth_token: str, feed_token: str | None) -> None:
     """The DB-persisting half of utils/auth_utils.handle_auth_success(),
     without any of its Flask session/request/SocketIO calls -- this runs on a

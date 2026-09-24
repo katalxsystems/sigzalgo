@@ -21,6 +21,7 @@ from typing import Any
 import pandas as pd
 
 from database import basket_db
+from database.broker_context import scoped_to_broker_arg
 from portfolio.analytics import (
     average_pairwise_correlation,
     concentration,
@@ -176,6 +177,7 @@ def delete_basket(user_id: str, basket_id: int) -> tuple[bool, dict[str, Any], i
     return True, {"status": "success"}, 200
 
 
+@scoped_to_broker_arg
 def run_basket_backtest(
     user_id: str,
     basket_id: int,
