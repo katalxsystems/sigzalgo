@@ -26,12 +26,12 @@ def _parse_response(step, response):
 
 def get_client_id(account_id=None):
     """Get the client ID (User ID) from environment variables."""
-    return get_broker_api_key(account_id)
+    return get_broker_api_key(account_id, broker="samco")
 
 
 def get_password(account_id=None):
     """Get the password from environment variables."""
-    return get_broker_api_secret(account_id)
+    return get_broker_api_secret(account_id, broker="samco")
 
 
 def generate_otp(uid):

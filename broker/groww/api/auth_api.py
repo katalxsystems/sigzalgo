@@ -97,8 +97,8 @@ def authenticate_broker(code, account_id=None):
         tuple: (access_token, error_message)
     """
     try:
-        BROKER_API_KEY = get_broker_api_key(account_id)
-        BROKER_API_SECRET = get_broker_api_secret(account_id)
+        BROKER_API_KEY = get_broker_api_key(account_id, broker="groww")
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="groww")
 
         if not BROKER_API_KEY or not BROKER_API_SECRET:
             return (

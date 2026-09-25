@@ -168,6 +168,12 @@ class FyersHSMWebSocket:
         # Reconnection state
         self.reconnect_enabled = True
         self.reconnect_attempts = 0
+        # Consecutive reconnect attempts that found no auth token at all (as
+        # opposed to a successful fetch). A few in a row means the account was
+        # revoked/logged out, not a slow daily rollover -- see
+        # _refresh_access_token.
+        self._token_miss_count = 0
+        self.MAX_CONSECUTIVE_TOKEN_MISSES = 3
 
         # Health check state. _health_check_stop_event is already initialized
         # at the top of __init__ so cleanup-after-failed-init paths can use it.
@@ -864,6 +870,7 @@ class FyersHSMWebSocket:
         self.running = True
         self.reconnect_enabled = True
         self.reconnect_attempts = 0
+        self._token_miss_count = 0
 
         # Run WebSocket in separate thread with reconnection loop
         self.ws_thread = threading.Thread(target=self._run_websocket, daemon=True)
@@ -923,13 +930,15 @@ class FyersHSMWebSocket:
                 # this, a reconnect after the ~3 AM IST daily token rollover would
                 # reuse the dead construction-time token and the feed would stay
                 # dead until a process restart.
-                self._refresh_access_token()
+                if not self._refresh_access_token():
+                    self.running = False
+                    break
             else:
                 break
 
         self.logger.debug("HSM WebSocket run loop exited")
 
-    def _refresh_access_token(self):
+    def _refresh_access_token(self) -> bool:
         """Re-read a fresh access token from the database before a reconnect.
 
         Indian broker tokens roll over daily at ~3 AM IST. On reconnect we must
@@ -938,30 +947,46 @@ class FyersHSMWebSocket:
         used both in the Authorization header (self.access_token) and to derive
         the HSM auth key (self.hsm_key), so both are refreshed. If no fresh token
         is available or the new HSM key cannot be extracted, keep the existing
-        values rather than crashing.
+        values rather than crashing -- unless that has now happened
+        MAX_CONSECUTIVE_TOKEN_MISSES times in a row, which means the account
+        was revoked/logged out rather than mid-rollover, so retrying with the
+        stale token is pointless (it will only fail auth forever).
+
+        Returns:
+            False when the caller should stop reconnecting; True otherwise.
         """
         if not self.user_id:
-            return
+            return True
         try:
             fresh_token = get_auth_token(self.user_id, bypass_cache=True)
             if not fresh_token:
+                self._token_miss_count += 1
+                if self._token_miss_count >= self.MAX_CONSECUTIVE_TOKEN_MISSES:
+                    self.logger.error(
+                        f"No auth token found for {self._token_miss_count} consecutive "
+                        "reconnect attempts; account is likely revoked. Giving up."
+                    )
+                    return False
                 self.logger.warning(
-                    "No fresh auth token found on reconnect - keeping existing token"
+                    "No fresh auth token found on reconnect - keeping existing token "
+                    f"(miss {self._token_miss_count}/{self.MAX_CONSECUTIVE_TOKEN_MISSES})"
                 )
-                return
+                return True
             new_hsm_key = self._extract_hsm_key(fresh_token)
             if not new_hsm_key:
                 self.logger.warning(
                     "Could not extract HSM key from fresh token on reconnect - "
                     "keeping existing token"
                 )
-                return
+                return True
+            self._token_miss_count = 0
             with self.lock:
                 self.access_token = fresh_token
                 self.hsm_key = new_hsm_key
             self.logger.info("Refreshed Fyers access token from database for reconnect")
         except Exception as e:
             self.logger.error(f"Error refreshing access token on reconnect: {e}")
+        return True
 
     def _handle_reconnect(self) -> bool:
         """

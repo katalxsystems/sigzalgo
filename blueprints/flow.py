@@ -247,6 +247,7 @@ def update_workflow(workflow_id):
 def delete_workflow(workflow_id):
     """Delete a workflow"""
     from database.flow_db import delete_workflow, get_workflow
+    from services.flow_executor_service import release_workflow_subscriptions
     from services.flow_order_update_monitor_service import get_flow_order_update_monitor
     from services.flow_price_monitor_service import get_flow_price_monitor
     from services.flow_scheduler_service import get_flow_scheduler
@@ -264,6 +265,11 @@ def delete_workflow(workflow_id):
         scheduler.remove_workflow_job(workflow_id)
         get_flow_price_monitor().remove_alert(workflow_id)
         get_flow_order_update_monitor().remove_watch(workflow_id)
+
+    # Unconditionally, not only when active: a workflow deactivated and then
+    # deleted has already been released, and this is a no-op, but one that
+    # subscribed while active and was never deactivated still holds them.
+    release_workflow_subscriptions(workflow_id)
 
     if delete_workflow(workflow_id):
         return jsonify({"status": "success", "message": "Workflow deleted"})
@@ -391,6 +397,7 @@ def deactivate_workflow(workflow_id):
     """Deactivate a workflow"""
     from database.flow_db import deactivate_workflow as db_deactivate
     from database.flow_db import get_workflow, set_schedule_job_id
+    from services.flow_executor_service import release_workflow_subscriptions
     from services.flow_order_update_monitor_service import get_flow_order_update_monitor
     from services.flow_price_monitor_service import get_flow_price_monitor
     from services.flow_scheduler_service import get_flow_scheduler
@@ -403,12 +410,16 @@ def deactivate_workflow(workflow_id):
         return jsonify({"status": "already_inactive", "message": "Workflow is already inactive"})
 
     try:
-        # Remove scheduler job if any
+        # Removed by workflow id, not by the stored schedule_job_id. The id is
+        # derived deterministically, so this still finds the job when the stored
+        # pointer was never written or was cleared -- the case that used to skip
+        # removal entirely and strand a live job. strict=True turns a jobstore
+        # failure into an exception instead of a silent False, so the workflow
+        # is never marked inactive while its job is still armed. An already-gone
+        # job returns False and is fine: that is the desired end state.
+        scheduler = get_flow_scheduler()
+        scheduler.remove_workflow_job(workflow_id, strict=True)
         if workflow.schedule_job_id:
-            scheduler = get_flow_scheduler()
-            # An already-gone job is expected after a restart or a double click;
-            # remove_job treats that as a no-op.
-            scheduler.remove_job(workflow.schedule_job_id)
             set_schedule_job_id(workflow_id, None)
 
         # Remove price alert if any
@@ -419,8 +430,16 @@ def deactivate_workflow(workflow_id):
         order_monitor = get_flow_order_update_monitor()
         order_monitor.remove_watch(workflow_id)
 
+        # Give back any market-data subscription the workflow opened. The
+        # websocket client is a process-wide singleton, so a subscription left
+        # behind is held for the life of the worker and counts against the
+        # per-broker symbol ceiling that /trading and the sandbox engine share.
+        release_workflow_subscriptions(workflow_id)
+
         # Update workflow as inactive
-        db_deactivate(workflow_id)
+        if not db_deactivate(workflow_id):
+            logger.error(f"Failed to persist inactive state for workflow {workflow_id}")
+            return jsonify({"error": "Could not deactivate workflow"}), 500
 
         return jsonify({"status": "success", "message": "Workflow deactivated"})
 

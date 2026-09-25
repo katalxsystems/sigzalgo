@@ -17,7 +17,7 @@ def _generate_checksum(client_id: str, auth_code: str, app_secret: str) -> str:
 
 def get_login_url(account_id=None) -> str:
     """Generate IIFL Capital login URL from environment variables."""
-    app_key = (get_broker_api_key(account_id) or "").strip()
+    app_key = (get_broker_api_key(account_id, broker="iiflcapital") or "").strip()
     redirect_url = os.getenv("REDIRECT_URL", "").strip()
 
     if not app_key or not redirect_url:
@@ -42,7 +42,7 @@ def authenticate_broker(auth_code: str, client_id: str, account_id=None):
         tuple: (auth_token, error_message)
     """
     try:
-        app_secret = (get_broker_api_secret(account_id) or "").strip()
+        app_secret = (get_broker_api_secret(account_id, broker="iiflcapital") or "").strip()
         if not app_secret:
             return None, "BROKER_API_SECRET not found in environment variables"
 

@@ -31,6 +31,13 @@ const tools = [
     color: 'bg-sky-500',
   },
   {
+    title: 'Portfolio Baskets',
+    description:
+      'Save a weighted basket, rebalance it manually over time, and track its rebalance history and performance against a benchmark',
+    href: '/baskets',
+    color: 'bg-amber-500',
+  },
+  {
     title: 'Option Chain',
     description: 'Real-time option chain with live Greeks, OI data, and quick order placement',
     href: '/optionchain',

@@ -37,27 +37,31 @@ def validate_broker_api_key_format(broker: str, broker_api_key: str) -> str | No
     return None
 
 
-def get_broker_api_key(account_id: str | None = None) -> str | None:
+def get_broker_api_key(account_id: str | None = None, broker: str | None = None) -> str | None:
     """
-    Retrieve the broker API key: DB-first, .env fallback.
+    Retrieve the broker API key.
 
-    Multi-account support stores a credential pair per connected broker
-    account (database.auth_db.Auth.broker_api_key/broker_api_secret) so two
-    accounts on the same broker can use different app registrations. When
-    ``account_id`` is given and that account has a DB-stored key, it wins.
-    Otherwise this falls back to the instance-wide default, itself DB-first:
-    database.settings_db's Settings row (set from Profile > Broker, takes
-    effect immediately) and only then the legacy ``.env`` value, which keeps
-    non-interactive scripts and not-yet-migrated installs unchanged.
+    Every user brings their own broker account, so credentials are
+    per-account (database.auth_db.Auth.broker_api_key/broker_api_secret).
+    Broker-scoped callers -- every broker plugin, resolve_broker_api_key and
+    the login flow -- pass ``broker`` and get ONLY that account's own key,
+    or None: never an instance-wide one, which would be some other user's
+    (or some other broker's) app registration. An account row belonging to
+    a different broker never supplies its credentials either -- see
+    database.auth_db.get_broker_credentials.
+
+    Callers that pass no ``broker`` (the Profile > Broker admin view,
+    ad-hoc scripts) still fall back to the instance-wide values: the
+    Settings row, then ``.env``.
 
     Returns:
-        str | None: The broker API key, or None if not set anywhere.
+        str | None: The broker API key, or None if not configured.
     """
     if account_id:
         try:
             from database.auth_db import get_broker_credentials
 
-            api_key, _ = get_broker_credentials(account_id)
+            api_key, _ = get_broker_credentials(account_id, broker=broker)
             if api_key:
                 return api_key
         except Exception:
@@ -66,10 +70,10 @@ def get_broker_api_key(account_id: str | None = None) -> str | None:
             get_logger(__name__).exception(
                 f"Error reading DB-stored broker_api_key for account {account_id}"
             )
-    return _instance_broker_setting("broker_api_key") or os.getenv("BROKER_API_KEY")
+    return _instance_broker_fallback("broker_api_key", "BROKER_API_KEY", broker)
 
 
-def get_broker_api_secret(account_id: str | None = None) -> str | None:
+def get_broker_api_secret(account_id: str | None = None, broker: str | None = None) -> str | None:
     """
     Retrieve the broker API secret: DB-first, .env fallback.
 
@@ -82,7 +86,7 @@ def get_broker_api_secret(account_id: str | None = None) -> str | None:
         try:
             from database.auth_db import get_broker_credentials
 
-            _, api_secret = get_broker_credentials(account_id)
+            _, api_secret = get_broker_credentials(account_id, broker=broker)
             if api_secret:
                 return api_secret
         except Exception:
@@ -91,7 +95,7 @@ def get_broker_api_secret(account_id: str | None = None) -> str | None:
             get_logger(__name__).exception(
                 f"Error reading DB-stored broker_api_secret for account {account_id}"
             )
-    return _instance_broker_setting("broker_api_secret") or os.getenv("BROKER_API_SECRET")
+    return _instance_broker_fallback("broker_api_secret", "BROKER_API_SECRET", broker)
 
 
 def _instance_broker_setting(field: str) -> str | None:
@@ -111,24 +115,31 @@ def _instance_broker_setting(field: str) -> str | None:
         return None
 
 
-def get_broker_api_key_market(account_id: str | None = None) -> str | None:
+def _instance_broker_fallback(field: str, env_var: str, broker: str | None) -> str | None:
+    """Instance-wide value for ``field`` (Settings row, then ``.env``), only
+    for callers that aren't scoped to a broker. Broker-scoped callers get
+    None: see get_broker_api_key() for why there is no shared fallback."""
+    if broker:
+        return None
+    return _instance_broker_setting(field) or os.getenv(env_var)
+
+
+def get_broker_api_key_market(
+    account_id: str | None = None, broker: str | None = None
+) -> str | None:
     """Retrieve the market-data-specific broker API key (used by the XTS-
     family brokers' separate market-feed login: compositedge, rmoney,
     fivepaisaxts, ibulls, iifl, jainamxts, wisdom).
 
-    Per-account first (database.auth_db.Auth.broker_api_key_market), falling
-    back to the instance-wide default during the per-account migration --
-    see get_broker_api_key() for the same resolution shape. The
-    instance-wide fallback here is transitional: it goes away once every
-    XTS-family broker's get_feed_token() threads account_id and the
-    one-time backfill migration has populated broker_api_key_market for
-    every existing account (see the SaaS per-account credentials plan).
+    Per-account (database.auth_db.Auth.broker_api_key_market), with the
+    same no-shared-fallback rule for broker-scoped callers as
+    get_broker_api_key().
     """
     if account_id:
         try:
             from database.auth_db import get_broker_credentials_market
 
-            api_key, _ = get_broker_credentials_market(account_id)
+            api_key, _ = get_broker_credentials_market(account_id, broker=broker)
             if api_key:
                 return api_key
         except Exception:
@@ -137,17 +148,19 @@ def get_broker_api_key_market(account_id: str | None = None) -> str | None:
             get_logger(__name__).exception(
                 f"Error reading DB-stored broker_api_key_market for account {account_id}"
             )
-    return _instance_broker_setting("broker_api_key_market") or os.getenv("BROKER_API_KEY_MARKET")
+    return _instance_broker_fallback("broker_api_key_market", "BROKER_API_KEY_MARKET", broker)
 
 
-def get_broker_api_secret_market(account_id: str | None = None) -> str | None:
+def get_broker_api_secret_market(
+    account_id: str | None = None, broker: str | None = None
+) -> str | None:
     """Retrieve the market-data-specific broker API secret. See
     get_broker_api_key_market() for the resolution order."""
     if account_id:
         try:
             from database.auth_db import get_broker_credentials_market
 
-            _, api_secret = get_broker_credentials_market(account_id)
+            _, api_secret = get_broker_credentials_market(account_id, broker=broker)
             if api_secret:
                 return api_secret
         except Exception:
@@ -156,9 +169,12 @@ def get_broker_api_secret_market(account_id: str | None = None) -> str | None:
             get_logger(__name__).exception(
                 f"Error reading DB-stored broker_api_secret_market for account {account_id}"
             )
-    return _instance_broker_setting("broker_api_secret_market") or os.getenv(
-        "BROKER_API_SECRET_MARKET"
-    )
+    return _instance_broker_fallback("broker_api_secret_market", "BROKER_API_SECRET_MARKET", broker)
+
+
+# (broker, account_id) pairs already warned about by resolve_broker_api_key.
+# Bounded by the number of broker accounts on the instance.
+_warned_missing_credentials: set[tuple[str, str | None]] = set()
 
 
 def resolve_broker_api_key(
@@ -181,7 +197,41 @@ def resolve_broker_api_key(
         from database.auth_db import get_account_id_from_auth_token
 
         account_id = get_account_id_from_auth_token(auth_token, broker=broker)
-    return get_broker_api_key(account_id), get_broker_api_secret(account_id)
+    api_key = get_broker_api_key(account_id, broker=broker)
+    api_secret = get_broker_api_secret(account_id, broker=broker)
+    if not api_key and not api_secret and (broker, account_id) not in _warned_missing_credentials:
+        # Once per account: per-request paths (quotes, orders) would
+        # otherwise log this on every call.
+        _warned_missing_credentials.add((broker, account_id))
+        from utils.logging import get_logger
+
+        get_logger(__name__).warning(
+            f"No {broker} API credentials for account {account_id!r}"
+            + ("" if account_id else " (no connected account matches this auth token)")
+            + ". Set them in Profile > Accounts."
+        )
+    return api_key, api_secret
+
+
+class BrokerCredentialsMissing(Exception):
+    """Raised when a broker call needs this account's own API key and the
+    account has none (there is no instance-wide fallback)."""
+
+
+def require_broker_api_key(
+    auth_token: str | None, broker: str, account_id: str | None = None
+) -> tuple[str, str | None]:
+    """resolve_broker_api_key(), but raise BrokerCredentialsMissing with a
+    user-facing message when there is no API key -- for plugins that send
+    the key in a request header, where None would otherwise surface as an
+    opaque httpx "Header value must be str or bytes" TypeError."""
+    api_key, api_secret = resolve_broker_api_key(auth_token, broker, account_id)
+    if not api_key:
+        raise BrokerCredentialsMissing(
+            f"Broker API key not configured for this {broker} account. "
+            f"Set it in Profile > Accounts and log in to the broker again."
+        )
+    return api_key, api_secret
 
 
 def resolve_broker_api_key_market(
@@ -198,7 +248,9 @@ def resolve_broker_api_key_market(
         from database.auth_db import get_account_id_from_auth_token
 
         account_id = get_account_id_from_auth_token(auth_token, broker=broker)
-    return get_broker_api_key_market(account_id), get_broker_api_secret_market(account_id)
+    return get_broker_api_key_market(account_id, broker=broker), get_broker_api_secret_market(
+        account_id, broker=broker
+    )
 
 
 def get_broker_redirect_url() -> str | None:

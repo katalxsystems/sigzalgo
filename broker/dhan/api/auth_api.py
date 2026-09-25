@@ -16,8 +16,8 @@ AUTH_BASE_URL = "https://auth.dhan.co"
 def generate_consent(dhan_client_id, account_id=None):
     """Step 1: Generate consent to initiate login session - requires valid Dhan Client ID"""
     try:
-        BROKER_API_KEY = get_broker_api_key(account_id)
-        BROKER_API_SECRET = get_broker_api_secret(account_id)
+        BROKER_API_KEY = get_broker_api_key(account_id, broker="dhan")
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="dhan")
 
         # Extract client_id from API key if format is client_id:::api_key
         if ":::" in BROKER_API_KEY:
@@ -82,8 +82,8 @@ def get_login_url(consent_app_id):
 def consume_consent(token_id, account_id=None):
     """Step 3: Consume consent to get access token"""
     try:
-        BROKER_API_KEY = get_broker_api_key(account_id)
-        BROKER_API_SECRET = get_broker_api_secret(account_id)
+        BROKER_API_KEY = get_broker_api_key(account_id, broker="dhan")
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="dhan")
 
         # Extract client_id from API key if format is client_id:::api_key
         if ":::" in BROKER_API_KEY:

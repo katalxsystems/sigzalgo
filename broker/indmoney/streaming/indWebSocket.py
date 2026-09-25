@@ -86,6 +86,12 @@ class IndWebSocket:
         self.current_retry_attempt = 0
         self.RESUBSCRIBE_FLAG = False
 
+        # Consecutive reconnect attempts where token_provider yielded nothing.
+        # A few in a row means the account was revoked/logged out, not a slow
+        # daily rollover -- see _refresh_access_token.
+        self._token_miss_count = 0
+        self.MAX_CONSECUTIVE_TOKEN_MISSES = 3
+
         if not self._sanity_check():
             logger.error("Invalid initialization parameters. Provide valid access token.")
             raise Exception("Provide valid access token")
@@ -284,22 +290,39 @@ class IndWebSocket:
             logger.error(f"Error during resubscribe: {e}")
             raise e
 
-    def _refresh_access_token(self):
+    def _refresh_access_token(self) -> bool:
         """Re-read a fresh access token from the DB via token_provider before a
-        reconnect. Keeps the existing token if the provider yields nothing."""
+        reconnect. Keeps the existing token if the provider yields nothing --
+        unless that has now happened MAX_CONSECUTIVE_TOKEN_MISSES times in a
+        row, which means the account was revoked/logged out rather than
+        mid-rollover, so retrying with the stale token is pointless.
+
+        Returns:
+            False when the caller should stop reconnecting; True otherwise.
+        """
         if not self.token_provider:
-            return
+            return True
         try:
             fresh = self.token_provider()
             if fresh:
+                self._token_miss_count = 0
                 self.access_token = fresh
                 logger.info("Refreshed INDmoney access token before reconnect")
             else:
+                self._token_miss_count += 1
+                if self._token_miss_count >= self.MAX_CONSECUTIVE_TOKEN_MISSES:
+                    logger.error(
+                        f"No auth token found for {self._token_miss_count} consecutive "
+                        "reconnect attempts; account is likely revoked. Giving up."
+                    )
+                    return False
                 logger.warning(
-                    "No fresh INDmoney access token available; reusing existing token"
+                    "No fresh INDmoney access token available; reusing existing token "
+                    f"(miss {self._token_miss_count}/{self.MAX_CONSECUTIVE_TOKEN_MISSES})"
                 )
         except Exception as e:
             logger.error(f"Error refreshing access token: {e}")
+        return True
 
     def connect(self):
         """Establish WebSocket connection to price feed"""

@@ -43,7 +43,7 @@ def _get_5paisa_credentials(auth_token: str | None = None) -> tuple[str, str]:
     account_id = (
         get_account_id_from_auth_token(auth_token, broker="fivepaisa") if auth_token else None
     )
-    broker_api_key = get_broker_api_key(account_id)
+    broker_api_key = get_broker_api_key(account_id, broker="fivepaisa")
     if not broker_api_key:
         raise ValueError("BROKER_API_KEY not configured")
     try:

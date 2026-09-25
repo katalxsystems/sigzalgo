@@ -30,6 +30,11 @@ class TradejiniWebSocketAdapter(BaseBrokerWebSocketAdapter):
         self.reconnect_delay = 5  # Initial delay in seconds
         self.max_reconnect_delay = 60  # Maximum delay in seconds
         self.reconnect_attempts = 0
+        # Consecutive reconnect attempts that found no auth token at all (as
+        # opposed to a successful fetch). A few in a row means the account was
+        # revoked/logged out, not a slow daily rollover.
+        self._token_miss_count = 0
+        self.MAX_CONSECUTIVE_TOKEN_MISSES = 3
         self.max_reconnect_attempts = 10
         self.running = False
         self.lock = threading.Lock()
@@ -130,15 +135,25 @@ class TradejiniWebSocketAdapter(BaseBrokerWebSocketAdapter):
                 # the same (api_key:access_token) formatting that initialize() uses.
                 fresh_token = get_auth_token(self.user_id, bypass_cache=True)
                 if fresh_token:
+                    self._token_miss_count = 0
                     api_key = os.getenv("BROKER_API_SECRET", "")
                     if api_key and ":" not in fresh_token:
                         self.ws_token = f"{api_key}:{fresh_token}"
                     else:
                         self.ws_token = fresh_token
                 else:
+                    self._token_miss_count += 1
+                    if self._token_miss_count >= self.MAX_CONSECUTIVE_TOKEN_MISSES:
+                        self.logger.error(
+                            f"No auth token found for {self._token_miss_count} consecutive "
+                            "reconnect attempts; account is likely revoked. Giving up."
+                        )
+                        self.running = False
+                        break
                     self.logger.warning(
                         "Could not fetch fresh auth token from database; "
-                        "reusing existing token for reconnection"
+                        "reusing existing token for reconnection "
+                        f"(miss {self._token_miss_count}/{self.MAX_CONSECUTIVE_TOKEN_MISSES})"
                     )
 
                 self.ws_client.connect(self.ws_token)

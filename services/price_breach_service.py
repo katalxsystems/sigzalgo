@@ -23,16 +23,22 @@ from `call_id`, `mentor_id`, and `symbol` (the "script"), in that order:
     created) in the background, since the "breach" is already true at call
     time rather than something to wait for.
 
-Each live watch's action chain ends in one [deactivate call] node: a loopback
-HTTP request to this same instance's own apikey-authenticated
-/api/v1/pricebreach/<call_id>/deactivate -- possible (unlike the
-session-cookie authenticated /flow/api/workflows/<id>/deactivate)
-specifically because that route takes an apikey, not a session cookie, so a
-Flow httpRequest node can call it. Deactivating by call_id tears down both
-sibling workflows for that call together (see deactivate_by_call_id() and
-database.flow_db.PriceBreachCall), so one node is enough -- whichever watch
-fires first cleans up both itself and its sibling; nothing extra is required
-of the webhook receiver.
+Each live watch's action chain ends in one [deactivate] node: a loopback HTTP
+request to this same instance's own apikey-authenticated /api/v1/pricebreach/*
+-- possible (unlike the session-cookie authenticated
+/flow/api/workflows/<id>/deactivate) specifically because those routes take
+an apikey, not a session cookie, so a Flow httpRequest node can call them.
+The two watches deactivate at different scopes, because they mean different
+things for the call:
+
+- sl_target firing is a real stop-loss/target breach -- the call is over, so
+  its deactivate node hits /api/v1/pricebreach/<call_id>/deactivate
+  (deactivate_by_call_id()), tearing down both sibling workflows together.
+- entry_recross firing just means price came back to entry -- the call is
+  NOT over, since price can still go on to hit stop_loss or target1 after
+  that. Its deactivate node instead hits
+  /api/v1/pricebreach/workflow/<workflow_id>/deactivate (deactivate_one()),
+  retiring only itself and leaving the sl_target watch live.
 
 Callable directly with an already-resolved api_key -- no session cookie
 needed. This is what lets restx_api/price_breach_monitor.py offer the
@@ -187,11 +193,44 @@ def _deactivate_node(node_id: str, position_y: int, call_id: str, api_key: str) 
 
 
 def _deactivate_chain(call_id: str, api_key: str, start_y: int) -> tuple[list[dict], list[dict], str]:
-    """The single [deactivate_call] tail shared by every watch. Returns
+    """The [deactivate_call] tail used by the sl_target watch. Returns
     (nodes, edges, last_node_id) so callers can wire their own notify
-    node(s) into "deactivate_call" without duplicating this part."""
+    node(s) into "deactivate_call" without duplicating this part. Tears down
+    the whole call_id pair -- see the module docstring for why sl_target
+    (unlike entry_recross) deactivates at that scope."""
     nodes = [_deactivate_node("deactivate_call", start_y, call_id, api_key)]
     return nodes, [], "deactivate_call"
+
+
+def _deactivate_self_node(node_id: str, position_y: int, workflow_id: int, api_key: str) -> dict:
+    """An httpRequest node that calls this instance's own deactivate route for
+    ONE workflow_id -- unlike _deactivate_node, it never touches a sibling
+    workflow. Used by the entry_recross watch: coming back to entry is not the
+    end of the call, so only this watch is retired (see module docstring).
+    Fire-and-forget, same as _deactivate_node.
+    """
+    url = f"{_loopback_base_url()}/api/v1/pricebreach/workflow/{workflow_id}/deactivate"
+    return {
+        "id": node_id,
+        "type": "httpRequest",
+        "position": {"x": 0, "y": position_y},
+        "data": {
+            "method": "POST",
+            "url": url,
+            "headers": json.dumps({"Content-Type": "application/json"}),
+            "body": json.dumps({"apikey": api_key}),
+            "timeout": 10,
+        },
+    }
+
+
+def _deactivate_self_chain(
+    workflow_id: int, api_key: str, start_y: int
+) -> tuple[list[dict], list[dict], str]:
+    """The [deactivate_self] tail used by the entry_recross watch. Returns
+    (nodes, edges, last_node_id), matching _deactivate_chain's shape."""
+    nodes = [_deactivate_self_node("deactivate_self", start_y, workflow_id, api_key)]
+    return nodes, [], "deactivate_self"
 
 
 def _sl_target_graph(
@@ -337,12 +376,12 @@ def _entry_recross_graph(
     ]
     edges = [{"id": "edge-trigger-notify", "source": "trigger", "target": "notify"}]
 
-    deact_nodes, deact_edges, _ = _deactivate_chain(call_id, api_key, start_y=300)
+    # Self only, not the call_id pair: coming back to entry does not end the
+    # call, so the sl_target watch must stay live. See module docstring.
+    deact_nodes, deact_edges, last_id = _deactivate_self_chain(own_id, api_key, start_y=300)
     nodes += deact_nodes
     edges += deact_edges
-    edges.append(
-        {"id": "edge-notify-deactivate_call", "source": "notify", "target": "deactivate_call"}
-    )
+    edges.append({"id": f"edge-notify-{last_id}", "source": "notify", "target": last_id})
 
     return {
         "name": name,
@@ -518,8 +557,10 @@ def create_and_activate(
             "watching": f"price {entry_condition} {entry_price}",
         }
         message = (
-            "Each watch fires once, notifies your webhook, then deactivates both itself and its "
-            "sibling watch automatically -- no separate deactivate call needed."
+            "Each watch fires once and notifies your webhook. sl_target firing ends the call and "
+            "deactivates both watches; entry_recross firing deactivates only itself, since price "
+            "can still go on to hit stop_loss or target1 afterwards -- no separate deactivate call "
+            "needed either way."
         )
     else:
         workflows["entry_recross"] = None
@@ -541,15 +582,20 @@ def create_and_activate(
     )
 
 
-def _deactivate_one(workflow_id: int, api_key: str) -> tuple[bool, str, int]:
+def deactivate_one(workflow_id: int, api_key: str) -> tuple[bool, str, int]:
     """Stop one live watch (if still registered) and flip is_active off.
 
     Flow workflows have no owner column, so this is the one place this
     module adds a check the underlying /flow/api/workflows/* routes do not
     have: the caller's apikey must match the one the workflow was activated
     with, so one account's apikey cannot deactivate another account's watch
-    just by guessing a workflow id. Returns (success, message, status_code)
-    -- deactivate_by_call_id() aggregates this across a call_id's workflows.
+    just by guessing a workflow id. Returns (success, message, status_code).
+
+    Two callers: deactivate_by_call_id() aggregates this across a call_id's
+    workflows (the sl_target watch's deactivate node), and
+    restx_api/price_breach_monitor.py's per-workflow deactivate route calls
+    it directly for a single id (the entry_recross watch's deactivate node
+    -- see _deactivate_self_node -- and manual/operator use).
     """
     workflow = get_workflow(workflow_id)
     if not workflow:
@@ -599,7 +645,7 @@ def deactivate_by_call_id(call_id: str, api_key: str) -> tuple[bool, dict[str, A
 
     deactivated_ids = []
     for workflow in workflows:
-        success, _message, _status = _deactivate_one(workflow.id, api_key)
+        success, _message, _status = deactivate_one(workflow.id, api_key)
         if success:
             deactivated_ids.append(workflow.id)
 

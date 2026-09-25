@@ -29,7 +29,7 @@ def authenticate_broker(password=None, twofa=None, twofa_type=None, account_id=N
         # Force twofa_type to be totp
         twofa_type = "totp"
 
-        BROKER_API_SECRET = get_broker_api_secret(account_id)
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="tradejini")
         if not BROKER_API_SECRET:
             return None, "BROKER_API_SECRET environment variable not set"
 
@@ -79,7 +79,7 @@ def get_auth_url(account_id=None):
     """
     Generate the authorization URL for Tradejini OAuth flow
     """
-    BROKER_API_SECRET = get_broker_api_secret(account_id)
+    BROKER_API_SECRET = get_broker_api_secret(account_id, broker="tradejini")
     REDIRECT_URI = os.getenv("REDIRECT_URI")
 
     params = {
@@ -95,8 +95,8 @@ def get_auth_url(account_id=None):
 
 def authenticate_broker_oauth(code, account_id=None):
     try:
-        BROKER_API_KEY = get_broker_api_key(account_id)
-        BROKER_API_SECRET = get_broker_api_secret(account_id)
+        BROKER_API_KEY = get_broker_api_key(account_id, broker="tradejini")
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="tradejini")
 
         url = f"{BASE_URL}/api-gw/oauth/token"
         data = {

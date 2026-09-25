@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from broker.fivepaisa.streaming.fivepaisa_websocket import FivePaisaWebSocket
 from database.auth_db import get_auth_token
 from database.token_db import get_token
+from utils.config import get_broker_api_key
 
 # Add parent directory to path to allow imports
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../"))
@@ -44,6 +45,12 @@ class FivepaisaWebSocketAdapter(BaseBrokerWebSocketAdapter):
         self.max_reconnect_delay = 60  # Maximum delay in seconds
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 10
+        # Consecutive reconnect attempts that found no auth token at all (as
+        # opposed to a successful fetch). A few in a row means the account was
+        # revoked/logged out, not a slow daily rollover -- see
+        # _rebuild_client_with_fresh_token.
+        self._token_miss_count = 0
+        self.MAX_CONSECUTIVE_TOKEN_MISSES = 3
         self.running = False
         self.lock = threading.Lock()
         # Single reconnect driver: only one _connect_with_retry thread may be
@@ -111,41 +118,70 @@ class FivepaisaWebSocketAdapter(BaseBrokerWebSocketAdapter):
         self.running = True
 
     def _resolve_client_code(self, user_id: str) -> str:
-        """Resolve the 5Paisa client_code from BROKER_API_KEY, falling back to
-        user_id. Format: api_key:::user_id:::client_id"""
-        broker_api_key = os.getenv("BROKER_API_KEY")
+        """Resolve the 5Paisa client_code from the account's broker_api_key.
+
+        ``user_id`` here is the account_id (see initialize()), so this must
+        go through utils.config.get_broker_api_key(account_id, broker="fivepaisa") -- the
+        per-account DB-stored credential wins, falling back to the
+        instance-wide Settings row, then the legacy .env BROKER_API_KEY --
+        exactly like broker/fivepaisa/api/order_api.py._get_5paisa_credentials
+        does for orders. Reading os.getenv("BROKER_API_KEY") directly here
+        (as this used to) skips the per-account credential entirely, so on
+        any multi-account install it silently falls through to the "not
+        found" branch below and sends the account_id itself as ClientCode --
+        5paisa then 401s the handshake no matter how valid the auth token is.
+        Format: api_key:::user_id:::client_id.
+        """
+        broker_api_key = get_broker_api_key(user_id, broker="fivepaisa")
         if broker_api_key:
             try:
                 parts = broker_api_key.split(":::")
                 if len(parts) >= 3:
                     client_code = parts[2]  # client_id is the third part
-                    self.logger.debug(f"Using client_code from BROKER_API_KEY: {client_code}")
+                    self.logger.debug(f"Using client_code from broker_api_key: {client_code}")
                     return client_code
                 self.logger.warning(
-                    "BROKER_API_KEY format incorrect, using user_id as client_code"
+                    "broker_api_key format incorrect, using user_id as client_code"
                 )
             except Exception as e:
-                self.logger.error(f"Error parsing BROKER_API_KEY: {e}")
+                self.logger.error(f"Error parsing broker_api_key: {e}")
             return user_id
-        self.logger.warning("BROKER_API_KEY not found, using user_id as client_code")
+        self.logger.warning("broker_api_key not found, using user_id as client_code")
         return user_id
 
-    def _rebuild_client_with_fresh_token(self) -> None:
+    def _rebuild_client_with_fresh_token(self) -> bool:
         """Re-read a fresh auth token from the DB and rebuild the WebSocket
         client/URL. Indian broker tokens roll over daily (~3 AM IST); the URL
         bakes the token at connect time, so a reconnect must use a fresh token
         or the feed stays dead until process restart. If no fresh token is
-        available, keep the existing client and log a warning."""
+        available, keep the existing client and log a warning -- unless that
+        has now happened MAX_CONSECUTIVE_TOKEN_MISSES times in a row, which
+        means the account was revoked/logged out rather than mid-rollover, so
+        retrying with the stale client is pointless (it will only 401 forever).
+
+        Returns:
+            False when the caller should give up instead of attempting to
+            connect; True otherwise.
+        """
         if not self.user_id:
-            return
+            return True
 
         fresh_token = get_auth_token(self.user_id, bypass_cache=True)
         if not fresh_token:
+            self._token_miss_count += 1
+            if self._token_miss_count >= self.MAX_CONSECUTIVE_TOKEN_MISSES:
+                self.logger.error(
+                    f"No auth token found for {self._token_miss_count} consecutive "
+                    "reconnect attempts; account is likely revoked. Giving up."
+                )
+                return False
             self.logger.warning(
-                "No fresh auth token found on reconnect; reusing existing token"
+                "No fresh auth token found on reconnect; reusing existing token "
+                f"(miss {self._token_miss_count}/{self.MAX_CONSECUTIVE_TOKEN_MISSES})"
             )
-            return
+            return True
 
+        self._token_miss_count = 0
         with self.lock:
             client_code = self.client_code or self._resolve_client_code(self.user_id)
             try:
@@ -172,6 +208,7 @@ class FivepaisaWebSocketAdapter(BaseBrokerWebSocketAdapter):
                 self.logger.info("Rebuilt 5Paisa WebSocket client with fresh auth token")
             except Exception as e:
                 self.logger.error(f"Failed to rebuild client with fresh token: {e}")
+        return True
 
     def connect(self) -> None:
         """Establish connection to 5Paisa WebSocket"""
@@ -184,6 +221,7 @@ class FivepaisaWebSocketAdapter(BaseBrokerWebSocketAdapter):
             # after a prior max-attempts giveup will actually reconnect.
             self.running = True
             self.reconnect_attempts = 0
+            self._token_miss_count = 0
             self._stop_event.clear()
             if self._connect_thread and self._connect_thread.is_alive():
                 self.logger.debug("Connect thread already running; not starting another.")
@@ -222,7 +260,14 @@ class FivepaisaWebSocketAdapter(BaseBrokerWebSocketAdapter):
             try:
                 # Re-read a fresh token before every connect attempt so a
                 # daily-rolled token doesn't leave the feed permanently dead.
-                self._rebuild_client_with_fresh_token()
+                # False means the account has been unauthenticated for several
+                # attempts in a row (revoked, not mid-rollover) -- stop instead
+                # of hammering the broker with doomed connects.
+                if not self._rebuild_client_with_fresh_token():
+                    with self.lock:
+                        self.running = False
+                        self._connect_thread = None
+                    return
 
                 self.logger.info(
                     f"Connecting to 5Paisa WebSocket (attempt {self.reconnect_attempts + 1})"

@@ -21,8 +21,8 @@ def authenticate_broker(request_token, account_id=None):
         # Get the shared httpx client
         client = get_httpx_client()
         # Fetching the necessary credentials from environment variables
-        BROKER_API_KEY = get_broker_api_key(account_id)
-        BROKER_API_SECRET = get_broker_api_secret(account_id)
+        BROKER_API_KEY = get_broker_api_key(account_id, broker="compositedge")
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="compositedge")
 
         # Make POST request to get the final token
         payload = {
@@ -71,8 +71,8 @@ def get_feed_token(account_id=None):
     try:
         # Fetch credentials for feed token (per-account first, see
         # utils.config.get_broker_api_key_market's docstring)
-        BROKER_API_KEY_MARKET = get_broker_api_key_market(account_id)
-        BROKER_API_SECRET_MARKET = get_broker_api_secret_market(account_id)
+        BROKER_API_KEY_MARKET = get_broker_api_key_market(account_id, broker="compositedge")
+        BROKER_API_SECRET_MARKET = get_broker_api_secret_market(account_id, broker="compositedge")
 
         # Construct payload for feed token request
         feed_payload = {

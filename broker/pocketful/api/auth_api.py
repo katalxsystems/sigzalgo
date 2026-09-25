@@ -37,8 +37,8 @@ def authenticate_broker(auth_code=None, state=None, account_id=None):
             )
 
         # Get client credentials from environment
-        client_id = get_broker_api_key(account_id)
-        client_secret = get_broker_api_secret(account_id)
+        client_id = get_broker_api_key(account_id, broker="pocketful")
+        client_secret = get_broker_api_secret(account_id, broker="pocketful")
 
         if not client_id or not client_secret:
             return (
@@ -139,7 +139,7 @@ def get_authorization_url(account_id=None):
         Tuple of (url, state) or (None, error_message)
     """
     try:
-        client_id = get_broker_api_key(account_id)
+        client_id = get_broker_api_key(account_id, broker="pocketful")
         if not client_id:
             return None, "Missing API key. Please set BROKER_API_KEY in your environment."
 

@@ -39,8 +39,8 @@ def authenticate_broker(mobile_number, totp, mpin, account_id=None):
         # Get UCC from BROKER_API_KEY and access_token from BROKER_API_SECRET
         from utils.config import get_broker_api_key, get_broker_api_secret
 
-        ucc = get_broker_api_key(account_id)
-        access_token = get_broker_api_secret(account_id)
+        ucc = get_broker_api_key(account_id, broker="kotak")
+        access_token = get_broker_api_secret(account_id, broker="kotak")
 
         if not ucc:
             logger.error("BROKER_API_KEY (UCC) is not configured")

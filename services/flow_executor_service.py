@@ -40,6 +40,87 @@ def get_workflow_lock(workflow_id: int) -> threading.Lock:
         return _workflow_locks[workflow_id]
 
 
+# Symbols each workflow has an open market-data subscription for, as
+# {workflow_id: {(symbol, exchange, mode), ...}}.
+#
+# The subscribe nodes open a broker-side subscription and nothing ever closed
+# it: the websocket client is a process-wide singleton whose subscription set
+# outlives every run, so a workflow reading `{{webhook.symbol}}` accumulated one
+# per distinct symbol until the adapter ceiling (1000 x 3) was reached, after
+# which new subscriptions from /trading, the sandbox engine and the API began
+# failing. Deactivating or deleting the workflow now gives them back.
+_workflow_subscriptions: dict[int, set[tuple[str, str, str]]] = {}
+_workflow_subscriptions_lock = threading.Lock()
+
+
+def record_workflow_subscription(
+    workflow_id: int | None, symbol: str, exchange: str, mode: str
+) -> None:
+    """Remember a subscription so it can be released with the workflow."""
+    if workflow_id is None:
+        return
+    with _workflow_subscriptions_lock:
+        _workflow_subscriptions.setdefault(workflow_id, set()).add((symbol, exchange, mode))
+
+
+def release_workflow_subscriptions(workflow_id: int) -> int:
+    """Drop every subscription a workflow opened. Returns how many were released.
+
+    Called when a workflow is deactivated or deleted. Safe to call for a
+    workflow that never subscribed, and safe to call twice.
+    """
+    with _workflow_subscriptions_lock:
+        entries = _workflow_subscriptions.pop(workflow_id, set())
+    if not entries:
+        return 0
+
+    try:
+        from services.websocket_service import unsubscribe_from_symbols
+    except Exception:
+        logger.exception("Cannot release subscriptions: websocket service unavailable")
+        return 0
+
+    # Resolved once, not per symbol: it is a database read.
+    username, broker = _subscription_owner(workflow_id)
+    if not username:
+        logger.warning(
+            f"Workflow {workflow_id} has {len(entries)} subscription(s) but no "
+            f"resolvable session to release them from"
+        )
+        return 0
+
+    released = 0
+    for symbol, exchange, mode in entries:
+        try:
+            ok, _result, _ = unsubscribe_from_symbols(
+                username, broker, [{"symbol": symbol, "exchange": exchange}], mode
+            )
+            released += 1 if ok else 0
+        except Exception:
+            # One symbol failing must not strand the rest.
+            logger.exception(f"Failed to release {mode} on {exchange}:{symbol}")
+    logger.info(f"Released {released}/{len(entries)} subscription(s) for workflow {workflow_id}")
+    return released
+
+
+def _subscription_owner(workflow_id: int) -> tuple[str | None, str]:
+    """The username and broker whose session holds this workflow's subscriptions."""
+    from database.auth_db import get_broker_name, get_username_by_apikey
+    from database.flow_db import get_workflow, get_workflow_api_key
+
+    try:
+        # get_workflow_api_key takes the workflow row, not its id -- it reads
+        # workflow.api_key directly.
+        workflow = get_workflow(workflow_id)
+        api_key = get_workflow_api_key(workflow) if workflow else None
+        if not api_key:
+            return None, "unknown"
+        return get_username_by_apikey(api_key), get_broker_name(api_key) or "unknown"
+    except Exception:
+        logger.exception(f"Cannot resolve subscription owner for workflow {workflow_id}")
+        return None, "unknown"
+
+
 def parse_time_string(
     time_str: str, default_hour: int = 9, default_minute: int = 15
 ) -> tuple[int, int, int]:
@@ -68,9 +149,12 @@ def parse_time_string(
 class WorkflowContext:
     """Context for storing variables during workflow execution"""
 
-    def __init__(self):
+    def __init__(self, workflow_id: int | None = None):
         self.variables: dict[str, Any] = {}
         self.condition_results: dict[str, bool] = {}
+        # Which workflow this run belongs to, so a subscription it opens can be
+        # released when that workflow is deactivated or deleted.
+        self.workflow_id = workflow_id
 
     def set_variable(self, name: str, value: Any):
         """Store a variable"""
@@ -2235,7 +2319,7 @@ class NodeExecutor:
         Returns:
             Market data dict or None if failed
         """
-        import threading
+        from utils import real_threading
 
         try:
             from database.auth_db import get_broker_name, verify_api_key
@@ -2262,7 +2346,11 @@ class NodeExecutor:
 
             # Thread-safe container for captured data
             captured_data = {"data": None}
-            data_event = threading.Event()
+            # Real, not green: on_market_data() sets this from the websocket
+            # client's asyncio loop thread while this greenlet waits on it.
+            # A green Event set from a real thread never wakes its waiter,
+            # so the node sat out its whole timeout. See utils/real_threading.
+            data_event = real_threading.Event()
 
             def on_market_data(data):
                 """Callback to capture data with matching mode and symbol"""
@@ -2305,13 +2393,19 @@ class NodeExecutor:
                 # Subscribe to symbol
                 symbols = [{"symbol": symbol, "exchange": exchange}]
                 sub_success, sub_result, _ = subscribe_to_symbols(username, broker, symbols, mode)
+                if sub_success:
+                    record_workflow_subscription(
+                        getattr(self.context, "workflow_id", None), symbol, exchange, mode
+                    )
 
                 if not sub_success:
                     self.log(f"WebSocket subscribe failed: {sub_result.get('message')}", "warning")
                     return None
 
-                # Wait for data with the correct mode (using event instead of polling)
-                if data_event.wait(timeout=timeout):
+                # Wait for data with the correct mode. A plain Event.wait()
+                # here would block the eventlet hub for the whole timeout;
+                # wait_for() polls is_set() so it yields between checks.
+                if real_threading.wait_for(data_event, timeout):
                     return captured_data["data"]
                 else:
                     return None  # Timeout
@@ -3061,7 +3155,7 @@ def execute_workflow(
             return {"status": "error", "message": "Failed to create execution record"}
 
         logs = []
-        context = WorkflowContext()
+        context = WorkflowContext(workflow_id=workflow_id)
 
         if webhook_data:
             context.set_variable("webhook", webhook_data)

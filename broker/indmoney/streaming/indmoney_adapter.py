@@ -180,9 +180,16 @@ class IndmoneyWebSocketAdapter(BaseBrokerWebSocketAdapter):
             while self.running and self.reconnect_attempts < self.max_reconnect_attempts:
                 try:
                     # Refresh the client's token before connecting so a reconnect
-                    # after the daily token rollover uses a live token.
-                    if self.ws_client:
-                        self.ws_client._refresh_access_token()
+                    # after the daily token rollover uses a live token. False
+                    # means the account has been unauthenticated for several
+                    # attempts in a row (revoked, not mid-rollover) -- stop
+                    # instead of hammering the broker with doomed connects.
+                    if self.ws_client and not self.ws_client._refresh_access_token():
+                        self.running = False
+                        self.logger.error(
+                            "Account revoked or logged out; giving up on reconnect."
+                        )
+                        break
 
                     self.logger.info(
                         f"Connecting to INDmoney WebSocket (attempt {self.reconnect_attempts + 1})"
@@ -437,6 +444,8 @@ class IndmoneyWebSocketAdapter(BaseBrokerWebSocketAdapter):
         # A healthy open resets the retry budget so a long-lived connection that
         # drops occasionally doesn't eventually exhaust max_reconnect_attempts.
         self.reconnect_attempts = 0
+        if self.ws_client:
+            self.ws_client._token_miss_count = 0
 
         # Resubscribe to existing subscriptions if reconnecting
         with self.lock:

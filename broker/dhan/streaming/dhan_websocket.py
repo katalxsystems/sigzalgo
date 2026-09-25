@@ -95,6 +95,13 @@ class DhanWebSocket:
         self._fatal_error = False
         self._fatal_error_message = None
 
+        # Consecutive reconnect attempts that found no auth token at all (as
+        # opposed to a successful fetch). A few in a row means the account was
+        # revoked/logged out, not a slow daily rollover -- see
+        # _refresh_access_token.
+        self._token_miss_count = 0
+        self.MAX_CONSECUTIVE_TOKEN_MISSES = 3
+
         # Health monitoring (issue #1372). last_message_time is stamped on
         # every inbound frame; the watchdog thread closes the socket if no
         # frames arrive within DATA_TIMEOUT — _run_websocket then handles
@@ -127,30 +134,46 @@ class DhanWebSocket:
             f"Dhan WebSocket URL constructed: {self.ws_url[:100]}..."
         )  # Log first 100 chars for security
 
-    def _refresh_access_token(self):
+    def _refresh_access_token(self) -> bool:
         """Re-read a fresh access token from the database and rebuild ws_url.
 
         Indian broker tokens roll over daily at ~3 AM IST. On reconnect we must
         re-read the current token from the database (bypassing the auth cache,
         which can hold a stale token after rollover) and rebuild the URL that
         embeds the token. If no fresh token is available, keep the existing one
-        rather than crashing.
+        rather than crashing -- unless that has now happened
+        MAX_CONSECUTIVE_TOKEN_MISSES times in a row, which means the account
+        was revoked/logged out rather than mid-rollover, so retrying with the
+        stale token is pointless (it will only fail auth forever).
+
+        Returns:
+            False when the caller should stop reconnecting; True otherwise.
         """
         if not self.user_id:
-            return
+            return True
         try:
             fresh_token = get_auth_token(self.user_id, bypass_cache=True)
             if not fresh_token:
+                self._token_miss_count += 1
+                if self._token_miss_count >= self.MAX_CONSECUTIVE_TOKEN_MISSES:
+                    self.logger.error(
+                        f"No auth token found for {self._token_miss_count} consecutive "
+                        "reconnect attempts; account is likely revoked. Giving up."
+                    )
+                    return False
                 self.logger.warning(
-                    "No fresh auth token found on reconnect - keeping existing token"
+                    "No fresh auth token found on reconnect - keeping existing token "
+                    f"(miss {self._token_miss_count}/{self.MAX_CONSECUTIVE_TOKEN_MISSES})"
                 )
-                return
+                return True
+            self._token_miss_count = 0
             with self.lock:
                 self.access_token = fresh_token
                 self._build_url()
             self.logger.info("Refreshed Dhan access token from database for reconnect")
         except Exception as e:
             self.logger.error(f"Error refreshing access token on reconnect: {e}")
+        return True
 
     def connect(self):
         """Establish WebSocket connection"""
@@ -159,6 +182,7 @@ class DhanWebSocket:
             return
 
         self.running = True
+        self._token_miss_count = 0
         self.ws_thread = threading.Thread(target=self._run_websocket, daemon=True)
         self.ws_thread.start()
 
@@ -227,7 +251,9 @@ class DhanWebSocket:
                 # reconnect after the ~3 AM IST daily token rollover would reuse
                 # the dead construction-time token and the feed would stay dead
                 # until a process restart.
-                self._refresh_access_token()
+                if not self._refresh_access_token():
+                    self.running = False
+                    break
 
     def disconnect(self):
         """Disconnect from WebSocket with proper resource cleanup"""

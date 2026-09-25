@@ -71,6 +71,12 @@ class GrowwNATSWebSocket:
         self.authenticated = False
         self.server_nonce = None  # Server nonce for signing
 
+        # Consecutive reconnect attempts where token_provider yielded nothing.
+        # A few in a row means the account was revoked/logged out, not a slow
+        # daily rollover -- see _refresh_auth_token.
+        self._token_miss_count = 0
+        self.MAX_CONSECUTIVE_TOKEN_MISSES = 3
+
         # Groww URLs
         self.ws_url = "wss://socket-api.groww.in"
         self.token_url = "https://api.groww.in/v1/api/apex/v1/socket/token/create/"
@@ -168,22 +174,39 @@ class GrowwNATSWebSocket:
             self.connected = False
             raise
 
-    def _refresh_auth_token(self):
+    def _refresh_auth_token(self) -> bool:
         """Re-read a fresh auth token from the DB via token_provider before a
-        reconnect. Keeps the existing token if the provider yields nothing."""
+        reconnect. Keeps the existing token if the provider yields nothing --
+        unless that has now happened MAX_CONSECUTIVE_TOKEN_MISSES times in a
+        row, which means the account was revoked/logged out rather than
+        mid-rollover, so retrying with the stale token is pointless.
+
+        Returns:
+            False when the caller should stop reconnecting; True otherwise.
+        """
         if not self.token_provider:
-            return
+            return True
         try:
             fresh = self.token_provider()
             if fresh:
+                self._token_miss_count = 0
                 self.auth_token = fresh
                 logger.info("Refreshed Groww auth token before reconnect")
             else:
+                self._token_miss_count += 1
+                if self._token_miss_count >= self.MAX_CONSECUTIVE_TOKEN_MISSES:
+                    logger.error(
+                        f"No auth token found for {self._token_miss_count} consecutive "
+                        "reconnect attempts; account is likely revoked. Giving up."
+                    )
+                    return False
                 logger.warning(
-                    "No fresh Groww auth token available; reusing existing token"
+                    "No fresh Groww auth token available; reusing existing token "
+                    f"(miss {self._token_miss_count}/{self.MAX_CONSECUTIVE_TOKEN_MISSES})"
                 )
         except Exception as e:
             logger.error(f"Error refreshing Groww auth token: {e}")
+        return True
 
     def _generate_socket_token(self):
         """Generate socket token from Groww API using minimal nkeys"""
@@ -284,6 +307,7 @@ class GrowwNATSWebSocket:
         """Handle WebSocket open"""
         logger.info("WebSocket connected to Groww")
         self.connected = True
+        self._token_miss_count = 0
 
         # NATS protocol: Server sends INFO first, then we respond with CONNECT
         # Don't send CONNECT immediately, wait for INFO message
@@ -513,8 +537,15 @@ class GrowwNATSWebSocket:
             try:
                 # Re-read a fresh auth token and regenerate the socket token so
                 # the reconnect's Authorization header uses live credentials
-                # instead of the dead daily-rolled token.
-                self._refresh_auth_token()
+                # instead of the dead daily-rolled token. False means the
+                # account has been unauthenticated for several attempts in a
+                # row (revoked, not mid-rollover) -- stop instead of recursing
+                # into another doomed connect (there is no attempt cap here
+                # otherwise, unlike the other broker adapters).
+                if not self._refresh_auth_token():
+                    self.running = False
+                    self.on_error("Account revoked or logged out")
+                    return
                 self._generate_socket_token()
                 self._run_websocket()
             except Exception as e:

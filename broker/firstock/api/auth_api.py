@@ -39,8 +39,8 @@ def authenticate_broker(userid, password, totp_code, account_id=None):
             - On failure: (None, error_message_string)
     """
     # Get the Firstock API credentials from environment variables
-    api_key = get_broker_api_secret(account_id)  # This should be the apiKey
-    vendor_code = get_broker_api_key(account_id)  # This should be the vendorCode
+    api_key = get_broker_api_secret(account_id, broker="firstock")  # This should be the apiKey
+    vendor_code = get_broker_api_key(account_id, broker="firstock")  # This should be the vendorCode
 
     # Validate required environment variables
     if not api_key:

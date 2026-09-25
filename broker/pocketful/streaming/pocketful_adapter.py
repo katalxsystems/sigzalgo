@@ -45,6 +45,11 @@ class PocketfulWebSocketAdapter(BaseBrokerWebSocketAdapter):
         self.running = False
         self.lock = threading.Lock()
         self.heartbeat_thread = None
+        # Consecutive reconnect attempts that found no auth token at all (as
+        # opposed to a successful fetch). A few in a row means the account was
+        # revoked/logged out, not a slow daily rollover.
+        self._token_miss_count = 0
+        self.MAX_CONSECUTIVE_TOKEN_MISSES = 3
 
     def initialize(
         self, broker_name: str, user_id: str, auth_data: dict[str, str] | None = None
@@ -105,11 +110,21 @@ class PocketfulWebSocketAdapter(BaseBrokerWebSocketAdapter):
                 # reconnect after rollover must not reuse the construction-time token.
                 fresh_token = get_auth_token(self.user_id, bypass_cache=True)
                 if fresh_token:
+                    self._token_miss_count = 0
                     self.access_token = fresh_token
                 else:
+                    self._token_miss_count += 1
+                    if self._token_miss_count >= self.MAX_CONSECUTIVE_TOKEN_MISSES:
+                        self.logger.error(
+                            f"No auth token found for {self._token_miss_count} consecutive "
+                            "reconnect attempts; account is likely revoked. Giving up."
+                        )
+                        self.running = False
+                        break
                     self.logger.warning(
                         "Could not fetch fresh auth token from database; "
-                        "reusing existing token for reconnection"
+                        "reusing existing token for reconnection "
+                        f"(miss {self._token_miss_count}/{self.MAX_CONSECUTIVE_TOKEN_MISSES})"
                     )
 
                 # Build WebSocket URL
@@ -347,6 +362,7 @@ class PocketfulWebSocketAdapter(BaseBrokerWebSocketAdapter):
         self.logger.info("Connected to Pocketful WebSocket")
         self.connected = True
         self.reconnect_attempts = 0
+        self._token_miss_count = 0
 
         # Start heartbeat thread
         self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)

@@ -11,8 +11,8 @@ logger = get_logger(__name__)
 
 def authenticate_broker(code, account_id=None):
     try:
-        BROKER_API_KEY = get_broker_api_key(account_id)
-        BROKER_API_SECRET = get_broker_api_secret(account_id)
+        BROKER_API_KEY = get_broker_api_key(account_id, broker="upstox")
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="upstox")
         REDIRECT_URL = get_broker_redirect_url()
 
         if not all([BROKER_API_KEY, BROKER_API_SECRET, REDIRECT_URL]):

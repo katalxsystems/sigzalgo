@@ -115,6 +115,7 @@ from csp import apply_csp_middleware  # Import the CSP middleware
 from database.action_center_db import init_db as ensure_action_center_tables_exists
 from database.analyzer_db import init_db as ensure_analyzer_tables_exists
 from database.apilog_db import init_db as ensure_api_log_tables_exists
+from database.apscheduler_jobstore_db import ensure_jobstore_tables_exist
 from database.auth_db import init_db as ensure_auth_tables_exists
 from database.chartink_db import init_db as ensure_chartink_tables_exists
 from database.flow_db import init_db as ensure_flow_tables_exists
@@ -278,6 +279,7 @@ def create_app():
     # Warming here means the first backtest does not pay it and boot does not
     # block on it.
     from portfolio import warm_analytics
+
     warm_analytics()
 
     # Exempt API endpoints from CSRF protection (they use API key authentication)
@@ -728,6 +730,7 @@ def setup_environment(app):
             import time
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
+            from database.basket_db import ensure_basket_tables_exists
             from database.chart_prefs_db import ensure_chart_prefs_tables_exists
             from database.market_calendar_db import ensure_market_calendar_tables_exists
             from database.qty_freeze_db import ensure_qty_freeze_tables_exists
@@ -756,6 +759,13 @@ def setup_environment(app):
                 ("Scalping DB", ensure_scalping_tables_exists),
                 ("Leverage DB", ensure_leverage_tables_exists),
                 ("Strategy Portfolio DB", ensure_strategy_portfolio_tables_exists),
+                ("Basket DB", ensure_basket_tables_exists),
+                # Created here, not left to APScheduler's own CREATE TABLE in
+                # scheduler.start(). That DDL would otherwise run further down
+                # this function, after db_ready releases the rest of the boot,
+                # and has to win the write lock against it. This phase is
+                # single-threaded, so the same DDL runs uncontended. See #1750.
+                ("Scheduler Job Stores", ensure_jobstore_tables_exist),
             ]
 
             db_init_start = time.time()
@@ -833,12 +843,33 @@ def setup_environment(app):
                 logger.exception("Failed to restore Flow order-update watches")
 
             try:
+                from services.flow_price_monitor_service import restore_price_alerts
+
+                restore_price_alerts()
+            except Exception:
+                logger.exception("Failed to restore Flow price alerts")
+
+            try:
+                from services.flow_scheduler_service import reconcile_scheduler_jobs
+
+                reconcile_scheduler_jobs()
+            except Exception:
+                logger.exception("Failed to reconcile Flow scheduler jobs")
+
+            try:
                 from services.historify_scheduler_service import init_historify_scheduler
 
                 init_historify_scheduler(socketio=socketio)
                 logger.debug("Historify scheduler initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize Historify scheduler: {e}")
+
+            try:
+                from services.broker_auto_login_service import start_broker_auto_login
+
+                start_broker_auto_login()
+            except Exception:
+                logger.exception("Failed to start broker auto-login monitor")
 
             try:
                 # Server-side scalping SL / target / trailing-stop engine. Runs

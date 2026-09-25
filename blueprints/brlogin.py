@@ -15,6 +15,7 @@ from limiter import limiter  # Import the limiter instance
 from utils.auth_utils import handle_auth_failure, handle_auth_success
 from utils.config import (
     get_broker_api_key,
+    get_broker_api_key_market,
     get_broker_api_secret,
     get_broker_redirect_url,
     get_login_rate_limit_hour,
@@ -60,10 +61,46 @@ def broker_callback(broker, para=None):
 
     # The broker account_id this login is connecting. "pending_account_id" is
     # set by the account-management UI (POST /api/accounts, then redirect
-    # here) when adding a specific account; without it, this falls back to
-    # the platform username, exactly reproducing pre-multi-account behavior
-    # (one implicit account per user, account_id == username).
-    account_id = session.get("pending_account_id") or session.get("user")
+    # here) when adding a specific account. Without it — a plain password
+    # login or the CMS SSO hand-off, neither of which route through that UI
+    # — fall back to this platform user's default account for THIS broker
+    # (scoped, because their overall default account may be a different
+    # broker entirely, whose credentials would be wrong here). Only when
+    # the user has no account at all for this broker does this drop back to
+    # the platform username, reproducing pre-multi-account behavior (one
+    # implicit account per user, account_id == username).
+    account_id = session.get("pending_account_id")
+    if not account_id:
+        from database.auth_db import get_default_account_id_for_broker
+
+        account_id = get_default_account_id_for_broker(session.get("user"), broker)
+    if not account_id:
+        # Neither an explicit selection nor an existing account for this
+        # broker. The bare platform username is the pre-multi-account
+        # fallback identifier, but it may already name a REAL Auth row for
+        # a DIFFERENT broker -- a legacy single-account connection from
+        # before this user adopted multi-account. Reusing that row here
+        # would silently authenticate THIS broker with the OTHER broker's
+        # stored app-registration credentials (observed: a user's
+        # username-named Angel row made a fresh fivepaisa login fail with
+        # Angel's BROKER_API_KEY format, since get_broker_api_key looks up
+        # by name only and doesn't know which broker it's being asked for).
+        # Only take the bare-username fallback when that's actually safe --
+        # no such row exists yet, or it does and already belongs to this
+        # same broker; otherwise mint a proper multi-account id, the same
+        # scheme database.auth_db.create_broker_account uses, so this
+        # broker gets its own row instead of colliding with the other one.
+        username = session.get("user")
+        from database.auth_db import Auth
+
+        existing = Auth.query.filter_by(name=username).first() if username else None
+        if not existing or existing.broker == broker:
+            account_id = username
+        else:
+            import secrets as _secrets
+
+            account_id = f"{username}_{broker}_{_secrets.token_hex(4)}"
+    logger.info(f"Resolved account_id={account_id!r} for broker={broker}")
 
     if session.get("logged_in") and not session.get("pending_account_id"):
         # Single-account-era shortcut: already fully logged in and this
@@ -81,6 +118,21 @@ def broker_callback(broker, para=None):
         # form, with no error and nothing in the network tab to explain it.
         session["broker"] = broker
         return redirect(url_for("dashboard_bp.dashboard"))
+
+    # Every broker's login needs this account's own app credential (API key,
+    # secret, or market-feed key -- which one varies by broker). There is no
+    # instance-wide fallback (see utils.config.get_broker_api_key), so fail
+    # here with a clear message instead of letting the broker reject the
+    # login -- or, like Angel, accept it and then answer "Invalid API Key"
+    # on every funds/quotes call afterwards. Skipped for the session-less
+    # external-auth callbacks above, which have no account to check yet.
+    if "user" in session and not _account_has_broker_credentials(account_id, broker):
+        error_message = (
+            f"Broker API key not configured for this {broker} account. "
+            f"Set it in Profile > Accounts."
+        )
+        logger.error(f"{error_message} (account_id={account_id!r})")
+        return handle_auth_failure(error_message, forward_url="broker.html")
 
     broker_auth_functions = app.broker_auth_functions
     auth_function = broker_auth_functions.get(f"{broker}_auth")
@@ -182,7 +234,7 @@ def broker_callback(broker, para=None):
         else:
             # Initial visit — redirect to AliceBlue login page
             logger.info("Redirecting to AliceBlue login page")
-            appcode = get_broker_api_key(account_id)
+            appcode = get_broker_api_key(account_id, broker=broker)
             if not appcode:
                 return handle_auth_failure(
                     "BROKER_API_KEY (appCode) not configured in environment",
@@ -354,7 +406,7 @@ def broker_callback(broker, para=None):
         # Some callback variants may not include clientId explicitly.
         # Fall back to BROKER_API_KEY to avoid false failures.
         if not client_id:
-            broker_api_key = (get_broker_api_key(account_id) or "").strip()
+            broker_api_key = (get_broker_api_key(account_id, broker=broker) or "").strip()
             if ":::" in broker_api_key:
                 client_id = broker_api_key.split(":::", 1)[0].strip()
             elif broker_api_key:
@@ -560,7 +612,7 @@ def broker_callback(broker, para=None):
             # Initial visit — redirect to Zebu OAuth login page
             logger.info("Redirecting to Zebu OAuth login page")
             # BROKER_API_KEY format: userid:::client_id
-            full_api_key = get_broker_api_key(account_id)
+            full_api_key = get_broker_api_key(account_id, broker=broker)
             if not full_api_key:
                 return handle_auth_failure(
                     "BROKER_API_KEY not configured in environment",
@@ -580,7 +632,7 @@ def broker_callback(broker, para=None):
             # Initial visit — redirect to Shoonya OAuth login page
             logger.info("Redirecting to Shoonya OAuth login page")
             # BROKER_API_KEY format: userid:::client_id
-            full_api_key = get_broker_api_key(account_id)
+            full_api_key = get_broker_api_key(account_id, broker=broker)
             if not full_api_key:
                 return handle_auth_failure(
                     "BROKER_API_KEY not configured in environment",
@@ -690,7 +742,7 @@ def broker_callback(broker, para=None):
         else:
             # Initial visit — redirect to the TradeSmart OAuth login page.
             logger.info("Redirecting to TradeSmart OAuth login page")
-            full_api_key = get_broker_api_key(account_id)
+            full_api_key = get_broker_api_key(account_id, broker=broker)
             if not full_api_key:
                 return handle_auth_failure(
                     "BROKER_API_KEY not configured in environment",
@@ -771,8 +823,8 @@ def broker_callback(broker, para=None):
     elif broker == "definedge":
         if request.method == "GET":
             # Trigger OTP generation and redirect to React page
-            api_token = get_broker_api_key(account_id)
-            api_secret = get_broker_api_secret(account_id)
+            api_token = get_broker_api_key(account_id, broker=broker)
+            api_secret = get_broker_api_secret(account_id, broker=broker)
 
             # Import the step1 function to trigger OTP
             from broker.definedge.api.auth_api import login_step1
@@ -800,8 +852,8 @@ def broker_callback(broker, para=None):
 
             # Handle OTP resend request
             if action == "resend":
-                api_token = get_broker_api_key(account_id)
-                api_secret = get_broker_api_secret(account_id)
+                api_token = get_broker_api_key(account_id, broker=broker)
+                api_secret = get_broker_api_secret(account_id, broker=broker)
 
                 from broker.definedge.api.auth_api import login_step1
 
@@ -833,7 +885,7 @@ def broker_callback(broker, para=None):
                     ), 401
 
                 # Get api_secret for authentication
-                api_secret = get_broker_api_secret(account_id)
+                api_secret = get_broker_api_secret(account_id, broker=broker)
 
                 # Use authenticate_broker for OTP verification
                 from broker.definedge.api.auth_api import authenticate_broker
@@ -907,7 +959,7 @@ def broker_callback(broker, para=None):
                 # No session data - initial request, redirect to RMoney OAuth login
                 from broker.rmoney.baseurl import INTERACTIVE_URL as RMONEY_INTERACTIVE_URL
 
-                BROKER_API_KEY_LOCAL = get_broker_api_key(account_id)
+                BROKER_API_KEY_LOCAL = get_broker_api_key(account_id, broker=broker)
                 callback_url = url_for(
                     "brlogin.broker_callback", broker="rmoney", _external=True
                 )
@@ -960,7 +1012,7 @@ def broker_callback(broker, para=None):
         session["broker"] = broker
         logger.info(f"Successfully connected broker: {broker}")
         if broker == "zerodha":
-            auth_token = f"{get_broker_api_key(account_id)}:{auth_token}"
+            auth_token = f"{get_broker_api_key(account_id, broker=broker)}:{auth_token}"
         if broker == "dhan":
             auth_token = f"{auth_token}"
 
@@ -1049,7 +1101,7 @@ def dhan_initiate_oauth():
 
     # Get client_id from BROKER_API_KEY (format: client_id:::api_key), DB-first
     # for the target account, falling back to .env
-    broker_api_key = get_broker_api_key(account_id)
+    broker_api_key = get_broker_api_key(account_id, broker="dhan")
     client_id = None
 
     if broker_api_key and ":::" in broker_api_key:
@@ -1089,6 +1141,17 @@ def dhan_initiate_oauth():
         return handle_auth_failure(error_message, forward_url="broker.html")
 
 
+def _account_has_broker_credentials(account_id, broker: str) -> bool:
+    """Whether this account has any app credential of its own for ``broker``."""
+    if not account_id:
+        return False
+    return bool(
+        get_broker_api_key(account_id, broker=broker)
+        or get_broker_api_secret(account_id, broker=broker)
+        or get_broker_api_key_market(account_id, broker=broker)
+    )
+
+
 def _require_account_api_key(broker: str):
     """Common initiate-oauth prologue: require a logged-in session and a
     resolved broker_api_key for the account being connected. Returns
@@ -1098,7 +1161,7 @@ def _require_account_api_key(broker: str):
         return None, None, redirect(url_for("auth.login"))
 
     account_id = _oauth_account_id()
-    api_key = get_broker_api_key(account_id)
+    api_key = get_broker_api_key(account_id, broker=broker)
     if not api_key:
         error_message = f"Broker API key not configured for this {broker} account."
         logger.error(error_message)
