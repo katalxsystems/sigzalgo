@@ -441,6 +441,22 @@ def get_distinct_underlyings(exchange: str = None) -> list[str]:
         return []
 
 
+def broker_symbol_count(broker: str) -> int | None:
+    """Rows stored in symtoken for ``broker``, or None if it can't be read."""
+    try:
+        from sqlalchemy import func, select
+
+        with engine.connect() as conn:
+            return conn.execute(
+                select(func.count()).select_from(SymToken.__table__).where(
+                    SymToken.__table__.c.broker == broker
+                )
+            ).scalar()
+    except Exception:
+        logger.exception(f"Could not count symtoken rows for broker {broker!r}")
+        return None
+
+
 def init_db():
     """Initialize the master contract database tables.
 

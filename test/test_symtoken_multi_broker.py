@@ -151,3 +151,23 @@ def test_insert_without_a_broker_raises_when_ambiguous(two_brokers):
         )
     db_session.rollback()
     assert isinstance(excinfo.value.orig, BrokerContextMissing)
+
+
+def test_downloaded_today_without_rows_triggers_download(two_brokers, monkeypatch):
+    # After the per-broker migration, a broker can have a "downloaded today"
+    # status but no rows (they belonged to whichever broker downloaded last).
+    from datetime import datetime
+
+    import pytz
+
+    from utils import auth_utils
+
+    after_cutoff = datetime.now(pytz.timezone("Asia/Kolkata")).replace(hour=23, minute=0)
+    monkeypatch.setattr(auth_utils, "get_last_download_time", lambda broker: after_cutoff)
+    monkeypatch.setattr(auth_utils, "get_master_contract_cutoff", lambda broker: (0, 0, pytz.timezone("Asia/Kolkata")))
+
+    should, _ = auth_utils.should_download_master_contract(BROKER_A)
+    assert should is False  # has rows, downloaded after cutoff
+
+    should, reason = auth_utils.should_download_master_contract("testbrokerempty")
+    assert should is True and "No symbols stored" in reason

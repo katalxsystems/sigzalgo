@@ -102,6 +102,17 @@ def should_download_master_contract(broker):
     # broker's rows separately (SymToken.broker), so another broker's
     # download never invalidates this one's.
 
+    # A recorded download is only useful if its rows are actually there. When
+    # symtoken moved to per-broker rows, the existing rows were assigned to the
+    # broker that last downloaded; another broker that also downloaded that
+    # same day still has a "downloaded today" status but no rows, and would
+    # otherwise skip downloading until the next day. The same applies after a
+    # failed or partial insert.
+    from database.symbol import broker_symbol_count
+
+    if broker_symbol_count(broker) == 0:
+        return True, f"No symbols stored for {broker}, downloading"
+
     # Get cutoff time and reference timezone for this broker
     cutoff_hour, cutoff_minute, tz = get_master_contract_cutoff(broker)
     tz_label = "UTC" if tz is UTC else "IST"
