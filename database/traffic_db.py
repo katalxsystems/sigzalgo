@@ -541,12 +541,8 @@ def purge_old_traffic_logs(days=None):
 
 def init_logs_db():
     """Initialize the logs database"""
-    # Extract directory from database URL and create if it doesn't exist
-    db_path = LOGS_DATABASE_URL.replace("sqlite:///", "")
-    db_dir = os.path.dirname(db_path)
-    if db_dir:
-        os.makedirs(db_dir, exist_ok=True)
-
+    # init_db_with_logging creates the directory for a SQLite URL and skips
+    # other backends (CockroachDB/Postgres URLs are not file paths).
     from database.db_init_helper import init_db_with_logging
 
     init_db_with_logging(LogBase, logs_engine, "Traffic Logs DB", logger)

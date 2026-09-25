@@ -1487,6 +1487,20 @@ def get_broker_name(provided_api_key):
     return None
 
 
+def api_key_auth_error(provided_api_key):
+    """User-facing message for when get_auth_token_broker() returned no token.
+
+    That happens for two different reasons: the key itself is invalid, or it
+    is valid but its broker account has no live session (never logged in,
+    logged out, token expired, or the last broker login failed). Reporting
+    the second as "Invalid openalgo apikey" sends people chasing the wrong
+    problem.
+    """
+    if not provided_api_key or not verify_api_key(provided_api_key):
+        return "Invalid openalgo apikey"
+    return "No active broker session for this account. Log in to the broker again."
+
+
 def get_auth_token_broker(provided_api_key, include_feed_token=False):
     """Resolve an API key to its account's auth token and broker, and scope the
     current request's symbol lookups to that broker (see

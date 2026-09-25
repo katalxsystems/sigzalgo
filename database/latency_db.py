@@ -296,12 +296,8 @@ class OrderLatency(LatencyBase):
 
 def init_latency_db():
     """Initialize the latency database"""
-    # Extract directory from database URL and create if it doesn't exist
-    db_path = LATENCY_DATABASE_URL.replace("sqlite:///", "")
-    db_dir = os.path.dirname(db_path)
-    if db_dir:
-        os.makedirs(db_dir, exist_ok=True)
-
+    # init_db_with_logging creates the directory for a SQLite URL and skips
+    # other backends (CockroachDB/Postgres URLs are not file paths).
     from database.db_init_helper import init_db_with_logging
 
     init_db_with_logging(LatencyBase, latency_engine, "Latency DB", logger)

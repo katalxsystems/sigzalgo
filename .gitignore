@@ -21,7 +21,8 @@ Thumbs.db
 config.ini
 .venvv
 .cloudflared/*.json
-
+.env copy
+.env crdb
 #DB Files, CSV Files and Log/Tmp Files
 
 # Temporary/debug files

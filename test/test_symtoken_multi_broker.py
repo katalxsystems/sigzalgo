@@ -151,3 +151,25 @@ def test_insert_without_a_broker_raises_when_ambiguous(two_brokers):
         )
     db_session.rollback()
     assert isinstance(excinfo.value.orig, BrokerContextMissing)
+
+
+def test_master_contract_values_are_normalized_for_strict_backends(two_brokers):
+    # A 5paisa MCX chunk mixed NaN names with text, numeric-text strikes and
+    # integer tokens; CockroachDB rejects mixed-type VALUES columns.
+    nan = float("nan")
+    rows = [
+        {"symbol": "ZINC23DEC26385PE", "brsymbol": "ZINC 385 PE", "name": "ZINC",
+         "exchange": "MCX", "token": 584323, "strike": "385", "lotsize": 5.0},
+        {"symbol": "ELECDMBL30DEC26FUT", "brsymbol": "ELECDMBL", "name": nan,
+         "exchange": "MCX", "token": 584325.0, "strike": nan, "lotsize": nan},
+    ]
+    with broker_scope(BROKER_A):
+        db_session.bulk_insert_mappings(SymToken, rows)
+        db_session.commit()
+        stored = {
+            r.symbol: r
+            for r in SymToken.query.filter(SymToken.exchange == "MCX").all()
+        }
+    zinc, elec = stored["ZINC23DEC26385PE"], stored["ELECDMBL30DEC26FUT"]
+    assert (zinc.token, zinc.strike, zinc.lotsize) == ("584323", 385.0, 5)
+    assert (elec.name, elec.token, elec.strike, elec.lotsize) == (None, "584325", None, None)

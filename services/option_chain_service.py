@@ -47,7 +47,7 @@ Strike Labels (different for CE and PE):
 
 from typing import Any
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import api_key_auth_error, get_auth_token_broker
 from database.symbol import SymToken, db_session
 from database.token_db import get_br_symbol
 from database.token_db_enhanced import fno_search_symbols
@@ -293,7 +293,7 @@ def get_option_chain(
             # and module import inside the same request.
             _auth, _feed, _broker = get_auth_token_broker(api_key, include_feed_token=True)
             if _auth is None:
-                return False, {"status": "error", "message": "Invalid openalgo apikey"}, 403
+                return False, {"status": "error", "message": api_key_auth_error(api_key)}, 403
             _bmod = import_broker_module(_broker)
             if _bmod is None:
                 return False, {"status": "error", "message": "Broker module not found"}, 404

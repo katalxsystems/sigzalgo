@@ -11,6 +11,12 @@ def authenticate_broker(clientcode, broker_pin, totp_code, account_id=None):
     Authenticate with the broker and return the auth token.
     """
     api_key = get_broker_api_key(account_id, broker="angel")
+    if not api_key:
+        return (
+            None,
+            None,
+            "Angel API key not configured for this account. Set it in Profile > Accounts.",
+        )
 
     try:
         # Get the shared httpx client
@@ -40,12 +46,16 @@ def authenticate_broker(clientcode, broker_pin, totp_code, account_id=None):
         data = response.text
         data_dict = json.loads(data)
 
-        if "data" in data_dict and "jwtToken" in data_dict["data"]:
+        # A refused login comes back with "data": null plus Angel's own
+        # message/errorcode (e.g. AG8004 Invalid API Key, invalid TOTP), so
+        # check the type before looking inside it.
+        login_data = data_dict.get("data")
+        if isinstance(login_data, dict) and login_data.get("jwtToken"):
             # Return both JWT token and feed token if available (None if not)
-            auth_token = data_dict["data"]["jwtToken"]
-            feed_token = data_dict["data"].get("feedToken", None)
-            return auth_token, feed_token, None
-        else:
-            return None, None, data_dict.get("message", "Authentication failed. Please try again.")
+            return login_data["jwtToken"], login_data.get("feedToken"), None
+
+        message = data_dict.get("message") or "Authentication failed. Please try again."
+        errorcode = data_dict.get("errorcode") or data_dict.get("errorCode")
+        return None, None, f"{message} ({errorcode})" if errorcode else message
     except Exception as e:
         return None, None, str(e)

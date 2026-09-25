@@ -1,3 +1,4 @@
+import math
 import os
 
 from sqlalchemy import (
@@ -14,6 +15,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, scoped_session, sessionmaker, with_loader_criteria
+from sqlalchemy.types import TypeDecorator
 
 from database.broker_context import (
     BrokerContextMissing,
@@ -42,6 +44,62 @@ Base = declarative_base()
 Base.query = db_session.query_property()
 
 
+def _missing(value):
+    """None, NaN (pandas' missing value) or an empty string."""
+    return value is None or (isinstance(value, float) and math.isnan(value)) or value == ""
+
+
+class _TextValue(TypeDecorator):
+    """String column that accepts what broker master-contract DataFrames
+    produce: NaN becomes NULL and numbers become text (584323 -> "584323",
+    584323.0 -> "584323").
+
+    CockroachDB/Postgres reject a multi-row INSERT whose VALUES mix types in
+    one column ("VALUES types float and string cannot be matched"); SQLite
+    silently accepted it, so these mixes went unnoticed.
+    """
+
+    impl = String
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            return None
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return value if isinstance(value, str) else str(value)
+
+
+class _FloatValue(TypeDecorator):
+    """Float column: NaN/empty -> NULL, numeric text ("385") -> float."""
+
+    impl = Float
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if _missing(value):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+
+class _IntValue(TypeDecorator):
+    """Integer column: NaN/empty -> NULL, 5.0 / "5" -> 5."""
+
+    impl = Integer
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if _missing(value):
+            return None
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+
 def _broker_for_insert():
     # Stamped on every inserted row: the broker whose master contract is
     # being downloaded (broker_scope in utils.auth_utils, or the calling
@@ -56,18 +114,19 @@ class SymToken(Base):
     # brexchange are broker-specific, so several brokers' rows coexist and
     # every query is scoped to one broker (see _scope_symtoken_to_broker).
     broker = Column(String(32), nullable=False, default=_broker_for_insert)
-    symbol = Column(String, nullable=False, index=True)
-    brsymbol = Column(String, nullable=False, index=True)
-    name = Column(String)
-    exchange = Column(String, index=True)
-    brexchange = Column(String, index=True)
-    token = Column(String, index=True)
-    expiry = Column(String)
-    strike = Column(Float)
-    lotsize = Column(Integer)
-    instrumenttype = Column(String)
-    tick_size = Column(Float)
-    contract_value = Column(Float)
+    # Value-normalizing types: see _TextValue.
+    symbol = Column(_TextValue, nullable=False, index=True)
+    brsymbol = Column(_TextValue, nullable=False, index=True)
+    name = Column(_TextValue)
+    exchange = Column(_TextValue, index=True)
+    brexchange = Column(_TextValue, index=True)
+    token = Column(_TextValue, index=True)
+    expiry = Column(_TextValue)
+    strike = Column(_FloatValue)
+    lotsize = Column(_IntValue)
+    instrumenttype = Column(_TextValue)
+    tick_size = Column(_FloatValue)
+    contract_value = Column(_FloatValue)
 
     # Composite indices for improved search performance
     __table_args__ = (
