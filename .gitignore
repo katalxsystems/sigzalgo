@@ -6,6 +6,8 @@ openalgo.db
 *.db-wal
 *.db-journal
 .env
+.env copy
+.env crdb
 .flaskenv
 *.pyc
 __pycache__/

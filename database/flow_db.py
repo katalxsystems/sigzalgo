@@ -471,7 +471,15 @@ def set_schedule_job_id(workflow_id, job_id):
 def create_execution(workflow_id, status="pending"):
     """Create a new workflow execution"""
     try:
-        execution = FlowWorkflowExecution(workflow_id=workflow_id, status=status, logs=[])
+        execution = FlowWorkflowExecution(
+            workflow_id=workflow_id,
+            status=status,
+            logs=[],
+            # Executions are created already "running"; update_execution_status
+            # only stamps started_at on a later change *to* running, so without
+            # this every run had no start time.
+            started_at=func.now() if status == "running" else None,
+        )
         db_session.add(execution)
         db_session.commit()
 
@@ -497,7 +505,9 @@ def get_workflow_executions(workflow_id, limit=50):
     try:
         return (
             FlowWorkflowExecution.query.filter_by(workflow_id=workflow_id)
-            .order_by(FlowWorkflowExecution.started_at.desc())
+            # Newest first by id: older rows have no started_at (see
+            # create_execution), and NULLs sort differently per backend.
+            .order_by(FlowWorkflowExecution.id.desc())
             .limit(limit)
             .all()
         )
@@ -506,8 +516,16 @@ def get_workflow_executions(workflow_id, limit=50):
         return []
 
 
-def update_execution_status(execution_id, status, error=None):
-    """Update execution status"""
+# Most log entries kept per execution: long-running monitor workflows can log
+# every few seconds for hours.
+MAX_EXECUTION_LOG_ENTRIES = 1000
+
+
+def update_execution_status(execution_id, status, error=None, logs=None):
+    """Update execution status, and when ``logs`` is given, store the run's log
+    (the last MAX_EXECUTION_LOG_ENTRIES entries) so it can be viewed later --
+    scheduled, webhook, price-alert and order-update runs have no HTTP
+    response to carry it."""
     try:
         execution = get_execution(execution_id)
         if not execution:
@@ -516,6 +534,8 @@ def update_execution_status(execution_id, status, error=None):
         execution.status = status
         if error:
             execution.error = error
+        if logs is not None:
+            execution.logs = list(logs[-MAX_EXECUTION_LOG_ENTRIES:])
 
         if status == "running" and not execution.started_at:
             execution.started_at = func.now()

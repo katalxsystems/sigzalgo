@@ -3169,6 +3169,14 @@ def execute_workflow(
             executor = NodeExecutor(client, context, logs, default_strategy=workflow.name)
             logger.info(f"Starting workflow: {workflow.name}")
             executor.log(f"Starting workflow: {workflow.name}")
+            breach = (webhook_data or {}).get("breach")
+            if isinstance(breach, dict) and breach.get("description"):
+                # Price-alert runs: record which level was breached, so the
+                # saved Execution Log shows why this run happened.
+                executor.log(
+                    f"Price alert: {breach.get('symbol')}@{breach.get('exchange')} "
+                    f"{breach['description']} (via {breach.get('source')})"
+                )
 
             nodes = workflow.nodes or []
             edges = workflow.edges or []
@@ -3205,7 +3213,7 @@ def execute_workflow(
                 depth=0,
             )
 
-            update_execution_status(execution.id, "completed")
+            update_execution_status(execution.id, "completed", logs=logs)
             return {
                 "status": "success",
                 "message": "Workflow executed successfully",
@@ -3222,7 +3230,7 @@ def execute_workflow(
                     "level": "error",
                 }
             )
-            update_execution_status(execution.id, "failed", error=str(e))
+            update_execution_status(execution.id, "failed", error=str(e), logs=logs)
             return {
                 "status": "error",
                 "message": str(e),

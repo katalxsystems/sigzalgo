@@ -30,6 +30,103 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+
+def _fmt_price(value: float | None) -> str:
+    """Price for logs: 2 decimals with thousands separators; more precision
+    for sub-1 prices (crypto)."""
+    if value is None:
+        return "n/a"
+    return f"{value:,.2f}" if abs(value) >= 1 else f"{value:.6g}"
+
+
+def _signed(value: float, base: float | None = None) -> str:
+    """'+12.35 (+0.05%)' -- a move, optionally with its % of ``base``."""
+    text = f"{value:+,.2f}" if abs(value) >= 1 or value == 0 else f"{value:+.4g}"
+    if base:
+        text += f" ({value / base * 100:+.2f}%)"
+    return text
+
+
+def describe_watch(alert: "PriceAlert") -> str:
+    """What an alert is watching for, in plain words."""
+    condition = FlowPriceMonitor.normalize_condition(alert.condition)
+    level = _fmt_price(alert.target_price)
+    lower = _fmt_price(alert.price_lower or alert.target_price)
+    upper = _fmt_price(alert.price_upper or alert.target_price)
+    pct = alert.percentage or 0
+    return {
+        "greater_than": f"price above {level}",
+        "less_than": f"price below {level}",
+        "crossing": f"price at {level} (within 0.1%)",
+        "crossing_up": f"price crossing above {level}",
+        "crossing_down": f"price crossing below {level}",
+        "entering_channel": f"price inside channel {lower} - {upper}",
+        "inside_channel": f"price inside channel {lower} - {upper}",
+        "exiting_channel": f"price outside channel {lower} - {upper}",
+        "outside_channel": f"price outside channel {lower} - {upper}",
+        "moving_up": "price moving up from the previous tick",
+        "moving_down": "price moving down from the previous tick",
+        "moving_up_percent": f"price moving up {pct}% or more from the previous price",
+        "moving_down_percent": f"price moving down {pct}% or more from the previous price",
+    }.get(condition, f"condition {alert.condition!r} at {level}")
+
+
+def describe_breach(
+    alert: "PriceAlert", price: float, previous: float | None
+) -> tuple[str, float | None]:
+    """How ``price`` met the alert: the level that was breached and by how
+    much. Returns (description, breached level)."""
+    condition = FlowPriceMonitor.normalize_condition(alert.condition)
+    target = alert.target_price
+    lower = alert.price_lower or target
+    upper = alert.price_upper or target
+    now = _fmt_price(price)
+    was = _fmt_price(previous)
+
+    if condition == "greater_than":
+        return f"LTP {now} is above level {_fmt_price(target)} by {_signed(price - target, target)}", target
+    if condition == "less_than":
+        return f"LTP {now} is below level {_fmt_price(target)} by {_signed(price - target, target)}", target
+    if condition == "crossing":
+        return (
+            f"LTP {now} reached level {_fmt_price(target)} "
+            f"(off by {_signed(price - target)}, tolerance 0.1% = {_fmt_price(price * 0.001)})"
+        ), target
+    if condition == "crossing_up":
+        path = f"{was} -> {now}" if previous is not None else f"first price {now} already above"
+        return (
+            f"crossed ABOVE level {_fmt_price(target)} ({path}), "
+            f"now {_signed(price - target, target)} beyond the level"
+        ), target
+    if condition == "crossing_down":
+        path = f"{was} -> {now}" if previous is not None else f"first price {now} already below"
+        return (
+            f"crossed BELOW level {_fmt_price(target)} ({path}), "
+            f"now {_signed(price - target, target)} beyond the level"
+        ), target
+    if condition in ("entering_channel", "inside_channel"):
+        return (
+            f"LTP {now} is inside channel {_fmt_price(lower)} - {_fmt_price(upper)} "
+            f"({_signed(price - lower)} from lower, {_signed(price - upper)} from upper)"
+        ), None
+    if condition in ("exiting_channel", "outside_channel"):
+        if price > upper:
+            return (
+                f"LTP {now} broke ABOVE channel upper {_fmt_price(upper)} "
+                f"by {_signed(price - upper, upper)} (channel {_fmt_price(lower)} - {_fmt_price(upper)})"
+            ), upper
+        return (
+            f"LTP {now} broke BELOW channel lower {_fmt_price(lower)} "
+            f"by {_signed(price - lower, lower)} (channel {_fmt_price(lower)} - {_fmt_price(upper)})"
+        ), lower
+    if condition in ("moving_up", "moving_down", "moving_up_percent", "moving_down_percent"):
+        move = price - (previous or 0)
+        threshold = (
+            f", threshold {alert.percentage or 0}%" if condition.endswith("_percent") else ""
+        )
+        return f"moved {was} -> {now} ({_signed(move, previous)}{threshold})", previous
+    return f"LTP {now} met condition {alert.condition!r} at {_fmt_price(target)}", target
+
 # Shared and bounded, never one thread per fire: an every_time alert on a fast
 # poll interval would otherwise spawn a thread per tick, each running a whole
 # workflow. Mirrors the order-update monitor's pool.
@@ -183,8 +280,9 @@ class FlowPriceMonitor:
         with self._alerts_lock:
             self._alerts[workflow_id] = alert
             logger.info(
-                f"Added price alert for workflow {workflow_id}: "
-                f"{symbol}@{exchange} {condition} {target_price}"
+                f"Added price alert for workflow {workflow_id}: watching "
+                f"{symbol}@{exchange} for {describe_watch(alert)} "
+                f"(trigger: {alert.trigger}, expires: {alert.expiration})"
             )
 
             if not self._running:
@@ -352,7 +450,7 @@ class FlowPriceMonitor:
             ]
         for alert in matches:
             try:
-                self._apply_price(alert, ltp)
+                self._apply_price(alert, ltp, source="websocket tick")
             except Exception as e:
                 logger.exception(f"Error applying tick to workflow {alert.workflow_id}: {e}")
 
@@ -481,12 +579,14 @@ class FlowPriceMonitor:
             if current_price <= 0:
                 return
 
-            self._apply_price(alert, current_price)
+            self._apply_price(alert, current_price, source="REST quote poll")
 
         except Exception as e:
             logger.exception(f"Error checking price for {alert.symbol}: {e}")
 
-    def _apply_price(self, alert: PriceAlert, current_price: float) -> None:
+    def _apply_price(
+        self, alert: PriceAlert, current_price: float, source: str = "price update"
+    ) -> None:
         """Evaluate one alert against one price and trigger its workflow if the
         condition is met. Shared by the WS tick path (_on_tick, the normal
         case) and the REST poll backstop (_check_alert) so a breach is handled
@@ -502,6 +602,7 @@ class FlowPriceMonitor:
         if alert.triggered:
             return
 
+        previous_price = alert.last_price
         condition_met = self._evaluate_condition(alert, current_price)
 
         if condition_met:
@@ -511,10 +612,11 @@ class FlowPriceMonitor:
             # ignored.
             if alert.trigger != "every_time":
                 alert.triggered = True
+            breach, breach_level = describe_breach(alert, current_price, previous_price)
             logger.info(
-                f"Price alert triggered for workflow {alert.workflow_id}: "
-                f"{alert.symbol}@{alert.exchange} {alert.condition} "
-                f"(price: {current_price}, target: {alert.target_price})"
+                f"PRICE BREACH workflow {alert.workflow_id} {alert.symbol}@{alert.exchange}: "
+                f"{breach} | watching for {describe_watch(alert)} | LTP {_fmt_price(current_price)}, "
+                f"previous {_fmt_price(previous_price)} | via {source} | trigger {alert.trigger}"
             )
 
             if alert.trigger == "every_time":
@@ -522,7 +624,22 @@ class FlowPriceMonitor:
                 # crossing needs a fresh cross rather than re-firing.
                 alert.last_price = current_price
 
-            self._trigger_workflow(alert, current_price)
+            self._trigger_workflow(
+                alert,
+                current_price,
+                breach={
+                    "description": breach,
+                    "breach_level": breach_level,
+                    "previous_price": previous_price,
+                    "condition": alert.condition,
+                    "target_price": alert.target_price,
+                    "price_lower": alert.price_lower,
+                    "price_upper": alert.price_upper,
+                    "symbol": alert.symbol,
+                    "exchange": alert.exchange,
+                    "source": source,
+                },
+            )
         else:
             alert.last_price = current_price
 
@@ -593,7 +710,9 @@ class FlowPriceMonitor:
         )
         return False
 
-    def _trigger_workflow(self, alert: PriceAlert, trigger_price: float):
+    def _trigger_workflow(
+        self, alert: PriceAlert, trigger_price: float, breach: dict | None = None
+    ):
         """Queue one execution for this alert, at most one at a time.
 
         Coalesced deliberately. The pool's queue is unbounded, so an every_time
@@ -650,6 +769,10 @@ class FlowPriceMonitor:
                     "trigger_type": "price_alert",
                     "trigger_price": trigger_price,
                     "triggered_at": datetime.now().isoformat(),
+                    # The breached level, previous price and plain-text
+                    # description; the executor writes the description into
+                    # the run's Execution Log.
+                    **({"breach": breach} if breach else {}),
                 }
 
                 result = execute_workflow(workflow_id, webhook_data=webhook_data, api_key=api_key)

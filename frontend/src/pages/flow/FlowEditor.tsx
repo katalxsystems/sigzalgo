@@ -233,6 +233,7 @@ function FlowEditorContent() {
       return executeWorkflow(Number(id))
     },
     onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: flowQueryKeys.executions(Number(id)) })
       setExecutionStatus(data.status === 'success' ? 'success' : 'error')
       if (data.logs) {
         setExecutionLogs(data.logs as LogEntry[])
@@ -793,6 +794,7 @@ function FlowEditorContent() {
         {/* Execution Log Panel - Right Sidebar (when shown) */}
         {showLogPanel && !selectedNodeId && (
           <ExecutionLogPanel
+            workflowId={Number(id)}
             logs={executionLogs}
             status={executionStatus}
             onClose={() => setShowLogPanel(false)}
