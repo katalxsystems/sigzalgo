@@ -434,11 +434,18 @@ def test_normalize_exchange_unknown_falls_back(ps_module):
 
 
 def test_schedule_route_refuses_when_running(ps_module):
-    """Verify the ownership + running guards used by schedule_strategy_route."""
-    from flask import Flask
+    """Verify the ownership + running guards used by schedule_strategy_route.
+
+    Ownership is per broker account (the session's active account), and a
+    strategy of another account is reported as not found (404, not 403).
+    """
+    from unittest import mock
+
+    from flask import Flask, session
 
     ps_module.STRATEGY_CONFIGS["s"] = {
         "user_id": "alice",
+        "account_id": "alice_angel_1",
         "is_running": True,
         "exchange": "NSE",
         "schedule_start": "09:15",
@@ -447,7 +454,11 @@ def test_schedule_route_refuses_when_running(ps_module):
     }
 
     app = Flask(__name__)
-    with app.app_context():
+    app.secret_key = "test"
+    not_admin = mock.patch("database.user_db.find_user_by_exact_username", return_value=None)
+    with not_admin, app.test_request_context():
+        session["user"] = "alice"
+        session["active_account_id"] = "alice_angel_1"
         is_owner, result = ps_module.verify_strategy_ownership(
             "s", "alice", return_config=True
         )
@@ -455,11 +466,14 @@ def test_schedule_route_refuses_when_running(ps_module):
         # The route refuses if is_running is True
         assert result.get("is_running") is True
 
-        # Wrong user → ownership refusal
+    with not_admin, app.test_request_context():
+        # Another user's (or another account's) session -> not found
+        session["user"] = "mallory"
+        session["active_account_id"] = "mallory_zerodha_1"
         is_owner, err = ps_module.verify_strategy_ownership("s", "mallory")
         assert is_owner is False
         # err is (response, status_code)
-        assert err[1] == 403
+        assert err[1] == 404
 
 
 # ---------------------------------------------------------------------------

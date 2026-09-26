@@ -22,6 +22,9 @@ export interface Workflow {
   webhook_auth_type: 'payload' | 'url'
   created_at: string
   updated_at: string
+  /** Broker account the workflow belongs to and trades on; null = unassigned */
+  account_id?: string | null
+  owner_username?: string | null
 }
 
 export interface WorkflowListItem {
@@ -32,6 +35,8 @@ export interface WorkflowListItem {
   created_at: string
   updated_at: string
   last_execution_status: string | null
+  account_id?: string | null
+  owner_username?: string | null
 }
 
 export interface WorkflowExecution {

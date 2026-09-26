@@ -10,6 +10,7 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request, session
 
 from database.auth_db import get_api_key_for_tradingview
+from utils.account_context import current_account_id, is_admin_session
 from utils.session import require_app_session
 
 logger = logging.getLogger(__name__)
@@ -18,11 +19,56 @@ flow_bp = Blueprint("flow", __name__, url_prefix="/flow")
 
 
 def get_current_api_key():
-    """Get API key for the current user from session"""
-    username = session.get("user")
-    if not username:
-        return None
-    return get_api_key_for_tradingview(username)
+    """API key of the session's current broker account"""
+    account_id = current_account_id()
+    return get_api_key_for_tradingview(account_id) if account_id else None
+
+
+def is_flow_admin():
+    """Whether the session user is an administrator (sees every workflow)."""
+    return is_admin_session()
+
+
+def can_access_workflow(workflow):
+    """Owners work on their account's workflows; administrators on all.
+
+    Unassigned workflows (from before per-account Flow, never activated) are
+    administrator-only until activated or run, which assigns them.
+    """
+    if is_flow_admin():
+        return True
+    return bool(workflow.account_id) and workflow.account_id == current_account_id()
+
+
+def load_workflow(workflow_id):
+    """(workflow, None), or (None, 404 response) when it does not exist or is
+    not the caller's. 404 rather than 403, so another account's workflow ids
+    are not confirmed to exist."""
+    from database.flow_db import get_workflow
+
+    workflow = get_workflow(workflow_id)
+    if not workflow or not can_access_workflow(workflow):
+        return None, (jsonify({"error": "Workflow not found"}), 404)
+    return workflow, None
+
+
+def workflow_api_key(workflow):
+    """API key a workflow runs with: its own account's key, so an administrator
+    running someone else's workflow trades on that workflow's account, not
+    their own. An unassigned workflow is claimed by the current account."""
+    if not workflow.account_id:
+        from database.auth_db import get_owner_username
+        from database.flow_db import set_workflow_owner
+
+        account_id = current_account_id()
+        owner = get_owner_username(account_id) or session.get("user")
+        set_workflow_owner(workflow.id, account_id, owner)
+        workflow.account_id, workflow.owner_username = account_id, owner
+    return get_api_key_for_tradingview(workflow.account_id)
+
+
+def _ownership_fields(workflow):
+    return {"account_id": workflow.account_id, "owner_username": workflow.owner_username}
 
 
 # === Workflow CRUD Routes ===
@@ -31,10 +77,17 @@ def get_current_api_key():
 @flow_bp.route("/api/workflows", methods=["GET"])
 @require_app_session
 def list_workflows():
-    """List all workflows"""
-    from database.flow_db import get_all_workflows, get_workflow_executions
+    """List the current account's workflows (every workflow for administrators)"""
+    from database.flow_db import (
+        get_all_workflows,
+        get_workflow_executions,
+        get_workflows_for_account,
+    )
 
-    workflows = get_all_workflows()
+    if is_flow_admin():
+        workflows = get_all_workflows()
+    else:
+        workflows = get_workflows_for_account(current_account_id())
     items = []
 
     for wf in workflows:
@@ -51,6 +104,7 @@ def list_workflows():
                 "created_at": wf.created_at.isoformat() if wf.created_at else None,
                 "updated_at": wf.updated_at.isoformat() if wf.updated_at else None,
                 "last_execution_status": last_exec.status if last_exec else None,
+                **_ownership_fields(wf),
             }
         )
 
@@ -121,7 +175,17 @@ def create_workflow():
     nodes = data.get("nodes", [])
     edges = data.get("edges", [])
 
-    workflow = create_workflow(name=name, description=description, nodes=nodes, edges=edges)
+    from database.auth_db import get_owner_username
+
+    account_id = current_account_id()
+    workflow = create_workflow(
+        name=name,
+        description=description,
+        nodes=nodes,
+        edges=edges,
+        account_id=account_id,
+        owner_username=get_owner_username(account_id) or session.get("user"),
+    )
 
     if not workflow:
         return jsonify({"error": "Failed to create workflow"}), 500
@@ -148,11 +212,9 @@ def create_workflow():
 @require_app_session
 def get_workflow(workflow_id):
     """Get a workflow by ID"""
-    from database.flow_db import get_workflow
-
-    workflow = get_workflow(workflow_id)
-    if not workflow:
-        return jsonify({"error": "Workflow not found"}), 404
+    workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
 
     return jsonify(
         {
@@ -163,6 +225,7 @@ def get_workflow(workflow_id):
             "edges": workflow.edges,
             "is_active": workflow.is_active,
             "schedule_job_id": workflow.schedule_job_id,
+            **_ownership_fields(workflow),
             "webhook_token": workflow.webhook_token,
             "webhook_secret": workflow.webhook_secret,
             "webhook_enabled": workflow.webhook_enabled,
@@ -178,6 +241,10 @@ def get_workflow(workflow_id):
 def update_workflow(workflow_id):
     """Update a workflow"""
     from database.flow_db import update_workflow
+
+    _, error = load_workflow(workflow_id)
+    if error:
+        return error
 
     data = request.get_json()
     if not data:
@@ -220,7 +287,11 @@ def update_workflow(workflow_id):
                 }
             ), 400
 
-    workflow = update_workflow(workflow_id, **data)
+    # Only what the editor edits. api_key, is_active and schedule_job_id are
+    # set by activation/deactivation (which register or tear down the
+    # trigger), and ownership is never client-settable.
+    editable = ("name", "description", "nodes", "edges", "webhook_enabled", "webhook_auth_type")
+    workflow = update_workflow(workflow_id, **{k: data[k] for k in editable if k in data})
     if not workflow:
         return jsonify({"error": "Workflow not found"}), 404
 
@@ -246,15 +317,15 @@ def update_workflow(workflow_id):
 @require_app_session
 def delete_workflow(workflow_id):
     """Delete a workflow"""
-    from database.flow_db import delete_workflow, get_workflow
+    from database.flow_db import delete_workflow
     from services.flow_executor_service import release_workflow_subscriptions
     from services.flow_order_update_monitor_service import get_flow_order_update_monitor
     from services.flow_price_monitor_service import get_flow_price_monitor
     from services.flow_scheduler_service import get_flow_scheduler
 
-    workflow = get_workflow(workflow_id)
-    if not workflow:
-        return jsonify({"error": "Workflow not found"}), 404
+    workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
 
     # Deactivate if active. Every in-memory registration must be torn down
     # here too - deleting the row alone would strand the watch/alert, which
@@ -285,21 +356,23 @@ def delete_workflow(workflow_id):
 def activate_workflow(workflow_id):
     """Activate a workflow"""
     from database.flow_db import activate_workflow as db_activate
-    from database.flow_db import get_workflow, set_schedule_job_id
+    from database.flow_db import set_schedule_job_id
     from services.flow_order_update_monitor_service import get_flow_order_update_monitor
     from services.flow_price_monitor_service import get_flow_price_monitor
     from services.flow_scheduler_service import get_flow_scheduler
 
-    workflow = get_workflow(workflow_id)
-    if not workflow:
-        return jsonify({"error": "Workflow not found"}), 404
+    workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
 
     if workflow.is_active:
         return jsonify({"status": "already_active", "message": "Workflow is already active"})
 
-    api_key = get_current_api_key()
+    api_key = workflow_api_key(workflow)
     if not api_key:
-        return jsonify({"error": "API key not configured"}), 400
+        return jsonify(
+            {"error": f"No API key for account {workflow.account_id}. Generate one at /apikey."}
+        ), 400
 
     blocked = _execution_blocked(workflow)
     if blocked:
@@ -396,15 +469,15 @@ def activate_workflow(workflow_id):
 def deactivate_workflow(workflow_id):
     """Deactivate a workflow"""
     from database.flow_db import deactivate_workflow as db_deactivate
-    from database.flow_db import get_workflow, set_schedule_job_id
+    from database.flow_db import set_schedule_job_id
     from services.flow_executor_service import release_workflow_subscriptions
     from services.flow_order_update_monitor_service import get_flow_order_update_monitor
     from services.flow_price_monitor_service import get_flow_price_monitor
     from services.flow_scheduler_service import get_flow_scheduler
 
-    workflow = get_workflow(workflow_id)
-    if not workflow:
-        return jsonify({"error": "Workflow not found"}), 404
+    workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
 
     if not workflow.is_active:
         return jsonify({"status": "already_inactive", "message": "Workflow is already inactive"})
@@ -484,16 +557,17 @@ def _execution_blocked(workflow):
 @require_app_session
 def execute_workflow_now(workflow_id):
     """Execute a workflow immediately"""
-    from database.flow_db import get_workflow
     from services.flow_executor_service import execute_workflow
 
-    workflow = get_workflow(workflow_id)
-    if not workflow:
-        return jsonify({"error": "Workflow not found"}), 404
+    workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
 
-    api_key = get_current_api_key()
+    api_key = workflow_api_key(workflow)
     if not api_key:
-        return jsonify({"error": "API key not configured"}), 400
+        return jsonify(
+            {"error": f"No API key for account {workflow.account_id}. Generate one at /apikey."}
+        ), 400
 
     blocked = _execution_blocked(workflow)
     if blocked:
@@ -511,6 +585,9 @@ def execute_workflow_now(workflow_id):
 @require_app_session
 def get_workflow_executions(workflow_id):
     """Get execution history for a workflow"""
+    _, error = load_workflow(workflow_id)
+    if error:
+        return error
     from database.flow_db import get_workflow_executions
 
     limit = request.args.get("limit", 20, type=int)
@@ -551,9 +628,9 @@ def get_webhook_info(workflow_id):
     """Get webhook configuration for a workflow"""
     from database.flow_db import ensure_webhook_credentials, get_workflow
 
-    workflow = get_workflow(workflow_id)
-    if not workflow:
-        return jsonify({"error": "Workflow not found"}), 404
+    workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
 
     # Ensure webhook token and secret exist
     ensure_webhook_credentials(workflow_id)
@@ -585,6 +662,9 @@ def get_webhook_info(workflow_id):
 @require_app_session
 def enable_webhook(workflow_id):
     """Enable webhook for a workflow"""
+    _, error = load_workflow(workflow_id)
+    if error:
+        return error
     from database.flow_db import enable_webhook, ensure_webhook_credentials, get_workflow
 
     # Ensure credentials exist before enabling
@@ -621,6 +701,9 @@ def enable_webhook(workflow_id):
 @require_app_session
 def disable_webhook(workflow_id):
     """Disable webhook for a workflow"""
+    _, error = load_workflow(workflow_id)
+    if error:
+        return error
     from database.flow_db import disable_webhook
 
     result = disable_webhook(workflow_id)
@@ -633,6 +716,9 @@ def disable_webhook(workflow_id):
 @require_app_session
 def regenerate_webhook(workflow_id):
     """Regenerate webhook token and secret"""
+    _, error = load_workflow(workflow_id)
+    if error:
+        return error
     from database.flow_db import get_workflow, regenerate_webhook_secret, regenerate_webhook_token
 
     new_token = regenerate_webhook_token(workflow_id)
@@ -662,7 +748,10 @@ def regenerate_webhook(workflow_id):
 @require_app_session
 def regenerate_webhook_secret_route(workflow_id):
     """Regenerate webhook secret only"""
-    from database.flow_db import get_workflow, regenerate_webhook_secret
+    _, error = load_workflow(workflow_id)
+    if error:
+        return error
+    from database.flow_db import regenerate_webhook_secret
 
     new_secret = regenerate_webhook_secret(workflow_id)
     if not new_secret:
@@ -677,6 +766,9 @@ def regenerate_webhook_secret_route(workflow_id):
 @require_app_session
 def set_webhook_auth(workflow_id):
     """Set webhook auth type"""
+    _, error = load_workflow(workflow_id)
+    if error:
+        return error
     from database.flow_db import get_workflow, set_webhook_auth_type
 
     data = request.get_json()
@@ -753,8 +845,9 @@ def _execute_webhook(token, webhook_data=None, url_secret=None):
     # (and falls back to plaintext for pre-migration rows).
     from database.flow_db import get_workflow_api_key
     api_key = get_workflow_api_key(workflow)  # Use API key stored when workflow was activated
-    if not api_key:
-        api_key = get_current_api_key()  # Fallback to session (if called from UI)
+    if not api_key and workflow.account_id:
+        # The workflow's own account (webhook calls carry no browser session).
+        api_key = get_api_key_for_tradingview(workflow.account_id)
     if not api_key:
         api_key = os.getenv("OPENALGO_API_KEY")  # Fallback to environment variable
 
@@ -829,6 +922,15 @@ def get_monitor_status():
     monitor = get_flow_price_monitor()
     status = monitor.get_status()
     status["order_updates"] = get_flow_order_update_monitor().get_status()
+    if not is_flow_admin():
+        from database.flow_db import get_workflows_for_account
+
+        visible = {wf.id for wf in get_workflows_for_account(current_account_id())}
+        status["alerts"] = [a for a in status.get("alerts", []) if a["workflow_id"] in visible]
+        status["alerts_count"] = len(status["alerts"])
+        updates = status["order_updates"]
+        updates["watches"] = [w for w in updates.get("watches", []) if w["workflow_id"] in visible]
+        updates["watches_count"] = len(updates["watches"])
     return jsonify(status)
 
 
@@ -839,11 +941,10 @@ def get_monitor_status():
 @require_app_session
 def export_workflow(workflow_id):
     """Export a workflow"""
-    from database.flow_db import get_workflow
 
-    workflow = get_workflow(workflow_id)
-    if not workflow:
-        return jsonify({"error": "Workflow not found"}), 404
+    workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
 
     return jsonify(
         {
@@ -897,8 +998,16 @@ def import_workflow():
     nodes = data.get("nodes", [])
     edges = data.get("edges", [])
 
+    from database.auth_db import get_owner_username
+
+    account_id = current_account_id()
     workflow = create_workflow(
-        name=f"{name} (imported)", description=description, nodes=nodes, edges=edges
+        name=f"{name} (imported)",
+        description=description,
+        nodes=nodes,
+        edges=edges,
+        account_id=account_id,
+        owner_username=get_owner_username(account_id) or session.get("user"),
     )
 
     if workflow:
@@ -922,16 +1031,16 @@ def replace_workflow(workflow_id):
     Held to import's rules, not save's: a JSON pasted here is presented as a
     finished workflow, so completeness is enforced.
     """
-    from database.flow_db import get_workflow, update_workflow
+    from database.flow_db import update_workflow
     from services.flow_workflow_validator import (
         migrate_legacy_node_data,
         trigger_config,
         validate_workflow,
     )
 
-    workflow = get_workflow(workflow_id)
-    if not workflow:
-        return jsonify({"error": "Workflow not found"}), 404
+    workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
 
     data = request.get_json()
     if not data:

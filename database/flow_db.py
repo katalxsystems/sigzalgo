@@ -94,6 +94,13 @@ class FlowWorkflow(Base):
     api_key = Column(
         String(255), nullable=True
     )  # Stored when workflow is activated, used for webhook execution
+    # Ownership: the broker account (Auth.name) the workflow belongs to and
+    # trades on, and the platform user owning that account. Users see and
+    # manage only their active account's workflows; administrators see all.
+    # NULL on workflows from before per-account Flow whose account could not
+    # be determined -- visible to administrators only until one claims it.
+    account_id = Column(String(255), nullable=True, index=True)
+    owner_username = Column(String(255), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -149,6 +156,64 @@ def init_db():
 
     # Migrate: Add api_key column if it doesn't exist (for existing databases)
     _migrate_add_api_key_column()
+    _migrate_add_ownership_columns()
+
+
+def _migrate_add_ownership_columns():
+    """Add account_id/owner_username to flow_workflows and backfill them.
+
+    Idempotent. A workflow that was ever activated stores the OpenAlgo API key
+    it runs with; that key belongs to exactly one broker account, which
+    becomes the workflow's account. Workflows never activated have no key and
+    stay unassigned (administrators only) until someone claims them.
+    """
+    try:
+        from sqlalchemy import inspect, text
+
+        inspector = inspect(engine)
+        if "flow_workflows" not in inspector.get_table_names():
+            return
+        columns = {col["name"] for col in inspector.get_columns("flow_workflows")}
+        for column in ("account_id", "owner_username"):
+            if column not in columns:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE flow_workflows ADD COLUMN {column} VARCHAR(255)"))
+                logger.info(f"Migration: Added '{column}' column to flow_workflows table")
+
+        unassigned = FlowWorkflow.query.filter(
+            FlowWorkflow.account_id.is_(None), FlowWorkflow.api_key.isnot(None)
+        ).all()
+        if not unassigned:
+            return
+
+        from database.auth_db import ApiKeys, decrypt_token, get_owner_username
+
+        # plaintext key -> (account_id, owner) for every key on this install
+        key_accounts = {}
+        for row in ApiKeys.query.all():
+            try:
+                plaintext = decrypt_token(row.api_key_encrypted) if row.api_key_encrypted else None
+            except Exception:
+                plaintext = None
+            if plaintext:
+                account = row.account_id or row.user_id
+                key_accounts[plaintext] = (account, get_owner_username(account) or row.user_id)
+
+        assigned = 0
+        for workflow in unassigned:
+            match = key_accounts.get(get_workflow_api_key(workflow))
+            if match:
+                workflow.account_id, workflow.owner_username = match
+                assigned += 1
+        db_session.commit()
+        _workflow_cache.clear()
+        logger.info(
+            f"Migration: assigned {assigned} of {len(unassigned)} workflow(s) to the "
+            "account behind their stored API key"
+        )
+    except Exception:
+        db_session.rollback()
+        logger.exception("Migration of flow_workflows ownership columns failed")
 
 
 def _migrate_add_api_key_column():
@@ -177,11 +242,18 @@ def _migrate_add_api_key_column():
 # --- Workflow CRUD Operations ---
 
 
-def create_workflow(name, description=None, nodes=None, edges=None):
-    """Create a new workflow"""
+def create_workflow(
+    name, description=None, nodes=None, edges=None, account_id=None, owner_username=None
+):
+    """Create a new workflow owned by ``account_id`` / ``owner_username``"""
     try:
         workflow = FlowWorkflow(
-            name=name, description=description, nodes=nodes or [], edges=edges or []
+            name=name,
+            description=description,
+            nodes=nodes or [],
+            edges=edges or [],
+            account_id=account_id,
+            owner_username=owner_username,
         )
         db_session.add(workflow)
         db_session.commit()
@@ -220,6 +292,53 @@ def get_workflow_by_webhook_token(webhook_token):
         return workflow
     except Exception as e:
         logger.exception(f"Error getting workflow by webhook token: {str(e)}")
+        return None
+
+
+def get_workflows_for_account(account_id):
+    """Workflows belonging to one broker account"""
+    try:
+        return (
+            FlowWorkflow.query.filter_by(account_id=account_id)
+            .order_by(FlowWorkflow.updated_at.desc())
+            .all()
+        )
+    except Exception as e:
+        logger.exception(f"Error getting workflows for account {account_id}: {str(e)}")
+        return []
+
+
+def owner_for_api_key(api_key):
+    """(account_id, owner_username) an OpenAlgo API key belongs to, or
+    (None, None). For creators that act with a caller's key (the price-breach
+    API, the agent) rather than a browser session."""
+    if not api_key:
+        return None, None
+    from database.auth_db import get_owner_username, verify_api_key
+
+    account_id = verify_api_key(api_key)
+    if not account_id:
+        return None, None
+    return account_id, get_owner_username(account_id)
+
+
+def set_workflow_owner(workflow_id, account_id, owner_username):
+    """Assign a workflow to a broker account (claiming an unassigned one)"""
+    try:
+        workflow = get_workflow(workflow_id)
+        if not workflow:
+            return None
+        workflow.account_id = account_id
+        workflow.owner_username = owner_username
+        db_session.commit()
+        _workflow_cache.clear()
+        if workflow.webhook_token in _workflow_webhook_cache:
+            del _workflow_webhook_cache[workflow.webhook_token]
+        logger.info(f"Workflow {workflow_id} assigned to account {account_id}")
+        return workflow
+    except Exception as e:
+        logger.exception(f"Error assigning workflow {workflow_id}: {str(e)}")
+        db_session.rollback()
         return None
 
 

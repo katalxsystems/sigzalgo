@@ -420,8 +420,17 @@ def create_and_activate(
     entry_condition = _entry_cross_condition(active_price, entry_price)
 
     # Pass 1: create empty rows to get real ids, nodes/edges start blank.
+    # Owned by the account behind the caller's API key (per-account Flow).
+    from database.flow_db import owner_for_api_key
+
+    account_id, owner_username = owner_for_api_key(api_key)
     sl_target_wf = db_create_workflow(
-        name=f"{base_name} (SL/Target)", description="", nodes=[], edges=[]
+        name=f"{base_name} (SL/Target)",
+        description="",
+        nodes=[],
+        edges=[],
+        account_id=account_id,
+        owner_username=owner_username,
     )
     if not sl_target_wf:
         return False, {"status": "error", "message": "Failed to create sl_target workflow"}, 500
@@ -429,7 +438,12 @@ def create_and_activate(
     entry_wf = None
     if entry_condition is not None:
         entry_wf = db_create_workflow(
-            name=f"{base_name} (Entry re-cross)", description="", nodes=[], edges=[]
+            name=f"{base_name} (Entry re-cross)",
+            description="",
+            nodes=[],
+            edges=[],
+            account_id=account_id,
+            owner_username=owner_username,
         )
         if not entry_wf:
             # Roll back the half-created pair rather than leave an orphaned,

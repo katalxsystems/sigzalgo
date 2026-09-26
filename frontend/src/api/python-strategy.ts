@@ -211,4 +211,27 @@ export const pythonStrategyApi = {
       await webClient.post<ApiResponse<{ started: number }>>('/python/check-contracts')
     return response.data
   },
+
+  /**
+   * Get the strategy's params (passed to the script as STRATEGY_PARAMS)
+   */
+  getParams: async (strategyId: string): Promise<Record<string, unknown>> => {
+    const response = await webClient.get<{ params: Record<string, unknown> }>(
+      `/python/params/${strategyId}`
+    )
+    return response.data.params ?? {}
+  },
+
+  /**
+   * Replace the strategy's params; applies from the next start
+   */
+  saveParams: async (
+    strategyId: string,
+    params: Record<string, unknown>
+  ): Promise<ApiResponse<void>> => {
+    const response = await webClient.post<ApiResponse<void>>(`/python/params/${strategyId}`, {
+      params,
+    })
+    return response.data
+  },
 }

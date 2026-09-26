@@ -45,6 +45,9 @@ import { showToast } from '@/utils/toast'
 export default function PythonStrategyIndex() {
   const navigate = useNavigate()
   const [strategies, setStrategies] = useState<PythonStrategy[]>([])
+  // Only an administrator's list spans accounts or has unassigned strategies.
+  const showOwners =
+    strategies.some((s) => !s.account_id) || new Set(strategies.map((s) => s.account_id)).size > 1
   const [masterStatus, setMasterStatus] = useState<MasterContractStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
@@ -379,6 +382,13 @@ export default function PythonStrategyIndex() {
                     <CardDescription className="font-mono text-xs truncate">
                       {strategy.file_name}
                     </CardDescription>
+                    {showOwners && (
+                      <p className="text-xs text-muted-foreground truncate">
+                        {strategy.account_id
+                          ? `${strategy.owner_username ?? 'unknown user'} - ${strategy.account_id}`
+                          : 'Unassigned'}
+                      </p>
+                    )}
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     <Tooltip>

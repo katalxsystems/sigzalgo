@@ -44,6 +44,7 @@ from database.market_calendar_db import (
     is_market_holiday,
     is_market_open,
 )
+from utils.account_context import current_account_id, is_admin_session, owner_of_account
 from utils.constants import CRYPTO_EXCHANGES
 from utils.session import check_session_validity
 
@@ -192,13 +193,29 @@ def save_configs():
         logger.exception(f"Failed to save configs: {e}")
 
 
-def verify_strategy_ownership(strategy_id, user_id, return_config=False):
+def strategy_visible(config):
+    """Whether the current session may see and manage a strategy.
+
+    Strategies belong to a broker account (``account_id``): users work on their
+    active account's strategies, administrators on everyone's. Strategies with
+    no account (legacy, never assigned) are administrator-only.
     """
-    Verify that a user owns a strategy.
+    if is_admin_session():
+        return True
+    account_id = config.get("account_id")
+    return bool(account_id) and account_id == current_account_id()
+
+
+def verify_strategy_ownership(strategy_id, user_id=None, return_config=False):
+    """
+    Verify that the current session may access a strategy (see strategy_visible).
+
+    Answers 404 rather than 403 for another account's strategy, so its id is not
+    confirmed to exist.
 
     Args:
         strategy_id: The strategy ID to verify
-        user_id: The user ID to check ownership against
+        user_id: Unused; kept for existing callers (ownership is per account)
         return_config: If True, returns the config dict on success for atomic access
 
     Returns:
@@ -213,13 +230,8 @@ def verify_strategy_ownership(strategy_id, user_id, return_config=False):
         return False, (jsonify({"status": "error", "message": "Strategy not found"}), 404)
 
     config = STRATEGY_CONFIGS[strategy_id]
-    # Check ownership - allow access if user_id matches or if strategy has no owner (legacy)
-    strategy_owner = config.get("user_id")
-    if strategy_owner and strategy_owner != user_id:
-        return False, (
-            jsonify({"status": "error", "message": "Unauthorized access to strategy"}),
-            403,
-        )
+    if not strategy_visible(config):
+        return False, (jsonify({"status": "error", "message": "Strategy not found"}), 404)
 
     if return_config:
         return True, config
@@ -511,14 +523,28 @@ def start_strategy_process(strategy_id):
             )
             strategy_env.setdefault("OPENALGO_HOST", "http://127.0.0.1:5000")
             try:
-                from database.auth_db import get_api_key_for_tradingview
-                user_id = config.get("user_id")
-                if user_id:
-                    _api_key = get_api_key_for_tradingview(user_id)
-                    if _api_key:
-                        strategy_env["OPENALGO_API_KEY"] = _api_key
+                # The strategy's own broker account's key: orders and data go to
+                # that account. Legacy configs without an account fall back to
+                # their owner's default account.
+                from database.auth_db import get_api_key_for_tradingview, get_default_account_id
+
+                account_id = config.get("account_id")
+                if not account_id and config.get("user_id"):
+                    account_id = get_default_account_id(config["user_id"]) or config["user_id"]
+                _api_key = get_api_key_for_tradingview(account_id) if account_id else None
+                if _api_key:
+                    strategy_env["OPENALGO_API_KEY"] = _api_key
+                    strategy_env["OPENALGO_ACCOUNT_ID"] = account_id
+                else:
+                    logger.warning(
+                        f"No API key for account {account_id!r} of strategy {strategy_id}; "
+                        "generate one at /apikey for that account"
+                    )
             except Exception as e:
                 logger.warning(f"Could not inject API key for strategy {strategy_id}: {e}")
+            # The strategy's own settings (config "params"), readable in the
+            # script with json.loads(os.getenv("STRATEGY_PARAMS", "{}")).
+            strategy_env["STRATEGY_PARAMS"] = json.dumps(config.get("params") or {})
             subprocess_args["env"] = strategy_env
 
             # Start the process
@@ -1560,6 +1586,8 @@ def index():
 
     strategies = []
     for sid, config in STRATEGY_CONFIGS.items():
+        if not strategy_visible(config):
+            continue
         # Check if process is actually running
         if config.get("pid"):
             config["is_running"] = check_process_status(config["pid"])
@@ -1583,7 +1611,7 @@ def index():
             "last_started": format_ist_time(config.get("last_started", "")),
             "last_stopped": format_ist_time(config.get("last_stopped", "")),
             "pid": config.get("pid"),
-            "params": {},  # No params needed in simplified version
+            "params": config.get("params") or {},
         }
 
         # Add runtime info if running
@@ -1724,6 +1752,10 @@ def new_strategy():
                 "is_scheduled": True,  # Always enabled by default
                 "created_at": ist_now.isoformat(),
                 "user_id": user_id,
+                # Owning broker account: its API key is injected at start.
+                "account_id": current_account_id(),
+                "owner_username": owner_of_account(current_account_id()),
+                "params": {},
                 "schedule_start": schedule_start,
                 "schedule_stop": schedule_stop,
                 "schedule_days": schedule_days,
@@ -2176,10 +2208,11 @@ def status():
     # Check master contract status
     contracts_ready, contract_message = check_master_contract_ready()
 
+    visible = {sid: cfg for sid, cfg in STRATEGY_CONFIGS.items() if strategy_visible(cfg)}
     return jsonify(
         {
-            "running": len(RUNNING_STRATEGIES),
-            "total": len(STRATEGY_CONFIGS),
+            "running": sum(1 for sid in RUNNING_STRATEGIES if sid in visible),
+            "total": len(visible),
             "scheduler_running": SCHEDULER is not None and SCHEDULER.running,
             "current_ist_time": get_ist_time().strftime("%H:%M:%S IST"),
             "platform": OS_TYPE,
@@ -2196,7 +2229,7 @@ def status():
                     "is_running": config.get("is_running", False),
                     "is_scheduled": config.get("is_scheduled", False),
                 }
-                for sid, config in STRATEGY_CONFIGS.items()
+                for sid, config in visible.items()
             ],
         }
     )
@@ -2285,6 +2318,8 @@ def api_get_strategies():
     strategies = []
 
     for strategy_id, config in STRATEGY_CONFIGS.items():
+        if not strategy_visible(config):
+            continue
         # Determine status with detailed schedule info
         if config.get("is_running"):
             status = "running"
@@ -2316,6 +2351,8 @@ def api_get_strategies():
                 "paused_message": config.get("paused_message"),
                 "process_id": config.get("process_id"),
                 "created_at": config.get("created_at"),
+                "account_id": config.get("account_id"),
+                "owner_username": config.get("owner_username") or config.get("user_id"),
             }
         )
 
@@ -2332,6 +2369,19 @@ def api_strategy_events():
     strategies and their lifecycle timestamps.
     """
 
+    # Captured now: the generator runs outside the request context.
+    admin = is_admin_session()
+    account_id = current_account_id()
+
+    def wanted(event):
+        if admin:
+            return True
+        try:
+            sid = json.loads(event.removeprefix("data: ").strip()).get("strategy_id")
+        except (ValueError, AttributeError):
+            return False
+        return bool(account_id) and STRATEGY_CONFIGS.get(sid, {}).get("account_id") == account_id
+
     def event_stream():
         # Create a queue for this subscriber
         q = queue.Queue(maxsize=100)
@@ -2347,7 +2397,8 @@ def api_strategy_events():
                 try:
                     # Wait for events with timeout to detect disconnection
                     event = q.get(timeout=30)
-                    yield event
+                    if wanted(event):
+                        yield event
                 except queue.Empty:
                     # Send heartbeat to keep connection alive
                     yield ": heartbeat\n\n"
@@ -2374,6 +2425,9 @@ def api_strategy_events():
 @check_session_validity
 def api_get_strategy(strategy_id):
     """API: Get single strategy as JSON"""
+    is_owner, error_response = verify_strategy_ownership(strategy_id)
+    if not is_owner:
+        return error_response
     if strategy_id not in STRATEGY_CONFIGS:
         return jsonify({"status": "error", "message": "Strategy not found"}), 404
 
@@ -2420,6 +2474,9 @@ def api_get_strategy(strategy_id):
 @check_session_validity
 def api_get_strategy_content(strategy_id):
     """API: Get strategy file content"""
+    is_owner, error_response = verify_strategy_ownership(strategy_id)
+    if not is_owner:
+        return error_response
     if strategy_id not in STRATEGY_CONFIGS:
         return jsonify({"status": "error", "message": "Strategy not found"}), 404
 
@@ -2462,6 +2519,9 @@ def api_get_strategy_content(strategy_id):
 @check_session_validity
 def api_get_log_files(strategy_id):
     """API: Get list of log files for a strategy"""
+    is_owner, error_response = verify_strategy_ownership(strategy_id)
+    if not is_owner:
+        return error_response
     # Basic validation - reject path traversal attempts
     if not strategy_id or ".." in strategy_id or "/" in strategy_id or "\\" in strategy_id:
         return jsonify({"status": "error", "message": "Invalid strategy ID"}), 400
@@ -2493,6 +2553,9 @@ def api_get_log_files(strategy_id):
 @check_session_validity
 def api_get_log_content(strategy_id, log_name):
     """API: Get log file content"""
+    is_owner, error_response = verify_strategy_ownership(strategy_id)
+    if not is_owner:
+        return error_response
     # Basic validation - reject path traversal attempts
     if not strategy_id or ".." in strategy_id or "/" in strategy_id or "\\" in strategy_id:
         return jsonify({"status": "error", "message": "Invalid strategy ID"}), 400
@@ -2644,6 +2707,54 @@ def export_strategy(strategy_id):
         logger.exception(f"Failed to export strategy {strategy_id}: {e}")
         flash(f"Failed to export strategy: {str(e)}", "error")
         return redirect(url_for("python_strategy_bp.index"))
+
+
+# Largest params object, serialized: it is passed to the script as one
+# environment variable, and Windows caps a whole environment block at 32 KB.
+MAX_PARAMS_BYTES = 16 * 1024
+
+
+@python_strategy_bp.route("/params/<strategy_id>", methods=["GET"])
+@check_session_validity
+def get_strategy_params(strategy_id):
+    """The strategy's own settings, passed to it as STRATEGY_PARAMS (JSON)."""
+    is_owner, result = verify_strategy_ownership(strategy_id, return_config=True)
+    if not is_owner:
+        return result
+    return jsonify({"status": "success", "params": result.get("params") or {}})
+
+
+@python_strategy_bp.route("/params/<strategy_id>", methods=["POST"])
+@check_session_validity
+def save_strategy_params(strategy_id):
+    """Replace the strategy's params. Body: {"params": {...}}. Applies from the
+    next start; a running strategy keeps the values it was started with."""
+    is_owner, result = verify_strategy_ownership(strategy_id, return_config=True)
+    if not is_owner:
+        return result
+    data = request.get_json(silent=True)
+    params = data.get("params") if isinstance(data, dict) else None
+    if not isinstance(params, dict):
+        return jsonify(
+            {"status": "error", "message": 'Body must be {"params": {...}} with a JSON object'}
+        ), 400
+    try:
+        encoded = json.dumps(params)
+    except (TypeError, ValueError):
+        return jsonify({"status": "error", "message": "params must be JSON-serializable"}), 400
+    if len(encoded.encode("utf-8")) > MAX_PARAMS_BYTES:
+        return jsonify(
+            {"status": "error", "message": f"params exceed {MAX_PARAMS_BYTES // 1024} KB"}
+        ), 400
+    result["params"] = params
+    save_configs()
+    return jsonify(
+        {
+            "status": "success",
+            "message": "Parameters saved. They apply from the next start.",
+            "params": params,
+        }
+    )
 
 
 @python_strategy_bp.route("/save/<strategy_id>", methods=["POST"])
@@ -2936,6 +3047,29 @@ init_scheduler()
 _initialized = False
 
 
+def _backfill_strategy_accounts():
+    """Assign pre-per-account strategies to their owner's default account.
+
+    Strategies used to be owned by platform username only (``user_id``). Each
+    gets that user's default broker account; ones with no owner at all stay
+    unassigned and are visible to administrators only.
+    """
+    from database.auth_db import get_default_account_id
+
+    changed = 0
+    for config in STRATEGY_CONFIGS.values():
+        if config.get("account_id") or not config.get("user_id"):
+            continue
+        account_id = get_default_account_id(config["user_id"])
+        if account_id:
+            config["account_id"] = account_id
+            config.setdefault("owner_username", config["user_id"])
+            changed += 1
+    if changed:
+        save_configs()
+        logger.info(f"Assigned {changed} strategy config(s) to their owner's default account")
+
+
 def initialize_with_app_context():
     """Initialize components that require app context/database access"""
     global _initialized
@@ -2944,6 +3078,8 @@ def initialize_with_app_context():
     _initialized = True
 
     try:
+        _backfill_strategy_accounts()
+
         # Now safe to restore strategy states (requires database)
         restore_strategy_states()
 

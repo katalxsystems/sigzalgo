@@ -77,7 +77,14 @@ function StatusIcon({ status }: { status: string | null }) {
   }
 }
 
-function WorkflowCard({ workflow }: { workflow: WorkflowListItem }) {
+function WorkflowCard({
+  workflow,
+  showOwner = false,
+}: {
+  workflow: WorkflowListItem
+  /** Administrators' view spans accounts, so say whose each workflow is */
+  showOwner?: boolean
+}) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [isWebhookOpen, setIsWebhookOpen] = useState(false)
@@ -258,6 +265,13 @@ function WorkflowCard({ workflow }: { workflow: WorkflowListItem }) {
           </div>
           {workflow.description && (
             <CardDescription className="line-clamp-2">{workflow.description}</CardDescription>
+          )}
+          {showOwner && (
+            <p className="text-xs text-muted-foreground">
+              {workflow.account_id
+                ? `${workflow.owner_username ?? 'unknown user'} - ${workflow.account_id}`
+                : 'Unassigned (activate or run to assign it to your account)'}
+            </p>
           )}
         </CardHeader>
         <CardContent>
@@ -551,6 +565,13 @@ export default function FlowIndex() {
     queryFn: listWorkflows,
   })
 
+  // Only an administrator's list spans several accounts or has unassigned
+  // workflows; a user's own list is a single account, so the owner line would
+  // just repeat it.
+  const showOwners =
+    !!workflows &&
+    (workflows.some((w) => !w.account_id) || new Set(workflows.map((w) => w.account_id)).size > 1)
+
   const createMutation = useMutation({
     mutationFn: createWorkflow,
     onSuccess: (data) => {
@@ -645,7 +666,7 @@ export default function FlowIndex() {
       {workflows && workflows.length > 0 ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {workflows.map((workflow) => (
-            <WorkflowCard key={workflow.id} workflow={workflow} />
+            <WorkflowCard key={workflow.id} workflow={workflow} showOwner={showOwners} />
           ))}
         </div>
       ) : (

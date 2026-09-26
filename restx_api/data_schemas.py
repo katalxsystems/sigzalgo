@@ -91,6 +91,35 @@ class PriceBreachDeactivateSchema(Schema):
     apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
 
 
+# The four conditions the chart's own "Create Alert" dialog offers -- the
+# same alias vocabulary FlowPriceMonitor.normalize_condition() already
+# accepts (see services/flow_price_monitor_service.py), so nothing extra is
+# needed to translate between what a caller sends and what the price
+# monitor understands.
+PRICE_ALERT_CONDITIONS = ("above", "below", "crosses_above", "crosses_below")
+
+
+class PriceAlertCreateSchema(Schema):
+    apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
+    symbol = fields.Str(required=True)
+    exchange = fields.Str(required=True, validate=validate.OneOf(VALID_EXCHANGES))
+    condition = fields.Str(required=True, validate=validate.OneOf(PRICE_ALERT_CONDITIONS))
+    price = fields.Float(required=True)
+    trigger = fields.Str(
+        load_default="once", validate=validate.OneOf(("once", "every_time"))
+    )
+    expiration = fields.Str(
+        load_default="none", validate=validate.OneOf(("none", "1h", "4h", "1d", "1w"))
+    )
+    webhook_url = fields.Url(required=True, schemes={"http", "https"})
+    message = fields.Str(load_default=None, allow_none=True, validate=validate.Length(max=500))
+    name = fields.Str(load_default=None, allow_none=True, validate=validate.Length(max=200))
+
+
+class PriceAlertDeactivateSchema(Schema):
+    apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
+
+
 class HistorySchema(Schema):
     apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
     symbol = fields.Str(required=True)

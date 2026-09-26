@@ -24,7 +24,9 @@ to this install's own, i.e. same install/secrets), checked against THIS
 database's API keys, and re-encrypted with this install's values:
 
 - valid here      -> kept; the workflow keeps its active state
-- not valid here  -> dropped, and the workflow is copied inactive; re-activate
+- valid here      -> the workflow belongs to that key's account (per-account Flow)
+- not valid here  -> dropped, and the workflow is copied inactive and unassigned
+  (visible to administrators); re-activate
   it in /flow (which stores the current key), or pass ``--api-key`` to assign
   one of this install's keys to every workflow instead
 
@@ -143,6 +145,7 @@ def main() -> int:
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
 
+    from database.auth_db import get_owner_username
     from database.flow_db import (
         FlowWorkflow,
         FlowWorkflowExecution,
@@ -178,7 +181,8 @@ def main() -> int:
                 continue
 
             api_key = args.api_key or _decrypt_source_key(fernet, wf.api_key)
-            key_ok = bool(_key_account(api_key))
+            account_id = _key_account(api_key)
+            key_ok = bool(account_id)
             is_active = bool(wf.is_active) and key_ok
             note = ""
             if wf.api_key and not key_ok:
@@ -203,6 +207,11 @@ def main() -> int:
                 webhook_enabled=wf.webhook_enabled,
                 webhook_auth_type=wf.webhook_auth_type,
                 api_key=_encrypt_api_key(api_key) if key_ok else None,
+                # Per-account Flow: owned by the account behind the key; with no
+                # valid key it stays unassigned (administrators only) until
+                # someone activates or runs it.
+                account_id=account_id,
+                owner_username=get_owner_username(account_id) if account_id else None,
                 created_at=wf.created_at,
                 updated_at=wf.updated_at,
             )

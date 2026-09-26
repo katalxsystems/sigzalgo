@@ -25,6 +25,7 @@ import { PythonEditor } from '@/components/ui/python-editor'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { PythonStrategy, PythonStrategyContent } from '@/types/python-strategy'
 import { showToast } from '@/utils/toast'
+import { StrategyParamsCard } from './StrategyParamsCard'
 
 export default function EditPythonStrategy() {
   const { strategyId } = useParams<{ strategyId: string }>()
@@ -310,6 +311,9 @@ export default function EditPythonStrategy() {
         </CardHeader>
         <CardContent>{editorContent}</CardContent>
       </Card>
+
+      {/* Per-strategy settings (STRATEGY_PARAMS) */}
+      {strategyId && <StrategyParamsCard strategyId={strategyId} />}
 
       {/* Keyboard Shortcuts */}
       <Card>
