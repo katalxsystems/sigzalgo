@@ -23,6 +23,7 @@ from database.auth_db import (
     upsert_api_key,
     verify_api_key,
 )
+from utils.account_context import current_account_id
 from utils.logging import get_logger
 from utils.session import require_app_session
 
@@ -75,11 +76,12 @@ def manage_api_key():
     """
     if request.method == "GET":
         login_username = session["user"]
-        # Get the decrypted API key if it exists
-        api_key = get_api_key_for_tradingview(login_username)
+        # Keys are per broker account: show the active account's key.
+        account_id = current_account_id()
+        api_key = get_api_key_for_tradingview(account_id)
         has_api_key = api_key is not None
         # Get order mode (default to 'auto' if not set)
-        order_mode = get_order_mode(login_username) or "auto"
+        order_mode = get_order_mode(account_id) or "auto"
         logger.info(f"Checking API key status for user: {login_username}, order_mode: {order_mode}")
 
         # Return JSON if Accept header requests it (for React frontend)
@@ -87,6 +89,7 @@ def manage_api_key():
             return jsonify(
                 {
                     "login_username": login_username,
+                    "account_id": account_id,
                     "has_api_key": has_api_key,
                     "api_key": api_key,
                     "order_mode": order_mode,
@@ -111,6 +114,10 @@ def manage_api_key():
         if not user_id:
             logger.error("API key update attempted without user ID")
             return jsonify({"error": "User ID is required"}), 400
+        # The page sends the platform username; keys belong to the active
+        # broker account, so generate/rotate that account's key.
+        if user_id == session.get("user"):
+            user_id = current_account_id() or user_id
 
         if not _owns_account(user_id):
             logger.warning(
@@ -145,6 +152,8 @@ def update_api_key_mode():
         if not user_id:
             logger.error("Order mode update attempted without user ID")
             return jsonify({"error": "User ID is required"}), 400
+        if user_id == session.get("user"):
+            user_id = current_account_id() or user_id
 
         if not _owns_account(user_id):
             logger.warning(

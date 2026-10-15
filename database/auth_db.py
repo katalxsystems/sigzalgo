@@ -760,6 +760,7 @@ def get_auth_token(name, bypass_cache: bool = False):
     Returns:
         The decrypted auth token, or None if not found/revoked
     """
+    name = _session_account_for(name)  # logged-in username -> active account
     # Handle None or empty name gracefully
     if not name:
         logger.debug("get_auth_token called with empty/None name, returning None")
@@ -851,6 +852,7 @@ def get_feed_token(name):
     Returns:
         The feed token string, or ``None`` if unavailable.
     """
+    name = _session_account_for(name)  # logged-in username -> active account
     # Handle None or empty name gracefully
     if not name:
         logger.debug("get_feed_token called with empty/None name, returning None")
@@ -1322,8 +1324,36 @@ def get_api_key(account_id):
         return None
 
 
+def _session_account_for(account_id):
+    """Map the logged-in platform username to the session's active account.
+
+    About 70 web routes pass ``session["user"]`` (the platform username) where
+    an account id is expected -- correct before multiple broker accounts, when
+    the two were the same. With several accounts it picked the legacy account
+    named after the user, not the one being worked in, so pages used an API
+    key whose broker was not connected ("No valid auth token or broker found
+    for user_id '<username>'"). Any other value, and calls outside a request,
+    are returned unchanged.
+    """
+    try:
+        from flask import has_request_context, session
+
+        if has_request_context() and account_id and account_id == session.get("user"):
+            from utils.account_context import current_account_id
+
+            return current_account_id() or account_id
+    except Exception:
+        logger.exception("Could not resolve the session's active account")
+    return account_id
+
+
 def get_api_key_for_tradingview(account_id):
-    """Get decrypted API key for a broker account (TradingView/webhook configuration)"""
+    """Get decrypted API key for a broker account (TradingView/webhook configuration).
+
+    Given the logged-in username during a request, uses the session's active
+    account instead (see _session_account_for).
+    """
+    account_id = _session_account_for(account_id)
     try:
         api_key_obj = ApiKeys.query.filter_by(account_id=account_id).first()
         if api_key_obj and api_key_obj.api_key_encrypted:
