@@ -265,6 +265,9 @@ def run_basket_backtest(
     benchmark_exchange = basket.get("benchmark_exchange") or "NSE_INDEX"
     bench_returns = None
     bench_curve: list[dict[str, Any]] = []
+    # Why the benchmark series is missing, if it is -- returned in ``meta`` so
+    # a caller can show it instead of an unexplained empty benchmark line.
+    benchmark_error: str | None = None
     if benchmark:
         try:
             bench_prices = load_prices(
@@ -280,8 +283,11 @@ def run_basket_backtest(
             if len(bench_close) > 1:
                 bench_returns = bench_close.pct_change().iloc[1:]
                 bench_curve = _curve(bench_close / bench_close.iloc[0] * basket["initial_capital"])
+            else:
+                benchmark_error = "benchmark has no sessions overlapping the basket's history"
         except DataError as exc:
             logger.warning("basket benchmark %s unavailable: %s", benchmark, exc)
+            benchmark_error = str(exc)
 
     returns = result.returns
     holding_returns = prices.returns()
@@ -321,6 +327,8 @@ def run_basket_backtest(
             "start": start_date,
             "end": end_date,
             "benchmark": benchmark,
+            "benchmark_exchange": benchmark_exchange if benchmark else None,
+            "benchmark_error": benchmark_error,
             "risk_free_rate": risk_free_rate,
             "total_return_basis": "price",
             "data_warnings": prices.warnings,
