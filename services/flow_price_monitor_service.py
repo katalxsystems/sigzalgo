@@ -25,6 +25,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from services.flow_openalgo_client import FlowOpenAlgoClient, get_flow_client
+from utils import real_threading
 from utils.env_config import env_int
 from utils.logging import get_logger
 
@@ -139,6 +140,15 @@ _WORKFLOW_POOL = ThreadPoolExecutor(
 # conditions (all of them compare against last-traded price).
 _WS_SUBSCRIBE_MODE = "LTP"
 
+# WS events are handed from the websocket client's real OS thread to the hub
+# through a real queue (see _on_tick). Bounded so a stalled drain cannot grow
+# without limit; an event that does not fit is dropped and counted.
+_TICK_QUEUE_MAX = 10_000
+# Drain interval while anything is subscribed, and when nothing is (no tick
+# can arrive then, so there is no reason to wake 20 times a second).
+_DRAIN_POLL_SEC = 0.05
+_DRAIN_IDLE_SEC = 1.0
+
 
 @dataclass
 class PriceAlert:
@@ -217,6 +227,12 @@ class FlowPriceMonitor:
         self._ws_clients: dict[str, Any] = {}
         self._ws_subscribed: dict[str, set[str]] = {}
         self._ws_lock = threading.Lock()
+
+        # Real (not green) queue: written by the websocket client's OS thread,
+        # drained on the hub by _drain_loop.
+        self._tick_queue = real_threading.Queue(maxsize=_TICK_QUEUE_MAX)
+        self._ticks_dropped = 0
+        self._drain_thread: threading.Thread | None = None
 
         self._shutdown_done = False
 
@@ -409,7 +425,60 @@ class FlowPriceMonitor:
         except Exception as e:
             logger.debug(f"Flow price monitor: WS unsubscribe failed for {key}: {e}")
 
+    # -- websocket callbacks ------------------------------------------------
+    #
+    # Both run on the websocket client's real OS thread (its asyncio loop),
+    # not on the eventlet hub. Under gunicorn+eventlet every lock this monitor
+    # uses is green, and taking a green lock from a real thread fails with
+    # "greenlet.error: Cannot switch to a different thread" (or deadlocks).
+    # So the callbacks only enqueue onto a real queue; _drain_loop does the
+    # work on the hub. Same pattern as services/strategy_module/tick_feed.py.
+
     def _on_ws_auth(self, api_key: str, data: dict) -> None:
+        self._enqueue("auth", api_key, data)
+
+    def _on_tick(self, api_key: str, data: dict) -> None:
+        self._enqueue("tick", api_key, data)
+
+    def _enqueue(self, kind: str, api_key: str, data: dict) -> None:
+        try:
+            self._tick_queue.put_nowait((kind, api_key, data))
+        except Exception:  # queue.Full -- never block the websocket thread
+            self._ticks_dropped += 1
+            if self._ticks_dropped % 1000 == 1:
+                logger.warning(
+                    f"Flow price monitor tick queue full; {self._ticks_dropped} event(s) dropped"
+                )
+
+    def _drain_once(self, limit: int = 500) -> int:
+        """Process up to ``limit`` queued websocket events on the hub."""
+        drained = 0
+        while drained < limit:
+            try:
+                kind, api_key, data = self._tick_queue.get_nowait()
+            except real_threading.Empty:
+                break
+            drained += 1
+            try:
+                if kind == "tick":
+                    self._process_tick(api_key, data)
+                else:
+                    self._process_ws_auth(api_key, data)
+            except Exception:
+                logger.exception(f"Error processing websocket {kind} event")
+        return drained
+
+    def _drain_loop(self, stop_event: threading.Event) -> None:
+        """Hub-side consumer of the websocket event queue. Never a blocking
+        get() on the real queue -- that would freeze the hub."""
+        while not stop_event.is_set():
+            if self._drain_once():
+                continue
+            with self._ws_lock:
+                subscribed = any(self._ws_subscribed.values())
+            time.sleep(_DRAIN_POLL_SEC if subscribed else _DRAIN_IDLE_SEC)
+
+    def _process_ws_auth(self, api_key: str, data: dict) -> None:
         """Re-subscribe this account's symbols after a (re)connect -- the
         client re-auths automatically but does not restore subscriptions."""
         if data.get("status") != "success":
@@ -421,9 +490,9 @@ class FlowPriceMonitor:
             exchange, symbol = key.split(":", 1)
             self._ws_subscribe(api_key, symbol, exchange)
 
-    def _on_tick(self, api_key: str, data: dict) -> None:
+    def _process_tick(self, api_key: str, data: dict) -> None:
         """Primary trigger path: evaluate every matching alert against a live
-        tick the instant it arrives, instead of waiting for the poll loop."""
+        tick as soon as it is drained, instead of waiting for the poll loop."""
         try:
             symbol = data.get("symbol")
             exchange = data.get("exchange")
@@ -469,6 +538,10 @@ class FlowPriceMonitor:
             target=self._monitoring_loop, args=(self._stop_event,), daemon=True
         )
         self._monitor_thread.start()
+        self._drain_thread = threading.Thread(
+            target=self._drain_loop, args=(self._stop_event,), daemon=True
+        )
+        self._drain_thread.start()
         logger.info(f"Price monitoring started with {len(self._alerts)} alerts")
 
     def _stop_monitoring(self):
@@ -487,6 +560,10 @@ class FlowPriceMonitor:
         thread = self._monitor_thread
         if thread is not None:
             self._monitor_thread = None
+        drain = self._drain_thread
+        self._drain_thread = None
+        if drain is not None and drain is not threading.current_thread():
+            drain.join(timeout=5)
 
         # remove_alert() is called from inside the monitoring loop when a
         # one-shot alert expires, and joining the current thread raises

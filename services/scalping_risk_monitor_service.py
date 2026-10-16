@@ -32,6 +32,7 @@ import atexit
 import threading
 import time
 
+from utils import real_threading
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -41,6 +42,13 @@ PERSIST_THROTTLE_SEC = 1.5  # rate-limit trailing-SL writes (latest value, bound
 EMIT_THROTTLE_SEC = 1.0  # debounce browser SL-update pushes
 EXIT_RETRY_COOLDOWN_SEC = 3.0  # throttle retries for a leg whose exit keeps failing
 SUBSCRIBE_MODE = "LTP"
+# Feed events are handed from the websocket client's real OS thread to the hub
+# through a real queue (see _on_tick). Bounded; an event that does not fit is
+# dropped and counted. Drain timing matches the strategy tick feed's risk path:
+# short while anything is subscribed, longer when no tick can arrive.
+TICK_QUEUE_MAX = 10_000
+DRAIN_POLL_SEC = 0.005
+DRAIN_DORMANT_SEC = 0.25
 
 
 def _slkey(symbol: str, exchange: str, product: str) -> str:
@@ -133,6 +141,12 @@ class ScalpingRiskMonitor:
         self._sync_lock = threading.Lock()
         self._sync_pending = False
         self._sync_thread: threading.Thread | None = None
+        # Real (not green) queue, written by the websocket client's OS thread
+        # and drained on the hub by _drain_loop.
+        self._tick_queue = real_threading.Queue(maxsize=TICK_QUEUE_MAX)
+        self._ticks_dropped = 0
+        self._drain_thread: threading.Thread | None = None
+        self._drain_stop = threading.Event()
         atexit.register(self.stop)
 
     # ------------------------------------------------------------------ lifecycle
@@ -169,6 +183,11 @@ class ScalpingRiskMonitor:
 
     def stop(self) -> None:
         """Tear down the feed subscription/connection (FD hygiene)."""
+        self._drain_stop.set()
+        drain = self._drain_thread
+        self._drain_thread = None
+        if drain is not None and drain is not threading.current_thread():
+            drain.join(timeout=2)
         ws = self._ws
         if ws is not None:
             try:
@@ -246,6 +265,7 @@ class ScalpingRiskMonitor:
             logger.debug("Scalping risk monitor: feed not available yet: %s", e)
             return False
         self._ws = ws
+        self._ensure_drain()
         if not self._callbacks_registered:
             ws.register_callback("market_data", self._on_tick)
             # Re-subscribe after a (re)connect — the client re-auths but does not
@@ -276,7 +296,75 @@ class ScalpingRiskMonitor:
         with self._lock:
             self._subscribed -= symkeys
 
+    # ------------------------------------------------------------------ feed callbacks
+    #
+    # _on_tick and _on_auth run on the websocket client's real OS thread (its
+    # asyncio loop), not on the eventlet hub. Everything they used to do --
+    # take the green self._lock, write SQLite, emit Socket.IO, start the exit
+    # thread -- belongs to the hub; a green lock taken from a real thread fails
+    # with "greenlet.error: Cannot switch to a different thread" or deadlocks,
+    # which here means stop-losses stop being evaluated. So the callbacks only
+    # enqueue, and _drain_loop does the work. Same pattern as
+    # services/strategy_module/tick_feed.py.
+
+    def _on_tick(self, data: dict) -> None:
+        self._enqueue("tick", data)
+
     def _on_auth(self, data: dict) -> None:
+        self._enqueue("auth", data)
+
+    def _enqueue(self, kind: str, data: dict) -> None:
+        try:
+            self._tick_queue.put_nowait((kind, data))
+        except Exception:  # queue.Full -- never block the websocket thread
+            self._ticks_dropped += 1
+            if self._ticks_dropped % 1000 == 1:
+                logger.warning(
+                    "Scalping risk monitor tick queue full; %d event(s) dropped",
+                    self._ticks_dropped,
+                )
+
+    def _ensure_drain(self) -> None:
+        """Start the hub-side drain thread if it is not running."""
+        if self._drain_thread is not None and self._drain_thread.is_alive():
+            return
+        self._drain_stop = threading.Event()
+        self._drain_thread = threading.Thread(
+            target=self._drain_loop,
+            args=(self._drain_stop,),
+            name="scalping-tick-drain",
+            daemon=True,
+        )
+        self._drain_thread.start()
+
+    def _drain_once(self, limit: int = 500) -> int:
+        drained = 0
+        while drained < limit:
+            try:
+                kind, data = self._tick_queue.get_nowait()
+            except real_threading.Empty:
+                break
+            drained += 1
+            try:
+                if kind == "tick":
+                    self._process_tick(data)
+                else:
+                    self._process_auth(data)
+            except Exception:
+                logger.exception("Scalping risk monitor: error processing %s event", kind)
+        return drained
+
+    def _drain_loop(self, stop_event: threading.Event) -> None:
+        """Apply feed events on the hub. Never a blocking get() on the real
+        queue -- that would freeze the hub."""
+        while not stop_event.is_set():
+            if self._drain_once():
+                continue
+            with self._lock:
+                active = bool(self._subscribed)
+            time.sleep(DRAIN_POLL_SEC if active else DRAIN_DORMANT_SEC)
+
+    def _process_auth(self, data: dict) -> None:
         if data.get("status") != "success":
             return
         # Re-subscribe after a (re)connect. Snapshot + clear under the lock, then do
@@ -288,7 +376,7 @@ class ScalpingRiskMonitor:
             self._subscribe(syms)
 
     # ------------------------------------------------------------------ tick handler
-    def _on_tick(self, data: dict) -> None:
+    def _process_tick(self, data: dict) -> None:
         try:
             symbol = data.get("symbol")
             exchange = data.get("exchange")
