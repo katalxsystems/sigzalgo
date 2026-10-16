@@ -2295,8 +2295,10 @@ class NodeExecutor:
         elif condition_type in ["exiting_channel", "outside_channel"]:
             condition_met = ltp < price_lower or ltp > price_upper
 
+        self.log("=============BREACH Starts===================")
         self.log(f"Price alert: {symbol} LTP={ltp} {condition_type} {price} = {condition_met}")
         self.store_output(node_data, {"ltp": ltp, "condition_met": condition_met})
+        self.log("=============BREACH Ends===================")
         return {"status": "success", "condition": condition_met, "ltp": ltp}
 
     # === Streaming Nodes (WebSocket with REST API fallback) ===
