@@ -15,13 +15,14 @@ from `call_id`, `mentor_id`, and `symbol` (the "script"), in that order:
   is removed the instant it fires, same as sl_target) -- in whichever
   direction is a "re-cross" given where price was when the call was made
   (active_price). See _entry_cross_condition() below.
-  - active_price == entry_price is a degenerate case: there is no cross
-    direction to watch for, because price is already there. No entry_recross
-    workflow is created for it; instead create_and_activate() sends one
-    immediate webhook notification (breach_type "entry_price", workflow_id
-    set to the sl_target watch's id -- the one real workflow this call
-    created) in the background, since the "breach" is already true at call
-    time rather than something to wait for.
+  - active_price == entry_price: there is no cross direction to watch for,
+    because price is already there -- the entry breach is true at call time.
+    The entry_recross workflow is still created (same graph: notify, then
+    deactivate itself) but, instead of a price watch, it is executed once
+    immediately in the background with trigger_price = active_price. Its
+    notify therefore comes from its own workflow_id and shows in its
+    Execution Log, and its own deactivate step retires it; the sl_target
+    watch stays live.
 
 Each live watch's action chain ends in one [deactivate] node: a loopback HTTP
 request to this same instance's own apikey-authenticated /api/v1/pricebreach/*
@@ -75,9 +76,9 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 # Shared and bounded, never one thread per call: the immediate
-# active_price == entry_price notification (see create_and_activate) fires
-# in the background so a slow/unreachable webhook_url does not delay the API
-# response. Mirrors flow_price_monitor_service.py's _WORKFLOW_POOL.
+# active_price == entry_price entry_recross run (see create_and_activate)
+# executes in the background so a slow/unreachable webhook_url does not delay
+# the API response. Mirrors flow_price_monitor_service.py's _WORKFLOW_POOL.
 _NOTIFY_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pricebreach-notify")
 
 
@@ -114,6 +115,33 @@ def _entry_cross_condition(active_price: float, entry_price: float) -> str | Non
     if active_price < entry_price:
         return "crosses_above"
     return None
+
+
+def _execute_entry_now(workflow_id: int, api_key: str, price: float) -> None:
+    """Run an entry_recross workflow once, now, as if its price alert had just
+    fired at ``price`` (the active_price == entry_price case)."""
+    from services.flow_executor_service import execute_workflow
+    from utils.db_sessions import remove_all_scoped_sessions
+
+    try:
+        result = execute_workflow(
+            workflow_id,
+            webhook_data={
+                "trigger_type": "price_alert",
+                "trigger_price": price,
+                "triggered_at": datetime.now().isoformat(),
+                "immediate": True,
+            },
+            api_key=api_key,
+        )
+        logger.info(
+            f"Immediate entry_recross run for workflow {workflow_id}: {result.get('status')}"
+        )
+    except Exception:
+        logger.exception(f"Immediate entry_recross run failed for workflow {workflow_id}")
+    finally:
+        # Pool thread: no app context, so teardown never removes its sessions.
+        remove_all_scoped_sessions()
 
 
 def _send_notification(webhook_url: str, payload: dict) -> None:
@@ -435,25 +463,25 @@ def create_and_activate(
     if not sl_target_wf:
         return False, {"status": "error", "message": "Failed to create sl_target workflow"}, 500
 
-    entry_wf = None
-    if entry_condition is not None:
-        entry_wf = db_create_workflow(
-            name=f"{base_name} (Entry re-cross)",
-            description="",
-            nodes=[],
-            edges=[],
-            account_id=account_id,
-            owner_username=owner_username,
+    # Always created: when active_price == entry_price it runs once immediately
+    # instead of watching (see module docstring).
+    entry_wf = db_create_workflow(
+        name=f"{base_name} (Entry re-cross)",
+        description="",
+        nodes=[],
+        edges=[],
+        account_id=account_id,
+        owner_username=owner_username,
+    )
+    if not entry_wf:
+        # Roll back the half-created pair rather than leave an orphaned,
+        # never-activated sl_target workflow behind.
+        db_delete_workflow(sl_target_wf.id)
+        return (
+            False,
+            {"status": "error", "message": "Failed to create entry_recross workflow"},
+            500,
         )
-        if not entry_wf:
-            # Roll back the half-created pair rather than leave an orphaned,
-            # never-activated sl_target workflow behind.
-            db_delete_workflow(sl_target_wf.id)
-            return (
-                False,
-                {"status": "error", "message": "Failed to create entry_recross workflow"},
-                500,
-            )
 
     # Record the call_id -> workflow_id(s) mapping so
     # /api/v1/pricebreach/<call_id>/deactivate can resolve both of them
@@ -491,7 +519,9 @@ def create_and_activate(
             entry_price,
             stop_loss,
             target1,
-            entry_condition,
+            # No cross direction when price is already at entry; "crossing"
+            # (at the level) describes it, and is never registered as a watch.
+            entry_condition or "crossing",
             webhook_url,
             api_key,
             own_id=entry_wf.id,
@@ -515,7 +545,7 @@ def create_and_activate(
     )
     db_activate_workflow(sl_target_wf.id, api_key=api_key)
 
-    if entry_wf:
+    if entry_condition is not None:
         price_monitor.add_alert(
             workflow_id=entry_wf.id,
             symbol=symbol,
@@ -528,34 +558,18 @@ def create_and_activate(
         )
         db_activate_workflow(entry_wf.id, api_key=api_key)
     else:
-        # active_price == entry_price: nothing to watch for on this axis --
-        # the condition is already true right now. Tell the caller
-        # immediately instead of silently doing nothing for it. workflow_id
-        # is sl_target_wf.id (the one real, live workflow this call created)
-        # rather than null, so the receiver has something to correlate/
-        # manually deactivate against.
-        immediate_body = _base_notify_body(
-            call_id,
-            mentor_id,
-            sl_target_wf.id,
-            "entry_recross",
-            symbol,
-            exchange,
-            entry_price,
-            stop_loss,
-            target1,
-        )
-        immediate_body["breach_type"] = "entry_price"
-        immediate_body["breach_price"] = active_price
-        immediate_body["triggered_at"] = datetime.now().isoformat()
-        _NOTIFY_POOL.submit(_send_notification, webhook_url, immediate_body)
+        # active_price == entry_price: the entry breach is already true, so
+        # run the entry_recross workflow once now rather than waiting for a
+        # cross that has no direction. Activated first so its own deactivate
+        # step (and the call_id teardown) see a live workflow.
+        db_activate_workflow(entry_wf.id, api_key=api_key)
 
     logger.info(
         f"Price-breach call {call_id}: sl_target={sl_target_wf.id} outside [{stop_loss}, {target1}]"
         + (
             f", entry_recross={entry_wf.id} {entry_condition} {entry_price}"
-            if entry_wf
-            else ", entry_recross=immediate (active_price == entry_price)"
+            if entry_condition is not None
+            else f", entry_recross={entry_wf.id} executed immediately (active_price == entry_price)"
         )
     )
 
@@ -565,7 +579,7 @@ def create_and_activate(
             "watching": f"price outside [{stop_loss}, {target1}]",
         }
     }
-    if entry_wf:
+    if entry_condition is not None:
         workflows["entry_recross"] = {
             "workflow_id": entry_wf.id,
             "watching": f"price {entry_condition} {entry_price}",
@@ -577,11 +591,22 @@ def create_and_activate(
             "needed either way."
         )
     else:
-        workflows["entry_recross"] = None
+        workflows["entry_recross"] = {
+            "workflow_id": entry_wf.id,
+            "watching": None,
+            "executed_immediately": True,
+        }
         message = (
-            "active_price equals entry_price: an immediate entry_price breach notification has been "
-            "sent to your webhook. Only the sl_target watch is live."
+            "active_price equals entry_price: the entry_recross workflow was executed immediately "
+            "(its notify reaches your webhook and it then deactivates itself). The sl_target watch "
+            "stays live."
         )
+
+    if entry_condition is None:
+        # Submitted last, once everything above has used this request's ORM
+        # objects: the run executes on a pool thread and then removes that
+        # thread's scoped sessions.
+        _NOTIFY_POOL.submit(_execute_entry_now, entry_wf.id, api_key, float(active_price))
 
     return (
         True,
