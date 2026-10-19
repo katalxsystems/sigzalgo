@@ -185,3 +185,20 @@ def test_a_normal_cached_read_still_works(fresh_db):
     assert auth_db.get_auth_token(USER) == "tok-1"
     assert auth_db.get_auth_token(USER) == "tok-1"
     assert f"auth-{USER}" in auth_db.auth_cache
+
+
+def test_a_revoked_api_key_is_answered_from_the_negative_cache(fresh_db, monkeypatch):
+    # A client polling with a revoked account's key used to alternate between
+    # caching the negative result and evicting it on the revocation re-check,
+    # so every call queried the DB and logged a warning. The negative result
+    # must hold: one warning, then cache hits.
+    auth_db.upsert_auth(USER, "tok-1", "zerodha")
+    auth_db.upsert_auth(USER, "tok-1", "zerodha", revoke=True)
+    monkeypatch.setattr(auth_db, "verify_api_key", lambda _key: USER)
+    warnings = []
+    monkeypatch.setattr(auth_db.logger, "warning", lambda msg, *a, **k: warnings.append(msg))
+
+    results = [auth_db.get_auth_token_broker("revoked-key") for _ in range(4)]
+
+    assert results == [(None, None)] * 4
+    assert len(warnings) == 1
