@@ -7,6 +7,13 @@ add, remove, and switch between their accounts. Connecting an account's
 broker session still goes through the existing OAuth/TOTP flow in
 blueprints/brlogin.py — POST /api/accounts only creates the account_id and
 points the browser at that flow.
+
+Administrators may also manage other users' accounts on their behalf: list
+them (``?all=1`` / ``?owner=``), create one (``owner_username`` in the body),
+set credentials, generate API keys, connect, set the default and revoke.
+Every such action is logged. ``/activate`` stays own-accounts-only: it points
+the caller's own trading UI at the account, which would mean an admin
+trading as another user.
 """
 
 import os
@@ -23,6 +30,7 @@ from database.auth_db import (
     upsert_api_key,
     upsert_auth,
 )
+from utils.account_context import is_admin_session
 from utils.config import get_connect_path, validate_broker_api_key_format
 from utils.logging import get_logger
 from utils.session import require_app_session
@@ -38,9 +46,35 @@ def _generate_api_key():
     return secrets.token_hex(32)
 
 
-def _owns(account_id):
-    """Ownership check: the account must belong to the logged-in user."""
-    return get_owner_username(account_id) == session.get("user")
+def _can_manage(account_id):
+    """The owner of an existing account the caller may manage: the logged-in
+    user for their own account, or any owner for an administrator. None when
+    the account does not exist or is someone else's (callers answer 404)."""
+    owner = get_owner_username(account_id)
+    if owner is None:
+        return None
+    if owner == session.get("user") or is_admin_session():
+        return owner
+    return None
+
+
+def _audit(action, account_id, owner):
+    """Log an administrator acting on another user's account."""
+    if owner and owner != session.get("user"):
+        logger.info(f"Admin {session.get('user')} {action} account {account_id} (owner {owner})")
+
+
+def _find_manageable_account(account_id):
+    """Like _find_owned_account, but administrators may also get another
+    user's account. Returns (account dict with owner_username, owner), or
+    (None, None)."""
+    owner = _can_manage(account_id)
+    if owner is None:
+        return None, None
+    for account in list_broker_accounts(owner):
+        if account["account_id"] == account_id:
+            return {**account, "owner_username": owner}, owner
+    return None, None
 
 
 def _find_owned_account(account_id):
@@ -56,6 +90,23 @@ def _find_owned_account(account_id):
 @broker_accounts_bp.route("", methods=["GET"])
 @require_app_session
 def list_accounts():
+    """The caller's accounts. Administrators: ``?owner=<username>`` for one
+    user's accounts, ``?all=1`` for every user's (each with owner_username)."""
+    owner = (request.args.get("owner") or "").strip()
+    want_all = request.args.get("all") in ("1", "true", "yes")
+    if want_all or (owner and owner != session["user"]):
+        if not is_admin_session():
+            return jsonify({"status": "error", "message": "Administrator access required"}), 403
+        from database.auth_db import Auth
+
+        if want_all:
+            owners = sorted({a.owner_username for a in Auth.query.all() if a.owner_username})
+        else:
+            owners = [owner]
+        accounts = [
+            {**account, "owner_username": o} for o in owners for account in list_broker_accounts(o)
+        ]
+        return jsonify({"status": "success", "data": accounts})
     accounts = list_broker_accounts(session["user"])
     return jsonify({"status": "success", "data": accounts})
 
@@ -79,8 +130,18 @@ def add_account():
         if format_error:
             return jsonify({"status": "error", "message": format_error}), 400
 
+    # Administrators may create an account for another (existing) user.
+    owner = (data.get("owner_username") or "").strip() or session["user"]
+    if owner != session["user"]:
+        if not is_admin_session():
+            return jsonify({"status": "error", "message": "Administrator access required"}), 403
+        from database.user_db import find_user_by_exact_username
+
+        if not find_user_by_exact_username(owner):
+            return jsonify({"status": "error", "message": f"Unknown user: {owner}"}), 404
+
     account_id = create_broker_account(
-        session["user"],
+        owner,
         broker,
         label=label,
         broker_api_key=broker_api_key,
@@ -90,8 +151,13 @@ def add_account():
         return jsonify({"status": "error", "message": "Failed to create account"}), 500
 
     # Carried into blueprints/brlogin.py's broker_callback, which targets
-    # this account_id instead of falling back to the platform username.
-    session["pending_account_id"] = account_id
+    # this account_id instead of falling back to the platform username. Not
+    # for an account created on another user's behalf: the admin's own next
+    # broker login must not land on it unless they ask (POST .../connect).
+    if owner == session["user"]:
+        session["pending_account_id"] = account_id
+    else:
+        _audit("created", account_id, owner)
 
     return jsonify(
         {
@@ -99,6 +165,7 @@ def add_account():
             "data": {
                 "account_id": account_id,
                 "broker": broker,
+                "owner_username": owner,
                 "connect_url": get_connect_path(broker),
             },
         }
@@ -108,8 +175,10 @@ def add_account():
 @broker_accounts_bp.route("/<account_id>", methods=["DELETE"])
 @require_app_session
 def remove_account(account_id):
-    if not _owns(account_id):
+    owner = _can_manage(account_id)
+    if owner is None:
         return jsonify({"status": "error", "message": "Account not found"}), 404
+    _audit("revoked", account_id, owner)
 
     inserted_id = upsert_auth(account_id, "", "", revoke=True)
     if inserted_id is None:
@@ -136,10 +205,13 @@ def connect_account(account_id):
     whichever account_id was last created in this browser session — POST
     /api/accounts already sets it once, but only at creation time.
     """
-    account = _find_owned_account(account_id)
+    account, owner = _find_manageable_account(account_id)
     if not account:
         return jsonify({"status": "error", "message": "Account not found"}), 404
 
+    # For an administrator connecting another user's account, the broker login
+    # (that user's credentials/TOTP) completes in the admin's browser session.
+    _audit("started connecting", account_id, owner)
     session["pending_account_id"] = account_id
     return jsonify(
         {"status": "success", "data": {"connect_url": get_connect_path(account["broker"])}}
@@ -150,7 +222,7 @@ def connect_account(account_id):
 @require_app_session
 def update_account_credentials(account_id):
     """Set/update the per-account broker app credentials (API key/secret)."""
-    account = _find_owned_account(account_id)
+    account, owner = _find_manageable_account(account_id)
     if not account:
         return jsonify({"status": "error", "message": "Account not found"}), 404
 
@@ -174,6 +246,7 @@ def update_account_credentials(account_id):
     ok = set_broker_credentials(account_id, broker_api_key, broker_api_secret)
     if not ok:
         return jsonify({"status": "error", "message": "Failed to update credentials"}), 500
+    _audit("updated credentials of", account_id, owner)
 
     return jsonify({"status": "success", "message": "Credentials updated"})
 
@@ -181,13 +254,16 @@ def update_account_credentials(account_id):
 @broker_accounts_bp.route("/<account_id>/apikey", methods=["POST"])
 @require_app_session
 def generate_account_api_key(account_id):
-    if not _owns(account_id):
+    owner = _can_manage(account_id)
+    if owner is None:
         return jsonify({"status": "error", "message": "Account not found"}), 404
 
     api_key = _generate_api_key()
-    key_id = upsert_api_key(account_id, api_key, owner_username=session["user"])
+    # Filed under the account's owner, also when an administrator generates it.
+    key_id = upsert_api_key(account_id, api_key, owner_username=owner)
     if key_id is None:
         return jsonify({"status": "error", "message": "Failed to generate API key"}), 500
+    _audit("generated an API key for", account_id, owner)
 
     return jsonify({"status": "success", "data": {"account_id": account_id, "api_key": api_key}})
 
@@ -195,10 +271,13 @@ def generate_account_api_key(account_id):
 @broker_accounts_bp.route("/<account_id>/default", methods=["POST"])
 @require_app_session
 def set_default(account_id):
-    if not _owns(account_id):
+    owner = _can_manage(account_id)
+    if owner is None:
         return jsonify({"status": "error", "message": "Account not found"}), 404
 
-    ok = set_default_account(session["user"], account_id)
+    ok = set_default_account(owner, account_id)
+    if ok:
+        _audit("set as default", account_id, owner)
     if not ok:
         return jsonify({"status": "error", "message": "Failed to set default account"}), 500
 

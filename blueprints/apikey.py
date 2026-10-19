@@ -23,7 +23,7 @@ from database.auth_db import (
     upsert_api_key,
     verify_api_key,
 )
-from utils.account_context import current_account_id
+from utils.account_context import current_account_id, is_admin_session
 from utils.logging import get_logger
 from utils.session import require_app_session
 
@@ -50,7 +50,8 @@ def _owns_account(account_id):
     """
     owner = get_owner_username(account_id)
     if owner is not None:
-        return owner == session.get("user")
+        # Administrators may manage any user's account (logged by the caller).
+        return owner == session.get("user") or is_admin_session()
     return account_id == session.get("user")
 
 
@@ -128,8 +129,16 @@ def manage_api_key():
         # Generate new API key
         api_key = generate_api_key()
 
-        # Store the API key (auth_db will handle both hashing and encryption)
-        key_id = upsert_api_key(user_id, api_key)
+        # Store the API key (auth_db will handle both hashing and encryption),
+        # filed under the account's owner -- without it the owner column got
+        # the account id, and the key was missing from its owner's key list.
+        owner = get_owner_username(user_id) or session.get("user")
+        if owner != session.get("user"):
+            logger.info(
+                f"Admin {session.get('user')} generated an API key for account {user_id} "
+                f"(owner {owner})"
+            )
+        key_id = upsert_api_key(user_id, api_key, owner_username=owner)
 
         if key_id is not None:
             logger.info(f"API key updated successfully for user: {user_id}")
