@@ -290,6 +290,11 @@ class WorkflowContext:
             value = self._walk_path(var_path)
             if value is self._UNRESOLVED:
                 return match.group(0)
+            if isinstance(value, (dict, list, tuple)):
+                # JSON, not str(): a Python repr ('single quotes', None, True)
+                # is not valid JSON, so `"legs": {{pnl.legs}}` in an HTTP
+                # Request body failed to parse and was posted as plain text.
+                return json.dumps(value, default=str)
             return str(value)
 
         return re.sub(r"\{\{([^}]+)\}\}", replacer, text)

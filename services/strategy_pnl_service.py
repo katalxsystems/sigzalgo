@@ -115,6 +115,19 @@ def pnl_from_book(
         )
 
     for entry in grouped.values():
+        # Open legs first, insertion order preserved within each group. Flow
+        # workflows address a leg positionally (`{{pnl.legs[0].average_price}}`)
+        # because the node vocabulary has no way to filter a list, and the
+        # strategy book never prunes a leg that has gone flat. Without this,
+        # `legs[0]` is the *oldest* row - a closed leg whose average price the
+        # book has reset to 0 - so a percentage exit divides by zero and stops
+        # firing from the strategy's second trading day onward.
+        entry["legs"].sort(key=lambda leg: abs(leg["quantity"]) <= 1e-9)
+        # A count, not a signed sum: open_quantity nets a hedged structure
+        # (an iron condor's +1/-1/-1/+1 lots) to 0 while every leg is open, so
+        # it cannot answer "is anything still open?". With the sort above, the
+        # open legs are exactly legs[0 .. open_legs-1].
+        entry["open_legs"] = sum(1 for leg in entry["legs"] if abs(leg["quantity"]) > 1e-9)
         entry["realized"] = round(entry["realized"], 4)
         entry["today_realized"] = round(entry["today_realized"], 4)
         entry["unrealized"] = round(entry["unrealized"], 4)
@@ -133,6 +146,7 @@ def pnl_from_book(
                 "total": 0.0,
                 "today_total": 0.0,
                 "open_quantity": 0.0,
+                "open_legs": 0,
                 "unpriced_legs": 0,
                 "legs": [],
             },

@@ -1072,7 +1072,22 @@ performance while another strategy holds the same contract.
 
 Exposes `{{name.realized}}`, `{{name.today_realized}}`, `{{name.unrealized}}`,
 `{{name.total}}`, `{{name.today_total}}`, `{{name.open_quantity}}`,
-`{{name.unpriced_legs}}` and a per-leg `{{name.legs[0].*}}` breakdown.
+`{{name.unpriced_legs}}`, `{{name.open_legs}}` and a per-leg
+`{{name.legs[0].*}}` breakdown.
+
+`legs` lists **open legs first**, so whenever `open_legs` is non-zero,
+`{{name.legs[0]}}` is an open leg. The book keeps a strategy's flat legs
+indefinitely and resets their `average_price` to 0 when they close, so without
+that ordering a positional read would eventually land on a stale closed leg and
+a percentage calculation would divide by zero.
+
+Guard on `open_legs` (a count of legs with non-zero quantity), not on
+`open_quantity`: `open_quantity` is a signed sum, so a hedged structure such
+as an iron condor (+1/-1/-1/+1 lots) reads 0 while every leg is open.
+
+To send every leg regardless of how many there are, reference the whole list:
+`"legs": {{name.legs}}` in an HTTP Request body renders as a JSON array.
+Flat legs are included with `quantity` 0, so a receiver should skip them.
 
 The book is fed from orders placed **through OpenAlgo carrying a strategy
 tag**; a position opened by hand in the broker terminal is invisible to it.
