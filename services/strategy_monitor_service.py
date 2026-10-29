@@ -1,10 +1,12 @@
 """Strategy monitor: an apikey-managed Flow workflow that watches one strategy.
 
-Signalz (or any external platform) owns the levels and pushes them here with
-``upsert``; this instance keeps that copy in the workflow graph and checks it
-on a fixed schedule:
+Signalz (or any external platform) owns the strategy - its legs and its levels
+- on its own server and database, and pushes both here with ``upsert``. This
+instance keeps that copy in the workflow graph and checks it on a fixed
+schedule:
 
-- combined strategy P&L (``strategyPnl``) against ``target`` and ``stoploss``
+- combined P&L of the supplied legs, marked to live quotes, against
+  ``target`` and ``stoploss``
 - the underlying's spot price against ``upper_spot_stoploss`` and
   ``lower_spot_stoploss``
 
@@ -15,8 +17,9 @@ places no orders itself - exiting is the caller's job. Once the webhook answers
 A failed delivery leaves it armed, and the next run retries.
 
 A monitor is identified by the account behind the API key plus the strategy
-tag, so upserting the same strategy again replaces the stored levels in place
-(same workflow id) and re-arms it.
+tag, so upserting the same strategy again replaces the stored legs and levels
+in place (same workflow id) and re-arms it. The caller re-upserts after any
+adjustment or partial exit so the stored legs stay current.
 """
 
 import json
@@ -105,10 +108,15 @@ def build_graph(
     upper_spot_stoploss: float | None,
     lower_spot_stoploss: float | None,
     interval_seconds: int,
+    legs: list[dict],
 ) -> dict:
     """The monitor's nodes and edges. Only the checks whose level is set are
     included. Order per run: P&L target, P&L stoploss, upper spot, lower spot;
     the first that is hit names the reason, so one run sends one notification.
+
+    `legs` are the caller's own record of the strategy (it is the source of
+    truth, on its own server). They are stored in the P&L node and valued
+    against live quotes each run, not read from this instance's strategy book.
     """
     from services.price_breach_service import _loopback_base_url
 
@@ -158,7 +166,14 @@ def build_graph(
         if underlying
         else "NSE",
     )
-    pnl = add("pnl", "strategyPnl", label="Strategy P&L", strategy=strategy, outputVariable="pnl")
+    pnl = add(
+        "pnl",
+        "strategyPnl",
+        label="Strategy P&L",
+        strategy=strategy,
+        legs=[dict(leg) for leg in legs],
+        outputVariable="pnl",
+    )
     link(start, pnl)
     is_open = cond("open", "Any leg open?", "{{pnl.open_legs}}", ">", 0)
     link(pnl, is_open)

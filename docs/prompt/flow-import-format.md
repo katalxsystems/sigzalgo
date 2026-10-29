@@ -1085,6 +1085,13 @@ Guard on `open_legs` (a count of legs with non-zero quantity), not on
 `open_quantity`: `open_quantity` is a signed sum, so a hedged structure such
 as an iron condor (+1/-1/-1/+1 lots) reads 0 while every leg is open.
 
+For a strategy recorded outside OpenAlgo, set `legs` to a list of
+`{symbol, exchange, product, quantity, entry_price, realized_pnl}` (signed
+`quantity`). The node then values those legs against a live multi-quote
+instead of reading the strategy book, with the same output shape; a failed
+quote call returns `status: "error"`. The strategy monitor API
+(`/api/v1/strategymonitor/upsert`) writes this for you.
+
 To send every leg regardless of how many there are, reference the whole list:
 `"legs": {{name.legs}}` in an HTTP Request body renders as a JSON array.
 Flat legs are included with `quantity` 0, so a receiver should skip them.

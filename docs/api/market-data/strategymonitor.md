@@ -4,11 +4,12 @@ Watch a multi-leg strategy against levels an external platform owns, and get a
 webhook when one is breached - without building a Flow workflow yourself or
 holding a browser session.
 
-The caller pushes the levels; this instance keeps that copy in a Flow workflow
-and checks it on a schedule:
+The caller owns the strategy on its own server and pushes everything the
+monitor needs - the legs and the levels. This instance keeps that copy in a
+Flow workflow and checks it on a schedule:
 
-- **combined strategy P&L** (every leg carrying the strategy tag) against
-  `target` and `stoploss`
+- **combined P&L of the supplied legs**, each open leg marked to a live quote,
+  against `target` and `stoploss`
 - the **underlying's spot price** against `upper_spot_stoploss` and
   `lower_spot_stoploss`
 
@@ -31,15 +32,18 @@ POST http://127.0.0.1:5000/api/v1/strategymonitor/deactivate
 - A monitor is identified by **the account behind `apikey` + `strategy`**. The
   same tag on another account is a separate monitor.
 - `upsert` creates the monitor and arms it. Calling it again for the same
-  strategy replaces the stored levels in place (same `workflow_id`) and
-  re-arms it - including after it has fired.
+  strategy replaces the stored legs and levels in place (same `workflow_id`)
+  and re-arms it - including after it has fired.
+- **Re-upsert after every change to the legs** (an adjustment, a partial exit,
+  a roll). The monitor values exactly the legs it was last sent; it does not
+  see orders or fills on its own.
 - After a breach notification is **delivered (HTTP 2xx)** the monitor
   deactivates itself, so each breach is reported once. A failed delivery
   (non-2xx, timeout) leaves it armed and the next run sends it again; use
   `idempotency_key` to ignore duplicates.
-- The monitor only checks while the strategy has an open leg. Arming it before
-  the entry orders are placed is fine. Closing the strategy without a breach
-  does **not** deactivate it - call `deactivate`.
+- The monitor only checks while at least one supplied leg has a non-zero
+  quantity. Closing the strategy without a breach does **not** deactivate it -
+  call `deactivate`.
 - Checks run only during market hours of the underlying's exchange (NSE when no
   underlying is given).
 
@@ -59,7 +63,13 @@ POST http://127.0.0.1:5000/api/v1/strategymonitor/deactivate
   "lower_spot_stoploss": 22400,
   "webhook_url": "https://signalz.example/hooks/strategy-breach",
   "webhook_secret": "shared-secret",
-  "interval_seconds": 60
+  "interval_seconds": 60,
+  "legs": [
+    { "symbol": "NIFTY27OCT2622700CE", "exchange": "NFO", "product": "NRML",
+      "quantity": 65, "entry_price": 50.0 },
+    { "symbol": "NIFTY27OCT2622700PE", "exchange": "NFO", "product": "NRML",
+      "quantity": 65, "entry_price": 40.0 }
+  ]
 }
 ```
 
@@ -91,9 +101,26 @@ POST http://127.0.0.1:5000/api/v1/strategymonitor/deactivate
 | `webhook_url` | Yes | `http` or `https` URL that receives the notification |
 | `webhook_secret` | No | Sent as the `X-Webhook-Secret` header |
 | `interval_seconds` | No | Check interval, 10 to 3600. Default `60` |
+| `legs` | Yes | 1 to 50 legs, see below |
 
 \* At least one of `target`, `stoploss`, `upper_spot_stoploss`,
 `lower_spot_stoploss`. Leave a level out to skip that check.
+
+### Leg fields
+
+| Field | Required | Description |
+|---|---|---|
+| `symbol` | Yes | OpenAlgo symbol, e.g. `NIFTY27OCT2622700CE` |
+| `exchange` | Yes | e.g. `NFO`, `BFO`, `MCX` |
+| `product` | No | `NRML` (default), `MIS` or `CNC` |
+| `quantity` | Yes | Signed units: positive long, negative short. `0` for a leg already closed |
+| `entry_price` | Yes | Average entry price of the open quantity |
+| `realized_pnl` | No | Rupees already booked on this leg (partial exits, closed legs). Default `0` |
+
+The monitor's P&L is, per leg, `quantity x (live price - entry_price) +
+realized_pnl`, summed. Keep a closed leg in the list with `quantity: 0` and its
+`realized_pnl` so that profit or loss still counts toward the target and
+stoploss.
 
 ## Deactivate
 
@@ -133,9 +160,9 @@ for that strategy.
 
 - `reason`: `TARGET`, `STOPLOSS`, `UPPER_SPOT_SL` or `LOWER_SPOT_SL`. Checked in
   that order each run, and the first hit is the one sent.
-- `legs`: open legs first. Legs this tag has already closed are included with
-  `quantity` 0 - skip them. A positive `quantity` is long (exit with SELL), a
-  negative one short (exit with BUY).
+- `legs`: the legs you sent, each with its live `ltp` and `unrealized`, open
+  legs first. Closed legs (`quantity` 0) are included - skip them. A positive
+  `quantity` is long (exit with SELL), a negative one short (exit with BUY).
 - `spot.ltp` is `null` on a P&L breach, since the spot is only fetched when the
   P&L levels are not hit.
 - `pnl.unpriced_legs` > 0 means a leg had no live price and `pnl.total` leaves
@@ -143,10 +170,11 @@ for that strategy.
 
 ## Notes
 
-- **Tagging:** only orders placed through OpenAlgo with this strategy tag are
-  counted. Use a fresh tag per position: realized P&L accumulates under a tag
-  across sessions.
-- **Missing data never fires:** a failed P&L read or spot quote skips the run
+- **Leg prices** come from a live multi-quote through this account's broker
+  session, so the account must be connected. Where the orders were placed does
+  not matter. `strategy` is only the monitor's identifier and the tag echoed in
+  the webhook.
+- **Missing data never fires:** a failed leg quote or spot quote skips the run
   rather than reporting a breach.
 - The monitor is an ordinary Flow workflow named
   `Strategy Monitor - <strategy>`. It shows in `/flow` with its run log, but

@@ -1171,10 +1171,16 @@ class NodeExecutor:
         `strategy` defaults to this workflow's name, which is also the tag its
         order nodes apply, so the common case needs no configuration.
         """
-        from services.strategy_pnl_service import get_strategy_pnl
+        from services.strategy_pnl_service import get_strategy_pnl, get_supplied_legs_pnl
 
         strategy = self.get_str(node_data, "strategy", "") or self.default_strategy
-        result = get_strategy_pnl(self.client, strategy=strategy)
+        supplied_legs = node_data.get("legs")
+        if isinstance(supplied_legs, list) and supplied_legs:
+            # Legs owned by an external platform (see the strategy monitor
+            # API), valued against live quotes instead of the strategy book.
+            result = get_supplied_legs_pnl(self.client, supplied_legs, strategy=strategy)
+        else:
+            result = get_strategy_pnl(self.client, strategy=strategy)
         if result.get("status") == "error":
             self.log(f"Strategy P&L error: {result.get('message')}", "error")
             return result

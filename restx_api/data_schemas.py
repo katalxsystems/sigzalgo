@@ -2,7 +2,7 @@ import re
 
 from marshmallow import Schema, ValidationError, fields, validate, validates_schema
 
-from utils.constants import VALID_EXCHANGES
+from utils.constants import VALID_EXCHANGES, VALID_PRODUCT_TYPES
 
 
 # Custom validator for date or timestamp string
@@ -99,6 +99,19 @@ STRATEGY_TAG = validate.Regexp(
 )
 
 
+class StrategyLegSchema(Schema):
+    """One leg as the external platform records it."""
+
+    symbol = fields.Str(required=True, validate=validate.Length(min=1, max=100))
+    exchange = fields.Str(required=True, validate=validate.OneOf(VALID_EXCHANGES))
+    product = fields.Str(load_default="NRML", validate=validate.OneOf(VALID_PRODUCT_TYPES))
+    # Signed: positive long, negative short, 0 for a leg already closed (kept
+    # so its realized_pnl still counts toward the total).
+    quantity = fields.Float(required=True)
+    entry_price = fields.Float(required=True, validate=validate.Range(min=0))
+    realized_pnl = fields.Float(load_default=0.0)
+
+
 class StrategyMonitorUpsertSchema(Schema):
     apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
     strategy = fields.Str(required=True, validate=STRATEGY_TAG)
@@ -127,6 +140,9 @@ class StrategyMonitorUpsertSchema(Schema):
         load_default=None, allow_none=True, validate=validate.Length(max=256)
     )
     interval_seconds = fields.Int(load_default=60, validate=validate.Range(min=10, max=3600))
+    legs = fields.List(
+        fields.Nested(StrategyLegSchema), required=True, validate=validate.Length(min=1, max=50)
+    )
 
     @validates_schema
     def check_levels(self, data, **kwargs):

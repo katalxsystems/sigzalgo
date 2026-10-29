@@ -35,6 +35,27 @@ TAG = "NIFTY_STRADDLE_27OCT"
 KEY = "key-1"
 WEBHOOK = "https://signalz.example/hooks/breach"
 
+# Long straddle as Signalz records it: 90 net debit (50 + 40), 65 qty per leg.
+# P&L = 65 * ((ce - 50) + (pe - 40)).
+LEGS = [
+    {
+        "symbol": "NIFTY27OCT2622700CE",
+        "exchange": "NFO",
+        "product": "NRML",
+        "quantity": 65.0,
+        "entry_price": 50.0,
+        "realized_pnl": 0.0,
+    },
+    {
+        "symbol": "NIFTY27OCT2622700PE",
+        "exchange": "NFO",
+        "product": "NRML",
+        "quantity": 65.0,
+        "entry_price": 40.0,
+        "realized_pnl": 0.0,
+    },
+]
+
 ALL_LEVELS = {
     "webhook_url": WEBHOOK,
     "webhook_secret": "s3cret",
@@ -45,42 +66,38 @@ ALL_LEVELS = {
     "upper_spot_stoploss": 23000.0,
     "lower_spot_stoploss": 22400.0,
     "interval_seconds": 60,
+    "legs": LEGS,
 }
 
 
-def _leg(symbol, quantity, average_price):
-    return {
-        "strategy": TAG,
-        "symbol": symbol,
-        "exchange": "NFO",
-        "product": "NRML",
-        "quantity": quantity,
-        "average_price": average_price,
-        "realized_pnl": 0.0,
-        "today_realized_pnl": 0.0,
-    }
-
-
-# Long straddle, 90 net debit (50 + 40), 65 qty per leg:
-# P&L = 65 * ((ce - 50) + (pe - 40)).
-LEGS = [_leg("NIFTY27OCT2622700CE", 65.0, 50.0), _leg("NIFTY27OCT2622700PE", 65.0, 40.0)]
-
-
 class FakeClient:
-    def __init__(self, ce, pe, spot):
-        self.ce, self.pe, self.spot = ce, pe, spot
-        self.quotes = 0
+    """Leg prices come from multi-quotes; the spot from a single quote."""
 
-    def positionbook(self):
-        prices = (self.ce, self.pe)
+    def __init__(self, ce, pe, spot, quotes_fail=False):
+        self.prices = {LEGS[0]["symbol"]: ce, LEGS[1]["symbol"]: pe}
+        self.spot, self.quotes_fail = spot, quotes_fail
+        self.quotes = 0
+        self.multi_quote_calls = 0
+
+    def get_multi_quotes(self, symbols):
+        self.multi_quote_calls += 1
+        if self.quotes_fail:
+            return {"status": "error", "message": "broker down"}
         return {
             "status": "success",
-            "data": [
-                {"symbol": leg["symbol"], "exchange": "NFO", "product": "NRML", "ltp": p}
-                for leg, p in zip(LEGS, prices, strict=True)
-                if p is not None
+            "results": [
+                {
+                    "symbol": s["symbol"],
+                    "exchange": s["exchange"],
+                    "data": {"ltp": self.prices.get(s["symbol"])},
+                }
+                for s in symbols
+                if self.prices.get(s["symbol"]) is not None
             ],
         }
+
+    def positionbook(self):
+        raise AssertionError("supplied legs must not be priced from the position book")
 
     def get_quotes(self, symbol, exchange):
         self.quotes += 1
@@ -98,7 +115,7 @@ class FakeResponse:
         return {}
 
 
-def run(graph, ce, pe, spot, legs=LEGS, webhook_status=200):
+def run(graph, ce, pe, spot, webhook_status=200, quotes_fail=False):
     """Execute the graph once. Returns (webhook bodies, deactivate bodies, client)."""
     posts = []
     http = mock.Mock()
@@ -106,9 +123,10 @@ def run(graph, ce, pe, spot, legs=LEGS, webhook_status=200):
         posts.append((url, json if json is not None else ("RAW", content)))
         or FakeResponse(200 if "/strategymonitor/deactivate" in url else webhook_status)
     )
-    client = FakeClient(ce, pe, spot)
+    client = FakeClient(ce, pe, spot, quotes_fail=quotes_fail)
+    book = mock.Mock(side_effect=AssertionError("supplied legs must not read the strategy book"))
     with (
-        mock.patch("database.strategy_book_db.get_strategy_legs", return_value=legs),
+        mock.patch("database.strategy_book_db.get_strategy_legs", book),
         mock.patch("utils.httpx_client.get_httpx_client", return_value=http),
     ):
         ctx = fes.WorkflowContext()
@@ -187,8 +205,44 @@ def test_an_unpriced_leg_skips_pnl_levels_but_spot_still_applies():
 
 def test_a_flat_strategy_is_not_checked():
     flat = [dict(leg, quantity=0.0) for leg in LEGS]
-    webhooks, _, client = run(graph_for(), 100, 40, 23050, legs=flat)
-    assert webhooks == [] and client.quotes == 0
+    webhooks, _, client = run(graph_for(legs=flat), 100, 40, 23050)
+    assert webhooks == [] and client.quotes == 0 and client.multi_quote_calls == 0
+
+
+def test_failed_leg_quotes_never_report_a_breach():
+    # Even with spot far past the upper level: an unvalued strategy is unknown.
+    webhooks, _, _ = run(graph_for(), 100, 40, 23500, quotes_fail=True)
+    assert webhooks == []
+
+
+def test_supplied_legs_are_valued_from_live_quotes():
+    webhooks, _, _ = run(graph_for(), 100, 40, 22700)
+    body = webhooks[0]
+    assert body["pnl"]["total"] == 3250.0
+    assert {leg["symbol"]: leg["ltp"] for leg in body["legs"]} == {
+        "NIFTY27OCT2622700CE": 100,
+        "NIFTY27OCT2622700PE": 40,
+    }
+
+
+def test_realized_pnl_from_a_closed_leg_counts_toward_the_total():
+    legs = [
+        *LEGS,
+        {
+            "symbol": "NIFTY27OCT2622800CE",
+            "exchange": "NFO",
+            "product": "NRML",
+            "quantity": 0.0,
+            "entry_price": 0.0,
+            "realized_pnl": 1000.0,
+        },
+    ]
+    # Open legs alone: 65 * ((82 - 50) + (40 - 40)) = 2080, short of the 3000
+    # target; with the closed leg's 1000 realized it is 3080.
+    webhooks, _, _ = run(graph_for(legs=legs), 82, 40, 22700)
+    assert [b["reason"] for b in webhooks] == ["TARGET"]
+    assert webhooks[0]["pnl"]["total"] == 3080.0
+    assert webhooks[0]["open_legs"] == 2
 
 
 def test_a_failed_delivery_stays_armed():
@@ -287,10 +341,30 @@ def test_an_invalid_key_is_refused(flow):
         ),
         ({"target": -5}, "target"),
         ({"target": 100, "strategy": "bad tag!"}, "strategy"),
+        ({"target": 100, "legs": []}, "legs"),
+        ({"target": 100, "legs": [{"symbol": "X", "exchange": "NFO"}]}, "legs"),
+        ({"target": 100, "legs": [{**LEGS[0], "exchange": "NOPE"}]}, "legs"),
     ],
 )
 def test_schema_rejects_bad_requests(body, field):
-    payload = {"apikey": KEY, "strategy": TAG, "webhook_url": WEBHOOK, **body}
+    payload = {"apikey": KEY, "strategy": TAG, "webhook_url": WEBHOOK, "legs": LEGS, **body}
     with pytest.raises(ValidationError) as err:
         StrategyMonitorUpsertSchema().load(payload)
     assert field in err.value.messages
+
+
+def test_schema_requires_legs():
+    payload = {"apikey": KEY, "strategy": TAG, "webhook_url": WEBHOOK, "target": 100}
+    with pytest.raises(ValidationError) as err:
+        StrategyMonitorUpsertSchema().load(payload)
+    assert "legs" in err.value.messages
+
+
+def test_schema_defaults_a_leg_product_and_realized_pnl():
+    leg = {"symbol": "NIFTY27OCT2622700CE", "exchange": "NFO", "quantity": -65, "entry_price": 50}
+    data = StrategyMonitorUpsertSchema().load(
+        {"apikey": KEY, "strategy": TAG, "webhook_url": WEBHOOK, "target": 100, "legs": [leg]}
+    )
+    assert data["legs"] == [
+        {**leg, "quantity": -65.0, "entry_price": 50.0, "product": "NRML", "realized_pnl": 0.0}
+    ]
