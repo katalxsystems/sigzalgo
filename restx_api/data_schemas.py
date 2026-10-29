@@ -1,6 +1,6 @@
 import re
 
-from marshmallow import Schema, ValidationError, fields, validate
+from marshmallow import Schema, ValidationError, fields, validate, validates_schema
 
 from utils.constants import VALID_EXCHANGES
 
@@ -89,6 +89,66 @@ class PriceBreachCreateSchema(Schema):
 
 class PriceBreachDeactivateSchema(Schema):
     apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
+
+
+# A strategy tag as orders carry it. Restricted so it is safe to embed in a
+# workflow name and an idempotency key without escaping.
+STRATEGY_TAG = validate.Regexp(
+    r"^[A-Za-z0-9_.:-]{1,100}$",
+    error="strategy may contain only letters, digits and _ . : - (max 100)",
+)
+
+
+class StrategyMonitorUpsertSchema(Schema):
+    apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
+    strategy = fields.Str(required=True, validate=STRATEGY_TAG)
+    # Combined strategy P&L in rupees. stoploss is the loss amount as a
+    # positive number: 2000 exits at a P&L of -2000.
+    target = fields.Float(
+        load_default=None, allow_none=True, validate=validate.Range(min=0, min_inclusive=False)
+    )
+    stoploss = fields.Float(
+        load_default=None, allow_none=True, validate=validate.Range(min=0, min_inclusive=False)
+    )
+    underlying = fields.Str(
+        load_default=None, allow_none=True, validate=validate.Length(min=1, max=50)
+    )
+    underlying_exchange = fields.Str(
+        load_default="NSE_INDEX", validate=validate.OneOf(VALID_EXCHANGES)
+    )
+    upper_spot_stoploss = fields.Float(
+        load_default=None, allow_none=True, validate=validate.Range(min=0, min_inclusive=False)
+    )
+    lower_spot_stoploss = fields.Float(
+        load_default=None, allow_none=True, validate=validate.Range(min=0, min_inclusive=False)
+    )
+    webhook_url = fields.Url(required=True, schemes={"http", "https"})
+    webhook_secret = fields.Str(
+        load_default=None, allow_none=True, validate=validate.Length(max=256)
+    )
+    interval_seconds = fields.Int(load_default=60, validate=validate.Range(min=10, max=3600))
+
+    @validates_schema
+    def check_levels(self, data, **kwargs):
+        levels = ("target", "stoploss", "upper_spot_stoploss", "lower_spot_stoploss")
+        if all(data.get(k) is None for k in levels):
+            raise ValidationError(f"Set at least one of: {', '.join(levels)}")
+        spot = (
+            data.get("upper_spot_stoploss") is not None
+            or data.get("lower_spot_stoploss") is not None
+        )
+        if spot and not data.get("underlying"):
+            raise ValidationError("underlying is required for a spot stoploss", "underlying")
+        upper, lower = data.get("upper_spot_stoploss"), data.get("lower_spot_stoploss")
+        if upper is not None and lower is not None and lower >= upper:
+            raise ValidationError(
+                "lower_spot_stoploss must be below upper_spot_stoploss", "lower_spot_stoploss"
+            )
+
+
+class StrategyMonitorDeactivateSchema(Schema):
+    apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
+    strategy = fields.Str(required=True, validate=STRATEGY_TAG)
 
 
 # The four conditions the chart's own "Create Alert" dialog offers -- the

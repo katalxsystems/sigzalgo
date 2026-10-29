@@ -54,6 +54,7 @@ from .price_breach_monitor import api as price_breach_monitor_ns
 from .quotes import api as quotes_ns
 from .search import api as search_ns
 from .split_order import api as split_order_ns
+from .strategy_monitor import api as strategy_monitor_ns
 from .symbol import api as symbol_ns
 from .synthetic_future import api as synthetic_future_ns
 from .telegram_bot import api as telegram_ns
@@ -113,3 +114,4 @@ api.add_namespace(gtt_orderbook_ns, path="/gttorderbook")
 api.add_namespace(websocket_subscribe_ns, path="/ws")
 api.add_namespace(price_breach_monitor_ns, path="/pricebreach")
 api.add_namespace(price_alert_monitor_ns, path="/pricealert")
+api.add_namespace(strategy_monitor_ns, path="/strategymonitor")
