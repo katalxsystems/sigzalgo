@@ -80,6 +80,8 @@ The current v1 surface contains **62 method/path pairs**. A resource with both G
 | POST | `/pricebreach/<int:workflow_id>/deactivate` | [Price breach monitor](./market-data/pricebreach.md) |
 | POST | `/pricealert/create` | [Price alert monitor](./market-data/pricealert.md) |
 | POST | `/pricealert/<int:workflow_id>/deactivate` | [Price alert monitor](./market-data/pricealert.md) |
+| POST | `/strategymonitor/upsert` | [Strategy monitor](./market-data/strategymonitor.md) |
+| POST | `/strategymonitor/deactivate` | [Strategy monitor](./market-data/strategymonitor.md) |
 
 ### Options Analytics
 

@@ -2089,3 +2089,33 @@ def test_startup_runs_the_reconciliation():
     source = open("app.py", encoding="utf-8").read()
 
     assert "reconcile_scheduler_jobs" in source
+
+
+def test_a_list_reference_inside_text_renders_as_json():
+    """`"legs": {{pnl.legs}}` in an HTTP body must parse, whatever the leg count."""
+    import json
+
+    ctx = fes.WorkflowContext()
+    ctx.set_variable(
+        "pnl",
+        {
+            "legs": [
+                {"symbol": "A", "quantity": -75.0, "ltp": None},
+                {"symbol": "B", "quantity": 0.0},
+            ]
+        },
+    )
+
+    body = json.loads(ctx.interpolate('{"legs": {{pnl.legs}}, "first": "{{pnl.legs[0].symbol}}"}'))
+
+    assert body == {
+        "legs": [{"symbol": "A", "quantity": -75.0, "ltp": None}, {"symbol": "B", "quantity": 0.0}],
+        "first": "A",
+    }
+
+
+def test_scalar_references_still_render_as_before():
+    ctx = fes.WorkflowContext()
+    ctx.set_variable("pnl", {"total": 3150.5, "symbol": "NIFTY", "ok": True})
+
+    assert ctx.interpolate("{{pnl.total}} {{pnl.symbol}} {{pnl.ok}}") == "3150.5 NIFTY True"

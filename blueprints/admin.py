@@ -3,7 +3,7 @@ import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 
 from database.auth_db import list_broker_accounts
 from database.market_calendar_db import (
@@ -35,6 +35,7 @@ logger = get_logger(__name__)
 
 # Use existing rate limits from .env (same as API endpoints)
 API_RATE_LIMIT = os.getenv("API_RATE_LIMIT", "50 per second")
+PASSWORD_RESET_RATE_LIMIT = os.getenv("RESET_RATE_LIMIT", "15 per hour")
 
 admin_bp = Blueprint("admin_bp", __name__, url_prefix="/admin")
 
@@ -138,6 +139,51 @@ def api_users():
     except Exception as e:
         logger.exception(f"Error listing users: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@admin_bp.route("/api/users/<username>/password", methods=["POST"])
+@admin_required
+@limiter.limit(PASSWORD_RESET_RATE_LIMIT)
+def api_set_user_password(username):
+    """Set another user's password without the old one (admin only).
+
+    JSON or form body: ``new_password`` (and optional ``confirm_password``).
+    Logs the user out of every device. An administrator's own password goes
+    through /auth/change-password instead, which requires the current one,
+    so a hijacked admin session cannot lock the real admin out.
+    """
+    from database.auth_db import clear_user_sessions
+    from database.user_db import find_user_by_exact_username, set_user_password
+    from utils.auth_utils import validate_password_strength
+
+    if username == session.get("user"):
+        return jsonify(
+            {
+                "status": "error",
+                "message": "Use /auth/change-password to change your own password",
+            }
+        ), 400
+    if not find_user_by_exact_username(username):
+        return jsonify({"status": "error", "message": "User not found"}), 404
+
+    data = request.get_json(silent=True) or request.form
+    new_password = data.get("new_password") or ""
+    confirm_password = data.get("confirm_password")
+    if not new_password:
+        return jsonify({"status": "error", "message": "new_password is required"}), 400
+    if confirm_password is not None and confirm_password != new_password:
+        return jsonify({"status": "error", "message": "Passwords do not match"}), 400
+
+    is_valid, error_message = validate_password_strength(new_password)
+    if not is_valid:
+        return jsonify({"status": "error", "message": error_message}), 400
+
+    if not set_user_password(username, new_password):
+        return jsonify({"status": "error", "message": "Failed to set password"}), 500
+
+    clear_user_sessions(username)
+    logger.info(f"Admin {session.get('user')} reset the password of user {username}")
+    return jsonify({"status": "success", "message": f"Password updated for {username}"})
 
 
 # ============================================================================

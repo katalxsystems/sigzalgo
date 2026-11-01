@@ -115,6 +115,19 @@ def pnl_from_book(
         )
 
     for entry in grouped.values():
+        # Open legs first, insertion order preserved within each group. Flow
+        # workflows address a leg positionally (`{{pnl.legs[0].average_price}}`)
+        # because the node vocabulary has no way to filter a list, and the
+        # strategy book never prunes a leg that has gone flat. Without this,
+        # `legs[0]` is the *oldest* row - a closed leg whose average price the
+        # book has reset to 0 - so a percentage exit divides by zero and stops
+        # firing from the strategy's second trading day onward.
+        entry["legs"].sort(key=lambda leg: abs(leg["quantity"]) <= 1e-9)
+        # A count, not a signed sum: open_quantity nets a hedged structure
+        # (an iron condor's +1/-1/-1/+1 lots) to 0 while every leg is open, so
+        # it cannot answer "is anything still open?". With the sort above, the
+        # open legs are exactly legs[0 .. open_legs-1].
+        entry["open_legs"] = sum(1 for leg in entry["legs"] if abs(leg["quantity"]) > 1e-9)
         entry["realized"] = round(entry["realized"], 4)
         entry["today_realized"] = round(entry["today_realized"], 4)
         entry["unrealized"] = round(entry["unrealized"], 4)
@@ -133,11 +146,82 @@ def pnl_from_book(
                 "total": 0.0,
                 "today_total": 0.0,
                 "open_quantity": 0.0,
+                "open_legs": 0,
                 "unpriced_legs": 0,
                 "legs": [],
             },
         )
     return grouped
+
+
+def get_supplied_legs_pnl(
+    client, legs: list[dict[str, Any]], strategy: str | None = None
+) -> dict[str, Any]:
+    """P&L for legs the caller supplies rather than OpenAlgo's strategy book.
+
+    For a strategy owned by an external platform: it sends each leg's symbol,
+    exchange, signed quantity and entry price (plus any realized P&L of its
+    own), and open legs are marked to a live multi-quote. The result has the
+    same shape as get_strategy_pnl, so a workflow reads it the same way.
+
+    Fails closed: if the quote call itself fails the result is an error, not a
+    P&L of zero, for the same reason get_strategy_pnl refuses to price against
+    an unreadable position book.
+    """
+    book_legs = [
+        {
+            "strategy": strategy,
+            "symbol": leg["symbol"],
+            "exchange": leg["exchange"],
+            "product": leg.get("product") or "",
+            "quantity": _f(leg.get("quantity")),
+            "average_price": _f(leg.get("entry_price")),
+            "realized_pnl": _f(leg.get("realized_pnl")),
+            "today_realized_pnl": _f(leg.get("realized_pnl")),
+        }
+        for leg in legs
+    ]
+    open_symbols = {
+        (leg["symbol"], leg["exchange"]) for leg in book_legs if abs(leg["quantity"]) > 1e-9
+    }
+
+    ltp_by_symbol: dict[tuple, float] = {}
+    if open_symbols:
+        response = (
+            client.get_multi_quotes(
+                symbols=[{"symbol": s, "exchange": e} for s, e in sorted(open_symbols)]
+            )
+            or {}
+        )
+        if response.get("status") != "success":
+            message = response.get("message") or response.get("error") or "unavailable"
+            return {
+                "status": "error",
+                "message": f"Quotes unavailable, cannot value legs: {message}",
+            }
+        for row in response.get("results") or []:
+            ltp = _f(((row or {}).get("data") or {}).get("ltp"))
+            # A missing or zero price is unknown, not zero: the leg is counted
+            # in unpriced_legs instead of being marked to 0.
+            if ltp > 0:
+                ltp_by_symbol[(row.get("symbol"), row.get("exchange"))] = ltp
+
+    # pnl_from_book prices by (symbol, exchange, product); give each leg a
+    # price row under its own product.
+    positions = [
+        {
+            "symbol": leg["symbol"],
+            "exchange": leg["exchange"],
+            "product": leg["product"],
+            "ltp": ltp_by_symbol[(leg["symbol"], leg["exchange"])],
+        }
+        for leg in book_legs
+        if (leg["symbol"], leg["exchange"]) in ltp_by_symbol
+    ]
+    result = pnl_from_book(book_legs, positions, strategy=strategy)
+    if strategy is None:
+        result = next(iter(result.values()), {})
+    return {"status": "success", "source": "supplied_legs", **result}
 
 
 def get_strategy_pnl(

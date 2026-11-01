@@ -1134,13 +1134,19 @@ def get_broker_credentials(account_id, broker=None):
 
 
 def set_broker_credentials(account_id, broker_api_key, broker_api_secret):
-    """Store per-account broker app credentials, encrypted at rest."""
+    """Store per-account broker app credentials, encrypted at rest.
+
+    A value of None leaves that credential as stored, so updating only the
+    key (a rotated app key, the common case) keeps the secret, and vice versa.
+    """
     try:
         account = Auth.query.filter_by(name=account_id).first()
         if not account:
             return False
-        account.broker_api_key = encrypt_token(broker_api_key) if broker_api_key else None
-        account.broker_api_secret = encrypt_token(broker_api_secret) if broker_api_secret else None
+        if broker_api_key:
+            account.broker_api_key = encrypt_token(broker_api_key)
+        if broker_api_secret:
+            account.broker_api_secret = encrypt_token(broker_api_secret)
         db_session.commit()
         return True
     except Exception as e:
