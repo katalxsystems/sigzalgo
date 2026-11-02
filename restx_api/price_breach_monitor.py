@@ -30,9 +30,10 @@ class PriceBreachCreate(Resource):
         """Create and activate a price-breach watch (up to two workflows).
 
         Builds one Flow workflow with a `priceAlert` trigger watching
-        `outside_channel` [stop_loss, target1] -- its webhook payload carries
-        `breach_type` of "stop_loss" or "target1" depending on which bound
-        was actually crossed -- and, unless active_price already equals
+        `outside_channel` between stop_loss and target1 -- its webhook payload
+        carries `breach_type` of "stop_loss" or "target1" depending on which
+        bound was actually crossed. stop_loss below target1 is a buy call,
+        above it a sell call; equal levels are rejected. And, unless active_price already equals
         entry_price, a second one watching for price crossing back through
         entry_price (`breach_type` "entry_price"), in whichever direction is
         a genuine "re-cross" given where price was (active_price) when this
