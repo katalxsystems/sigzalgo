@@ -84,6 +84,29 @@ class SymToken(Base):
 
 _SYMTOKEN_MAPPER = SymToken.__mapper__
 
+#: Rows written per transaction by insert_symtokens_in_batches().
+SYMTOKEN_INSERT_BATCH = 5000
+
+
+def insert_symtokens_in_batches(rows: list[dict]) -> None:
+    """Insert master-contract rows, committing every SYMTOKEN_INSERT_BATCH.
+
+    symtoken lives in openalgo.db with every other feature's tables. One
+    transaction for a whole master contract (well over 100k rows for Angel or
+    Zerodha) held the database's single write lock for longer than the 15s
+    retry budget in database/__init__.py, so concurrent writers failed with
+    "database is locked" -- workflow runs, order logs, and the Flow
+    scheduler's own thread, which died of it. Committing per batch releases
+    the lock between batches, so other writers wait milliseconds instead.
+
+    A failure part-way leaves the batches before it committed. Callers already
+    delete the broker's rows first, so that is a partial master instead of an
+    empty one, and the next download replaces it.
+    """
+    for start in range(0, len(rows), SYMTOKEN_INSERT_BATCH):
+        db_session.bulk_insert_mappings(SymToken, rows[start : start + SYMTOKEN_INSERT_BATCH])
+        db_session.commit()
+
 
 @event.listens_for(Session, "do_orm_execute")
 def _scope_symtoken_to_broker(state):

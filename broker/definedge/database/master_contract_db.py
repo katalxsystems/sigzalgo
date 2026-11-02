@@ -27,7 +27,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")  # Replace with your database path
 # symtoken's engine, session and model are shared by every broker
 # (database.symbol), which scopes each query, delete and insert to the
 # rows of the broker running this code -- see database.broker_context.
-from database.symbol import Base, SymToken, db_session, engine
+from database.symbol import SYMTOKEN_INSERT_BATCH, Base, SymToken, db_session, engine
 
 
 def init_db():
@@ -50,7 +50,13 @@ def copy_from_dataframe(df):
     try:
         # pandas bypasses the ORM, so stamp the broker column explicitly.
         df = df.assign(broker="definedge")
-        df.to_sql("symtoken", con=engine, if_exists="append", index=False)
+        # One to_sql call per batch: each runs in its own transaction, so
+        # openalgo.db's write lock is released between batches. chunksize=
+        # alone would still write every chunk inside a single transaction.
+        for start in range(0, len(df), SYMTOKEN_INSERT_BATCH):
+            df.iloc[start : start + SYMTOKEN_INSERT_BATCH].to_sql(
+                "symtoken", con=engine, if_exists="append", index=False
+            )
         logger.info(f"Inserted {len(df)} records into symtoken table")
     except Exception as e:
         logger.error(f"Error copying dataframe to database: {e}")

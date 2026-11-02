@@ -39,7 +39,13 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # symtoken's engine, session and model are shared by every broker
 # (database.symbol), which scopes each query, delete and insert to the
 # rows of the broker running this code -- see database.broker_context.
-from database.symbol import Base, SymToken, db_session, engine
+from database.symbol import (
+    Base,
+    SymToken,
+    db_session,
+    engine,
+    insert_symtokens_in_batches,
+)
 
 
 def init_db():
@@ -67,8 +73,7 @@ def copy_from_dataframe(df):
 
     try:
         if filtered_data_dict:
-            db_session.bulk_insert_mappings(SymToken, filtered_data_dict)
-            db_session.commit()
+            insert_symtokens_in_batches(filtered_data_dict)
             logger.info(f"Bulk insert completed with {len(filtered_data_dict)} new records.")
         else:
             logger.info("No new records to insert.")
