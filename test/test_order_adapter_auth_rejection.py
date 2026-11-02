@@ -1,13 +1,14 @@
 """Order-update adapters must not spew errors when the broker token is dead.
 
-Two paths produced the noise reported after a 03:00 IST rollover:
+The reconnect loop treated a 401/403 handshake like a network blip and retried
+it forever, one WARNING plus one library-level ERROR (with the broker's whole
+HTML error page) per attempt. An expired Angel session on staging logged that
+pair every minute for over 300 attempts.
 
-1. The boot scan started an adapter for any ``is_revoked=False`` auth row. That
-   flag is only flipped by the auto-expiry sweep, which runs from a
-   before_request hook, so between the rollover and the first browser request a
-   restart happily connected with yesterday's token.
-2. The reconnect loop treated a 401 handshake like a network blip and retried
-   it forever, one WARNING plus one library-level ERROR per attempt.
+Upstream also skips stale sessions in the boot scan by app-login time. Auth
+rows here are per broker account and carry no token timestamp, so that guard
+does not apply; a stale token at boot instead costs one refused handshake,
+after which the adapter stands down like any other rejection.
 """
 
 import os
@@ -16,7 +17,10 @@ import pytest
 
 os.environ.setdefault("HOST_SERVER", "https://legit.example.com")
 
-from websocket_proxy.order_adapter import _is_auth_rejection  # noqa: E402
+from websocket_proxy.order_adapter import (  # noqa: E402
+    BaseOrderUpdateAdapter,
+    _is_auth_rejection,
+)
 
 
 class _FakeBadStatus(Exception):
@@ -46,26 +50,52 @@ class TestIsAuthRejection:
         assert not _is_auth_rejection(None)
 
 
-class TestBootGuardWiring:
-    """The boot scan must consult trading-session freshness, not just is_revoked."""
+class _ScriptedAdapter(BaseOrderUpdateAdapter):
+    """Each connect attempt raises the next scripted error; None means the
+    socket closed cleanly. Runs the real reconnect loop without a network."""
 
-    def test_boot_scan_checks_session_freshness(self):
-        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(
-            os.path.join(repo_root, "services", "order_update_service.py"),
-            encoding="utf-8",
-        ) as f:
-            source = f.read()
-        assert "has_login_this_trading_session" in source, (
-            "the boot scan must skip auth rows with no login since today's "
-            "rollover, or a restart reconnects on a dead token"
-        )
+    def __init__(self, errors):
+        super().__init__(broker_name="angel", user_id="acct_angel_1")
+        self.errors = list(errors)
+        self.attempts = 0
 
-    def test_helper_is_importable_off_the_request_path(self):
-        """It runs on a daemon thread, so it must not need a Flask request."""
-        from utils.session import has_login_this_trading_session
+    def get_ws_url(self):
+        return "wss://example.invalid"
 
-        assert callable(has_login_this_trading_session)
+    def get_headers(self):
+        return None
+
+    def normalize(self, raw_message):
+        return None
+
+    def _connect_once(self):
+        self.attempts += 1
+        error = self.errors.pop(0) if self.errors else None
+        if not self.errors:
+            self._shutting_down = True  # end the loop after the script runs out
+        if error is not None:
+            raise error
+
+
+class TestRetryLoopBehaviour:
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_a_rejected_session_is_tried_once(self, status):
+        adapter = _ScriptedAdapter([_FakeBadStatus(status), None, None])
+        adapter._running = True
+
+        adapter._run_forever()
+
+        assert adapter.attempts == 1
+        assert adapter._running is False
+
+    def test_a_network_failure_keeps_retrying(self, monkeypatch):
+        monkeypatch.setattr("websocket_proxy.order_adapter.time.sleep", lambda s: None)
+        adapter = _ScriptedAdapter([ConnectionResetError("reset"), _FakeBadStatus(502), None])
+        adapter._running = True
+
+        adapter._run_forever()
+
+        assert adapter.attempts == 3
 
 
 class TestRetryLoopStandsDown:

@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 MAX_NODE_DEPTH = 100
 MAX_NODE_VISITS = 500
 
+# Longest trigger payload copied into a run's Execution Log; the log is stored
+# with every execution row, and a webhook body is caller-controlled.
+_RECEIVED_DATA_LOG_LIMIT = 2000
+
 # Execution locks to prevent concurrent execution
 _workflow_locks: dict[int, threading.Lock] = {}
 _locks_mutex = threading.Lock()
@@ -3172,7 +3176,7 @@ def execute_workflow(
 
         if webhook_data:
             context.set_variable("webhook", webhook_data)
-            logger.info(f"Webhook data injected: {webhook_data}")
+            logger.info(f"Webhook data injected for workflow {workflow_id}: {webhook_data}")
 
         try:
             if not api_key:
@@ -3189,6 +3193,22 @@ def execute_workflow(
                 executor.log(
                     f"Price alert: {breach.get('symbol')}@{breach.get('exchange')} "
                     f"{breach['description']} (via {breach.get('source')})"
+                )
+            if webhook_data:
+                # What the run was started with, so the saved Execution Log
+                # shows e.g. the trigger_price a webhook sent. Appended
+                # directly: executor.log() would repeat the server-log line
+                # above. The breach dict is already described just above.
+                received = {k: v for k, v in webhook_data.items() if k != "breach"}
+                body = json.dumps(received, default=str)
+                if len(body) > _RECEIVED_DATA_LOG_LIMIT:
+                    body = body[:_RECEIVED_DATA_LOG_LIMIT] + "... (truncated)"
+                logs.append(
+                    {
+                        "time": datetime.now().isoformat(),
+                        "message": f"Received data: {body}",
+                        "level": "info",
+                    }
                 )
 
             nodes = workflow.nodes or []
