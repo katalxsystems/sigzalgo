@@ -1303,6 +1303,9 @@ def upsert_api_key(account_id, api_key, owner_username=None):
     encrypted_key = encrypt_token(api_key)
 
     api_key_obj = ApiKeys.query.filter_by(account_id=account_id).first()
+    old_key = None
+    if api_key_obj and api_key_obj.api_key_encrypted:
+        old_key = decrypt_token(api_key_obj.api_key_encrypted)
     if api_key_obj:
         api_key_obj.api_key_hash = hashed_key
         api_key_obj.api_key_encrypted = encrypted_key
@@ -1320,7 +1323,30 @@ def upsert_api_key(account_id, api_key, owner_username=None):
     # Security: Invalidate all caches when API key changes
     invalidate_user_cache(account_id)
 
+    if old_key and old_key != api_key:
+        _move_price_alerts_to_new_key(old_key, api_key)
+
     return api_key_obj.id
+
+
+def _move_price_alerts_to_new_key(old_key, new_key):
+    """Point the running Flow price monitor's alerts at a regenerated key.
+
+    Workflows look their account's key up when they run (see
+    flow_db.get_workflow_api_key), but the price monitor holds one per alert
+    for its live-tick feed. Without this, every alert of the account kept
+    authenticating with the replaced key until a restart. The monitor is only
+    touched if it is already loaded: storing a key must not start it.
+    """
+    import sys
+
+    module = sys.modules.get("services.flow_price_monitor_service")
+    if module is None:
+        return
+    try:
+        module.get_flow_price_monitor().replace_api_key(old_key, new_key)
+    except Exception:
+        logger.exception("Could not move Flow price alerts to the regenerated API key")
 
 
 def get_api_key(account_id):
@@ -1362,7 +1388,18 @@ def get_api_key_for_tradingview(account_id):
     Given the logged-in username during a request, uses the session's active
     account instead (see _session_account_for).
     """
-    account_id = _session_account_for(account_id)
+    return get_account_api_key(_session_account_for(account_id))
+
+
+def get_account_api_key(account_id):
+    """Decrypted API key of exactly this broker account, or None.
+
+    Unlike get_api_key_for_tradingview, never substitutes the session's
+    active account, so background callers (Flow workflows) get the key of
+    the account they name even inside a request by that account's owner.
+    """
+    if not account_id:
+        return None
     try:
         api_key_obj = ApiKeys.query.filter_by(account_id=account_id).first()
         if api_key_obj and api_key_obj.api_key_encrypted:

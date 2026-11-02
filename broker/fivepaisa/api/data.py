@@ -1,3 +1,4 @@
+import hashlib
 import json
 import time
 from datetime import datetime
@@ -12,8 +13,34 @@ from broker.fivepaisa.mapping.transform_data import map_exchange, map_exchange_t
 from database.token_db import get_br_symbol, get_oa_symbol, get_token
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
+from utils.token_expiry import expired_at
 
 logger = get_logger(__name__)
+
+# Fingerprints of expired tokens already reported, so the warning is logged
+# once per token rather than on every poll. Bounded: one per account per day.
+_REPORTED_EXPIRED: set[str] = set()
+_REPORTED_EXPIRED_MAX = 256
+
+
+def _expired_session(auth_token: str) -> str | None:
+    """A message if the 5paisa token has expired, else None.
+
+    The token's own expiry is read locally, so price polling stops calling
+    5paisa once the session has lapsed (each call only came back "Invalid
+    Session", logged as an error, for every symbol on every poll, all night).
+    """
+    when = expired_at(auth_token)
+    if when is None:
+        return None
+    message = f"5paisa session expired at {when}; log in to 5paisa again"
+    fingerprint = hashlib.sha256(auth_token.encode()).hexdigest()[:16]
+    if fingerprint not in _REPORTED_EXPIRED:
+        if len(_REPORTED_EXPIRED) >= _REPORTED_EXPIRED_MAX:
+            _REPORTED_EXPIRED.clear()
+        _REPORTED_EXPIRED.add(fingerprint)
+        logger.warning(f"{message}. Skipping 5paisa price requests until then.")
+    return message
 
 
 def normalize_exchange_for_query(symbol: str, exchange: str) -> str:
@@ -209,6 +236,9 @@ class BrokerData:
         Returns:
             dict: Market depth data with OHLC, volume and open interest
         """
+        expired = _expired_session(self.auth_token)
+        if expired:
+            raise Exception(expired)
         try:
             # Normalize exchange for index symbols
             normalized_exchange = normalize_exchange_for_query(symbol, exchange)
@@ -353,6 +383,8 @@ class BrokerData:
         Returns:
             dict: Quote data with bid, ask, ltp, open, high, low, prev_close, volume
         """
+        if _expired_session(self.auth_token):
+            return None
         try:
             # Normalize exchange for index symbols
             normalized_exchange = normalize_exchange_for_query(symbol, exchange)
@@ -459,6 +491,9 @@ class BrokerData:
             list: List of quote data for each symbol with format:
                   [{'symbol': 'SBIN', 'exchange': 'NSE', 'data': {...}}, ...]
         """
+        expired = _expired_session(self.auth_token)
+        if expired:
+            raise Exception(expired)
         try:
             # 5paisa MarketSnapshot supports multiple symbols per request
             # Note: API returns empty for large batches (100+), 50 works reliably

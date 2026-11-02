@@ -13,6 +13,7 @@ from broker.fivepaisa.streaming.fivepaisa_websocket import FivePaisaWebSocket
 from database.auth_db import get_auth_token
 from database.token_db import get_token
 from utils.config import get_broker_api_key
+from utils.token_expiry import expired_at
 
 # Add parent directory to path to allow imports
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../"))
@@ -33,6 +34,9 @@ class FivepaisaWebSocketAdapter(BaseBrokerWebSocketAdapter):
     # Delay between successive batch frames (server prefers fewer, larger frames
     # with breathing room; only applied when more batches remain).
     SUBSCRIPTION_DELAY = 0.5
+    # How often an adapter holding an expired token checks the database for
+    # a new login (a local read, never a broker call).
+    EXPIRED_TOKEN_RECHECK_SECONDS = 60
 
     def __init__(self):
         super().__init__()
@@ -40,6 +44,8 @@ class FivepaisaWebSocketAdapter(BaseBrokerWebSocketAdapter):
         self.ws_client = None
         self.user_id = None
         self.client_code = None
+        # The token ws_client was built with, to tell a new login apart.
+        self._access_token = None
         self.broker_name = "fivepaisa"
         self.reconnect_delay = 5  # Initial delay in seconds
         self.max_reconnect_delay = 60  # Maximum delay in seconds
@@ -107,6 +113,7 @@ class FivepaisaWebSocketAdapter(BaseBrokerWebSocketAdapter):
 
         # Create FivePaisaWebSocket instance
         self.ws_client = FivePaisaWebSocket(access_token=access_token, client_code=client_code)
+        self._access_token = access_token
 
         # Set callbacks
         self.ws_client.on_open = self._on_open
@@ -199,6 +206,7 @@ class FivepaisaWebSocketAdapter(BaseBrokerWebSocketAdapter):
                 # (which is not guaranteed to close the underlying socket).
                 old_client = self.ws_client
                 self.ws_client = new_client
+                self._access_token = fresh_token
                 if old_client is not None:
                     try:
                         old_client.close_connection()
@@ -269,6 +277,15 @@ class FivepaisaWebSocketAdapter(BaseBrokerWebSocketAdapter):
                         self._connect_thread = None
                     return
 
+                # 5paisa tokens expire at midnight. Connecting with one only
+                # earns a 401, so wait for a new login instead of spending the
+                # attempts (and the log) on doomed handshakes. The top of the
+                # loop then rebuilds with the new token, or exits if stopped.
+                expired = expired_at(self._access_token)
+                if expired:
+                    self._wait_for_new_login(expired)
+                    continue
+
                 self.logger.info(
                     f"Connecting to 5Paisa WebSocket (attempt {self.reconnect_attempts + 1})"
                 )
@@ -294,6 +311,25 @@ class FivepaisaWebSocketAdapter(BaseBrokerWebSocketAdapter):
 
         if self.reconnect_attempts >= self.max_reconnect_attempts:
             self.logger.error("Max reconnection attempts reached. Giving up.")
+
+    def _wait_for_new_login(self, expired: str) -> None:
+        """Hold off reconnecting until a new login stores a live token.
+
+        Checks the stored token once every EXPIRED_TOKEN_RECHECK_SECONDS and
+        returns when it has been replaced by one that has not expired, or as
+        soon as disconnect() stops the adapter.
+        """
+        self.logger.warning(
+            f"5Paisa session expired at {expired}; not reconnecting until the account logs in again"
+        )
+        while self.running:
+            if self._stop_event.wait(self.EXPIRED_TOKEN_RECHECK_SECONDS):
+                return
+            token = get_auth_token(self.user_id, bypass_cache=True) if self.user_id else None
+            if token and token != self._access_token and not expired_at(token):
+                self.logger.info("New 5Paisa login found; reconnecting")
+                self.reconnect_attempts = 0
+                return
 
     def disconnect(self) -> None:
         """Disconnect from 5Paisa WebSocket"""

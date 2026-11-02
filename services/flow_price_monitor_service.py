@@ -335,6 +335,28 @@ class FlowPriceMonitor:
 
         return True
 
+    def replace_api_key(self, old_key: str, new_key: str) -> int:
+        """Move every alert on ``old_key`` to ``new_key`` after the account's
+        key was regenerated, and resubscribe their symbols on the new key's
+        feed. The old key no longer authenticates, so its feed and quote calls
+        would fail until a restart. Returns how many alerts moved."""
+        with self._alerts_lock:
+            moved = [a for a in self._alerts.values() if a.api_key == old_key]
+            for alert in moved:
+                alert.api_key = new_key
+        if not moved:
+            return 0
+
+        with self._ws_lock:
+            self._ws_clients.pop(old_key, None)
+            self._ws_subscribed.pop(old_key, None)
+        for alert in moved:
+            if not alert.triggered:
+                self._ws_subscribe(new_key, alert.symbol, alert.exchange)
+
+        logger.info(f"Moved {len(moved)} price alert(s) to the account's regenerated API key")
+        return len(moved)
+
     def get_alert(self, workflow_id: int) -> PriceAlert | None:
         """Get alert for a workflow"""
         return self._alerts.get(workflow_id)

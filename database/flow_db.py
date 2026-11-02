@@ -55,15 +55,27 @@ def generate_webhook_secret():
 
 
 def get_workflow_api_key(workflow):
-    """Decrypt and return a workflow's stored OpenAlgo API key.
+    """The OpenAlgo API key a workflow runs with: its account's current key.
+
+    The key copied onto the workflow at activation is only a fallback, for a
+    workflow with no account_id or an account that has no key now.
+    Preferring the stored copy broke every workflow of an account whose key
+    was regenerated: they kept sending the old key ("Invalid API key") until
+    each one was deactivated and activated again.
 
     The api_key column transitioned from plaintext to Fernet-encrypted
     (auth_db Fernet, PBKDF2 over API_KEY_PEPPER). Pre-migration plaintext
     rows are returned as-is via safe_decrypt_token's fallback.
     """
-    if not workflow or not workflow.api_key:
+    if not workflow:
         return None
-    from database.auth_db import safe_decrypt_token
+    from database.auth_db import get_account_api_key, safe_decrypt_token
+
+    current = get_account_api_key(getattr(workflow, "account_id", None))
+    if current:
+        return current
+    if not workflow.api_key:
+        return None
     return safe_decrypt_token(workflow.api_key)
 
 
