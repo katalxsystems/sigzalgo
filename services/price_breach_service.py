@@ -6,10 +6,13 @@ Every notify body carries the caller-supplied `call_id` and `mentor_id`, and
 -- unless an explicit name override is given -- both workflows are named
 from `call_id`, `mentor_id`, and `symbol` (the "script"), in that order:
 
-- sl_target: fires once price goes outside [stop_loss, target1]. Its notify
-  branches on which bound was actually crossed (see _sl_target_graph), so the
-  webhook always carries an explicit breach_type ("stop_loss" / "target1"),
-  not just a price the receiver would have to compare itself.
+- sl_target: fires once price leaves the channel between stop_loss and
+  target1. Its notify branches on which bound was actually crossed (see
+  _sl_target_graph), so the webhook always carries an explicit breach_type
+  ("stop_loss" / "target1"), not just a price the receiver would have to
+  compare itself. Buy and sell calls both work, told apart by the levels
+  alone (the request has no side field): stop_loss below target1 is a buy,
+  above it a sell (see _call_side).
 - entry_recross: fires once price crosses back through entry_price -- and
   only once while the workflow is active (`trigger: "once"`; the live watch
   is removed the instant it fires, same as sl_target) -- in whichever
@@ -98,6 +101,21 @@ def _loopback_base_url() -> str:
         flask_port = os.getenv("FLASK_PORT") or os.getenv("PORT") or "5000"
         loopback = f"http://127.0.0.1:{flask_port}"
     return loopback.rstrip("/")
+
+
+def _call_side(stop_loss: float, target1: float) -> str:
+    """BUY or SELL, read from the levels themselves.
+
+    The create request carries no side field, and callers cannot add one yet.
+    The levels settle it: a buy call's stop-loss sits below its target, a sell
+    call's above. Equal levels are rejected before this is asked.
+    """
+    return "SELL" if stop_loss > target1 else "BUY"
+
+
+def _channel(stop_loss: float, target1: float) -> tuple[float, float]:
+    """(lower, upper) bounds of the sl_target channel, for either side."""
+    return min(stop_loss, target1), max(stop_loss, target1)
 
 
 def _entry_cross_condition(active_price: float, entry_price: float) -> str | None:
@@ -277,18 +295,21 @@ def _sl_target_graph(
     """Trigger -> branch on which bound was crossed -> one of two notify
     bodies (breach_type "stop_loss" or "target1") -> deactivate chain.
 
-    outside_channel already guarantees the breach price is either below
-    stop_loss or above target1, never both/neither, so a single
-    `trigger_price < stop_loss` check cleanly distinguishes the two --
-    Flow has no way to compute a conditional string inline in an
-    httpRequest body, so the branch has to happen as an actual node.
+    outside_channel already guarantees the breach price is past exactly one
+    bound, so a single comparison with stop_loss distinguishes the two: below
+    it for a buy call (stop-loss is the lower bound), above it for a sell call
+    (stop-loss is the upper bound). Flow has no way to compute a conditional
+    string inline in an httpRequest body, so the branch has to happen as an
+    actual node.
     """
+    lower, upper = _channel(stop_loss, target1)
+    stop_loss_hit = "<" if _call_side(stop_loss, target1) == "BUY" else ">"
     trigger_data = {
         "symbol": symbol,
         "exchange": exchange,
         "condition": "outside_channel",
-        "priceLower": stop_loss,
-        "priceUpper": target1,
+        "priceLower": lower,
+        "priceUpper": upper,
         "trigger": "once",
         "expiration": "none",
     }
@@ -316,7 +337,7 @@ def _sl_target_graph(
             "position": {"x": 0, "y": 100},
             "data": {
                 "leftValue": "{{webhook.trigger_price}}",
-                "operator": "<",
+                "operator": stop_loss_hit,
                 "rightValue": str(stop_loss),
             },
         },
@@ -355,7 +376,7 @@ def _sl_target_graph(
 
     return {
         "name": name,
-        "description": f"Price breach watch: {symbol} outside [{stop_loss}, {target1}]",
+        "description": f"Price breach watch: {symbol} outside [{lower}, {upper}]",
         "nodes": nodes,
         "edges": edges,
     }
@@ -441,8 +462,11 @@ def create_and_activate(
     Returns (success, response_data, status_code) -- the convention every
     other service function in this codebase follows.
     """
-    if stop_loss >= target1:
-        return False, {"status": "error", "message": "stop_loss must be less than target1"}, 400
+    # Either order is a valid call: stop_loss < target1 is a buy, stop_loss >
+    # target1 a sell (see _call_side). Only equal levels leave no channel.
+    if stop_loss == target1:
+        return False, {"status": "error", "message": "stop_loss and target1 must differ"}, 400
+    lower, upper = _channel(stop_loss, target1)
 
     base_name = name or f"{call_id}_{mentor_id}_{symbol}"
     entry_condition = _entry_cross_condition(active_price, entry_price)
@@ -537,8 +561,8 @@ def create_and_activate(
         exchange=exchange,
         condition="outside_channel",
         target_price=float(target1),
-        price_lower=float(stop_loss),
-        price_upper=float(target1),
+        price_lower=float(lower),
+        price_upper=float(upper),
         api_key=api_key,
         trigger="once",
         expiration="none",
@@ -565,7 +589,8 @@ def create_and_activate(
         db_activate_workflow(entry_wf.id, api_key=api_key)
 
     logger.info(
-        f"Price-breach call {call_id}: sl_target={sl_target_wf.id} outside [{stop_loss}, {target1}]"
+        f"Price-breach call {call_id} ({_call_side(stop_loss, target1)}): "
+        f"sl_target={sl_target_wf.id} outside [{lower}, {upper}]"
         + (
             f", entry_recross={entry_wf.id} {entry_condition} {entry_price}"
             if entry_condition is not None
@@ -576,7 +601,7 @@ def create_and_activate(
     workflows: dict[str, Any] = {
         "sl_target": {
             "workflow_id": sl_target_wf.id,
-            "watching": f"price outside [{stop_loss}, {target1}]",
+            "watching": f"price outside [{lower}, {upper}]",
         }
     }
     if entry_condition is not None:

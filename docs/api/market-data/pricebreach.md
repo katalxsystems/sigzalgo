@@ -24,8 +24,12 @@ POST http://127.0.0.1:5000/api/v1/pricebreach/workflow/<workflow_id>/deactivate
 
 One call creates up to **two** independent Flow workflows:
 
-1. **`sl_target`** — always created. Fires once price goes outside
-   `[stop_loss, target1]`.
+1. **`sl_target`** — always created. Fires once price leaves the channel
+   between `stop_loss` and `target1`. Works for buy and sell calls, told
+   apart by the levels: `stop_loss` below `target1` is a **buy** (stop-loss
+   hit when price falls below it), above `target1` a **sell** (stop-loss hit
+   when price rises above it). `breach_type` names the level crossed either
+   way.
 2. **`entry_recross`** — created unless `active_price` equals `entry_price`.
    Fires once price crosses back through `entry_price`, in whichever
    direction is a genuine "re-cross" given where price was when you made the
@@ -266,15 +270,15 @@ key gets `403`. An unknown `workflow_id` gets `404`.
 | exchange | string | create | Mandatory | Exchange code |
 | active_price | number | create | Mandatory | The live price at the moment of this call — used only to pick the entry re-cross direction, not stored as a threshold itself |
 | entry_price | number | create | Mandatory | The level `entry_recross` watches for a re-cross through |
-| stop_loss | number | create | Mandatory | Lower `sl_target` bound; must be less than `target1` |
-| target1 | number | create | Mandatory | Upper `sl_target` bound |
+| stop_loss | number | create | Mandatory | Stop-loss level. Below `target1` for a buy call, above it for a sell call; must not equal `target1` |
+| target1 | number | create | Mandatory | Target level |
 | webhook_url | string | create | Mandatory | Where breach notifications are POSTed |
 | name | string | create | Optional | Base workflow name (default: `"<call_id>_<mentor_id>_<symbol>"`); each of the two workflows suffixes `(SL/Target)` / `(Entry re-cross)` |
 
 ## Notes
 
-- `sl_target`'s condition shape is fixed: outside a `[stop_loss, target1]`
-  channel. For anything more elaborate (multiple targets, trailing stops,
+- `sl_target`'s condition shape is fixed: outside the channel between
+  `stop_loss` and `target1`. For anything more elaborate (multiple targets, trailing stops,
   time windows), build the workflow directly — see
   [scripts/price_breach_monitor.py](../../../scripts/price_breach_monitor.py)
   for the equivalent session-based flow using the Flow editor's own routes
