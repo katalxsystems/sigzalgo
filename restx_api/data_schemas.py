@@ -99,9 +99,21 @@ STRATEGY_TAG = validate.Regexp(
 )
 
 
+# An external platform's record id (strategy, call, mentor). Restricted for the
+# same reason as STRATEGY_TAG, and so it can never carry a Flow `{{...}}`
+# reference into the webhook body it is echoed in.
+EXTERNAL_ID = validate.Regexp(
+    r"^[A-Za-z0-9_.:-]{1,100}$",
+    error="id may contain only letters, digits and _ . : - (max 100)",
+)
+
+
 class StrategyLegSchema(Schema):
     """One leg as the external platform records it."""
 
+    # The caller's id for the call this leg belongs to; echoed per leg in the
+    # breach webhook so it can map each leg back without matching on symbol.
+    call_id = fields.Str(required=True, validate=EXTERNAL_ID)
     symbol = fields.Str(required=True, validate=validate.Length(min=1, max=100))
     exchange = fields.Str(required=True, validate=validate.OneOf(VALID_EXCHANGES))
     product = fields.Str(load_default="NRML", validate=validate.OneOf(VALID_PRODUCT_TYPES))
@@ -115,6 +127,10 @@ class StrategyLegSchema(Schema):
 class StrategyMonitorUpsertSchema(Schema):
     apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
     strategy = fields.Str(required=True, validate=STRATEGY_TAG)
+    # The caller's own ids, stored with the monitor and echoed in the breach
+    # webhook. Not part of the monitor's identity: that stays account + strategy.
+    strategy_id = fields.Str(required=True, validate=EXTERNAL_ID)
+    mentor_id = fields.Str(required=True, validate=EXTERNAL_ID)
     # Combined strategy P&L in rupees. stoploss is the loss amount as a
     # positive number: 2000 exits at a P&L of -2000.
     target = fields.Float(
@@ -181,9 +197,7 @@ class PriceAlertCreateSchema(Schema):
     exchange = fields.Str(required=True, validate=validate.OneOf(VALID_EXCHANGES))
     condition = fields.Str(required=True, validate=validate.OneOf(PRICE_ALERT_CONDITIONS))
     price = fields.Float(required=True)
-    trigger = fields.Str(
-        load_default="once", validate=validate.OneOf(("once", "every_time"))
-    )
+    trigger = fields.Str(load_default="once", validate=validate.OneOf(("once", "every_time")))
     expiration = fields.Str(
         load_default="none", validate=validate.OneOf(("none", "1h", "4h", "1d", "1w"))
     )

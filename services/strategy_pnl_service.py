@@ -100,19 +100,22 @@ def pnl_from_book(
         entry["realized"] += realized
         entry["today_realized"] += today_realized
         entry["unrealized"] += unrealized
-        entry["legs"].append(
-            {
-                "symbol": leg.get("symbol"),
-                "exchange": leg.get("exchange"),
-                "product": leg.get("product"),
-                "quantity": round(qty, 4),
-                "average_price": round(avg, 4),
-                "ltp": ltp,
-                "realized": round(realized, 4),
-                "today_realized": round(today_realized, 4),
-                "unrealized": round(unrealized, 4),
-            }
-        )
+        out_leg = {
+            "symbol": leg.get("symbol"),
+            "exchange": leg.get("exchange"),
+            "product": leg.get("product"),
+            "quantity": round(qty, 4),
+            "average_price": round(avg, 4),
+            "ltp": ltp,
+            "realized": round(realized, 4),
+            "today_realized": round(today_realized, 4),
+            "unrealized": round(unrealized, 4),
+        }
+        # Supplied legs carry the caller's id so a consumer can map each leg
+        # back after the open-first sort below; book legs have none.
+        if leg.get("call_id") is not None:
+            out_leg["call_id"] = leg["call_id"]
+        entry["legs"].append(out_leg)
 
     for entry in grouped.values():
         # Open legs first, insertion order preserved within each group. Flow
@@ -171,6 +174,7 @@ def get_supplied_legs_pnl(
     book_legs = [
         {
             "strategy": strategy,
+            "call_id": leg.get("call_id"),
             "symbol": leg["symbol"],
             "exchange": leg["exchange"],
             "product": leg.get("product") or "",

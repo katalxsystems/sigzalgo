@@ -39,6 +39,7 @@ WEBHOOK = "https://signalz.example/hooks/breach"
 # P&L = 65 * ((ce - 50) + (pe - 40)).
 LEGS = [
     {
+        "call_id": "call-ce-1",
         "symbol": "NIFTY27OCT2622700CE",
         "exchange": "NFO",
         "product": "NRML",
@@ -47,6 +48,7 @@ LEGS = [
         "realized_pnl": 0.0,
     },
     {
+        "call_id": "call-pe-1",
         "symbol": "NIFTY27OCT2622700PE",
         "exchange": "NFO",
         "product": "NRML",
@@ -56,7 +58,12 @@ LEGS = [
     },
 ]
 
+STRATEGY_ID = "strat-42"
+MENTOR_ID = "mentor-7"
+IDS = {"strategy_id": STRATEGY_ID, "mentor_id": MENTOR_ID}
+
 ALL_LEVELS = {
+    **IDS,
     "webhook_url": WEBHOOK,
     "webhook_secret": "s3cret",
     "target": 3000.0,
@@ -229,6 +236,7 @@ def test_realized_pnl_from_a_closed_leg_counts_toward_the_total():
     legs = [
         *LEGS,
         {
+            "call_id": "call-ce-2",
             "symbol": "NIFTY27OCT2622800CE",
             "exchange": "NFO",
             "product": "NRML",
@@ -344,27 +352,90 @@ def test_an_invalid_key_is_refused(flow):
         ({"target": 100, "legs": []}, "legs"),
         ({"target": 100, "legs": [{"symbol": "X", "exchange": "NFO"}]}, "legs"),
         ({"target": 100, "legs": [{**LEGS[0], "exchange": "NOPE"}]}, "legs"),
+        ({"target": 100, "strategy_id": None}, "strategy_id"),
+        ({"target": 100, "mentor_id": "{{pnl.total}}"}, "mentor_id"),
+        ({"target": 100, "legs": [{k: v for k, v in LEGS[0].items() if k != "call_id"}]}, "legs"),
     ],
 )
 def test_schema_rejects_bad_requests(body, field):
-    payload = {"apikey": KEY, "strategy": TAG, "webhook_url": WEBHOOK, "legs": LEGS, **body}
+    payload = {
+        "apikey": KEY,
+        "strategy": TAG,
+        **IDS,
+        "webhook_url": WEBHOOK,
+        "legs": LEGS,
+        **body,
+    }
     with pytest.raises(ValidationError) as err:
         StrategyMonitorUpsertSchema().load(payload)
     assert field in err.value.messages
 
 
 def test_schema_requires_legs():
-    payload = {"apikey": KEY, "strategy": TAG, "webhook_url": WEBHOOK, "target": 100}
+    payload = {"apikey": KEY, "strategy": TAG, **IDS, "webhook_url": WEBHOOK, "target": 100}
     with pytest.raises(ValidationError) as err:
         StrategyMonitorUpsertSchema().load(payload)
     assert "legs" in err.value.messages
 
 
 def test_schema_defaults_a_leg_product_and_realized_pnl():
-    leg = {"symbol": "NIFTY27OCT2622700CE", "exchange": "NFO", "quantity": -65, "entry_price": 50}
+    leg = {
+        "call_id": "call-ce-1",
+        "symbol": "NIFTY27OCT2622700CE",
+        "exchange": "NFO",
+        "quantity": -65,
+        "entry_price": 50,
+    }
     data = StrategyMonitorUpsertSchema().load(
-        {"apikey": KEY, "strategy": TAG, "webhook_url": WEBHOOK, "target": 100, "legs": [leg]}
+        {
+            "apikey": KEY,
+            "strategy": TAG,
+            **IDS,
+            "webhook_url": WEBHOOK,
+            "target": 100,
+            "legs": [leg],
+        }
     )
     assert data["legs"] == [
         {**leg, "quantity": -65.0, "entry_price": 50.0, "product": "NRML", "realized_pnl": 0.0}
     ]
+
+
+def test_the_breach_event_carries_the_callers_ids():
+    webhooks, _, _ = run(graph_for(), 100, 40, 22700)
+    body = webhooks[0]
+    assert body["strategy_id"] == STRATEGY_ID
+    assert body["mentor_id"] == MENTOR_ID
+    assert {leg["symbol"]: leg["call_id"] for leg in body["legs"]} == {
+        "NIFTY27OCT2622700CE": "call-ce-1",
+        "NIFTY27OCT2622700PE": "call-pe-1",
+    }
+
+
+def test_a_closed_legs_call_id_is_kept_after_the_open_first_sort():
+    closed_first = [
+        {
+            "call_id": "call-old",
+            "symbol": "NIFTY27OCT2622800CE",
+            "exchange": "NFO",
+            "product": "NRML",
+            "quantity": 0.0,
+            "entry_price": 0.0,
+            "realized_pnl": 1000.0,
+        },
+        *LEGS,
+    ]
+    webhooks, _, _ = run(graph_for(legs=closed_first), 82, 40, 22700)
+    assert [leg["call_id"] for leg in webhooks[0]["legs"]] == ["call-ce-1", "call-pe-1", "call-old"]
+
+
+def test_upsert_echoes_and_updates_the_ids(flow):
+    _, created, _ = sms.upsert(KEY, TAG, **ALL_LEVELS)
+    assert created["strategy_id"] == STRATEGY_ID and created["mentor_id"] == MENTOR_ID
+
+    _, updated, _ = sms.upsert(KEY, TAG, **{**ALL_LEVELS, "mentor_id": "mentor-8"})
+    assert updated["workflow_id"] == created["workflow_id"]
+    workflow = flow_db.get_workflow(created["workflow_id"])
+    body = next(n for n in workflow.nodes if n["id"] == "notify")["data"]["body"]
+    assert '"mentor_id": "mentor-8"' in body
+    assert f'"strategy_id": "{STRATEGY_ID}"' in body

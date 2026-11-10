@@ -63,15 +63,26 @@ def _node(node_id: str, node_type: str, y: int, **data) -> dict:
     return {"id": node_id, "type": node_type, "position": {"x": 0, "y": y}, "data": data}
 
 
-def _notify_body(workflow_id: int, strategy: str, levels: dict[str, Any]) -> str:
+def _notify_body(
+    workflow_id: int,
+    strategy: str,
+    strategy_id: str,
+    mentor_id: str,
+    levels: dict[str, Any],
+) -> str:
     """The webhook JSON, with Flow references spliced in unquoted where the
     value is a number, list or null. Every reference here resolves on every
     path that reaches the notify node: an unresolved one would leave `{{...}}`
-    in the body, which then fails to parse and is posted as plain text."""
+    in the body, which then fails to parse and is posted as plain text.
+
+    Each entry of `legs` carries the caller's `call_id` (see
+    strategy_pnl_service.pnl_from_book)."""
     raw = {
         "event": "strategy_breach",
         "workflow_id": workflow_id,
         "strategy": strategy,
+        "strategy_id": strategy_id,
+        "mentor_id": mentor_id,
         "reason": "{{exitReason}}",
         "idempotency_key": f"{strategy}-{{{{session_date}}}}-{{{{exitReason}}}}",
         "levels": levels,
@@ -99,6 +110,8 @@ def build_graph(
     workflow_id: int,
     strategy: str,
     api_key: str,
+    strategy_id: str,
+    mentor_id: str,
     webhook_url: str,
     webhook_secret: str | None,
     target: float | None,
@@ -273,7 +286,7 @@ def build_graph(
         method="POST",
         url=webhook_url,
         headers=headers,
-        body=_notify_body(workflow_id, strategy, levels),
+        body=_notify_body(workflow_id, strategy, strategy_id, mentor_id, levels),
         timeout=15,
         outputVariable="notifyResp",
     )
@@ -373,6 +386,8 @@ def upsert(api_key: str, strategy: str, **settings) -> tuple[bool, dict[str, Any
             "status": "success",
             "workflow_id": workflow.id,
             "strategy": strategy,
+            "strategy_id": settings["strategy_id"],
+            "mentor_id": settings["mentor_id"],
             "created": created,
             "active": True,
             "message": "Monitor created and armed"
