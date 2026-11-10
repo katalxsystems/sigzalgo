@@ -57,6 +57,7 @@ apikey-match check in deactivate() below.
 
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
@@ -238,7 +239,9 @@ def _deactivate_node(node_id: str, position_y: int, call_id: str, api_key: str) 
     }
 
 
-def _deactivate_chain(call_id: str, api_key: str, start_y: int) -> tuple[list[dict], list[dict], str]:
+def _deactivate_chain(
+    call_id: str, api_key: str, start_y: int
+) -> tuple[list[dict], list[dict], str]:
     """The [deactivate_call] tail used by the sl_target watch. Returns
     (nodes, edges, last_node_id) so callers can wire their own notify
     node(s) into "deactivate_call" without duplicating this part. Tears down
@@ -324,6 +327,7 @@ def _sl_target_graph(
         stop_loss,
         target1,
     )
+    common["detected_by"] = "ltp"
     common["breach_price"] = "{{webhook.trigger_price}}"
     common["triggered_at"] = "{{webhook.triggered_at}}"
     sl_body = {**common, "breach_type": "stop_loss"}
@@ -416,6 +420,7 @@ def _entry_recross_graph(
         target1,
     )
     notify_body["breach_type"] = "entry_price"
+    notify_body["detected_by"] = "ltp"
     notify_body["breach_price"] = "{{webhook.trigger_price}}"
     notify_body["triggered_at"] = "{{webhook.triggered_at}}"
 
@@ -438,6 +443,212 @@ def _entry_recross_graph(
         "nodes": nodes,
         "edges": edges,
     }
+
+
+# Market-hours calendar for a symbol's exchange. The calendar knows the trading
+# exchanges only, so an index is gated by the exchange it is computed on.
+_CALENDAR_EXCHANGE = {"NSE_INDEX": "NSE", "BSE_INDEX": "BSE", "MCX_INDEX": "MCX"}
+
+CANDLE_VARIABLE = "candle1m"
+
+
+def _armed_from_epoch(now: float | None = None) -> int:
+    """Start of the first 1-minute candle that lies wholly after `now`.
+
+    The candle a call is created in began before the call existed, so its
+    high/low may include prices from before the levels applied; checking it
+    could report a breach that never happened while the call was live. That
+    minute is covered by the LTP watch alone.
+    """
+    now = time.time() if now is None else now
+    return (int(now) // 60 + 1) * 60
+
+
+def _candle_check_graph(
+    call_id: str,
+    mentor_id: str,
+    symbol: str,
+    exchange: str,
+    entry_price: float,
+    stop_loss: float,
+    target1: float,
+    webhook_url: str,
+    api_key: str,
+    own_id: int,
+    name: str,
+    armed_from_epoch: int,
+) -> dict[str, Any]:
+    """The 1-minute candle backup for the sl_target watch.
+
+    Every minute during market hours: fetch the last CLOSED 1-minute candle
+    (barOffset, offset 0) and test its high/low against the same channel the
+    LTP watch uses. A candle range catches a level touched between two LTP
+    samples, which the LTP watch can miss when it is running on its REST poll
+    backstop (one sample every FLOW_PRICE_ALERT_POLL_INTERVAL seconds).
+
+    The stop-loss side is checked first: when one candle spans both levels its
+    range cannot say which was hit first, and the stop-loss is the outcome a
+    receiver must not miss. Comparisons are strict, matching the LTP watch's
+    outside_channel test. A breach notifies, then deactivates the whole call
+    (all its watches) exactly as an sl_target breach does.
+
+    A failed or empty candle fetch leaves `candle1m.*` unresolved, so the
+    varCondition below errors and takes neither branch: missing data never
+    reports a breach.
+    """
+    side = _call_side(stop_loss, target1)
+    if side == "BUY":
+        sl_check = (f"{{{{{CANDLE_VARIABLE}.low}}}}", "<", stop_loss)
+        target_check = (f"{{{{{CANDLE_VARIABLE}.high}}}}", ">", target1)
+    else:
+        sl_check = (f"{{{{{CANDLE_VARIABLE}.high}}}}", ">", stop_loss)
+        target_check = (f"{{{{{CANDLE_VARIABLE}.low}}}}", "<", target1)
+
+    candle_ref = {
+        field: f"{{{{{CANDLE_VARIABLE}.{field}}}}}"
+        for field in ("timestamp", "open", "high", "low", "close")
+    }
+    common = _base_notify_body(
+        call_id,
+        mentor_id,
+        own_id,
+        "sl_target_breach",
+        symbol,
+        exchange,
+        entry_price,
+        stop_loss,
+        target1,
+    )
+    common["detected_by"] = "candle_1m"
+    common["triggered_at"] = "{{iso_timestamp}}"
+    common["candle"] = {"interval": "1m", **candle_ref}
+    # The extreme of the candle on the side that crossed the level.
+    sl_body = {**common, "breach_type": "stop_loss", "breach_price": sl_check[0]}
+    target_body = {**common, "breach_type": "target1", "breach_price": target_check[0]}
+
+    def cond(node_id, y, left, op, right):
+        return {
+            "id": node_id,
+            "type": "varCondition",
+            "position": {"x": 0, "y": y},
+            "data": {"leftValue": left, "operator": op, "rightValue": str(right)},
+        }
+
+    nodes = [
+        {
+            "id": "start",
+            "type": "start",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "Every minute",
+                "scheduleType": "interval",
+                "intervalValue": 1,
+                "intervalUnit": "minutes",
+                "marketHoursOnly": True,
+                "marketHoursExchange": _CALENDAR_EXCHANGE.get(exchange, exchange),
+            },
+        },
+        {
+            "id": "candle",
+            "type": "barOffset",
+            "position": {"x": 0, "y": 100},
+            "data": {
+                "symbol": symbol,
+                "exchange": exchange,
+                "interval": "1m",
+                "offsetBars": 0,
+                "source": "api",
+                "outputVariable": CANDLE_VARIABLE,
+            },
+        },
+        cond(
+            "fresh",
+            200,
+            f"{{{{{CANDLE_VARIABLE}.timestamp_epoch}}}}",
+            ">=",
+            armed_from_epoch,
+        ),
+        cond("check_sl", 300, *sl_check),
+        cond("check_target", 400, *target_check),
+        _notify_node("notify_sl", 500, webhook_url, sl_body),
+        _notify_node("notify_target", 500, webhook_url, target_body),
+    ]
+    edges = [
+        {"id": "edge-start-candle", "source": "start", "target": "candle"},
+        {"id": "edge-candle-fresh", "source": "candle", "target": "fresh"},
+        {
+            "id": "edge-fresh-check_sl",
+            "source": "fresh",
+            "sourceHandle": "true",
+            "target": "check_sl",
+        },
+        {
+            "id": "edge-check_sl-notify_sl",
+            "source": "check_sl",
+            "sourceHandle": "true",
+            "target": "notify_sl",
+        },
+        {
+            "id": "edge-check_sl-check_target",
+            "source": "check_sl",
+            "sourceHandle": "false",
+            "target": "check_target",
+        },
+        {
+            "id": "edge-check_target-notify_target",
+            "source": "check_target",
+            "sourceHandle": "true",
+            "target": "notify_target",
+        },
+    ]
+
+    # The call is over on a breach, same scope as sl_target: tear down every
+    # watch for this call_id, this one included.
+    deact_nodes, deact_edges, last_id = _deactivate_chain(call_id, api_key, start_y=600)
+    nodes += deact_nodes
+    edges += deact_edges
+    edges.append({"id": "edge-notify_sl-deactivate", "source": "notify_sl", "target": last_id})
+    edges.append(
+        {"id": "edge-notify_target-deactivate", "source": "notify_target", "target": last_id}
+    )
+
+    lower, upper = _channel(stop_loss, target1)
+    return {
+        "name": name,
+        "description": (
+            f"1-minute candle check: {symbol} candle range outside [{lower}, {upper}] "
+            "(backup for the SL/Target watch)"
+        ),
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+def _arm_candle_check(workflow_id: int, api_key: str, start_data: dict) -> None:
+    """Register the candle check's every-minute schedule, then mark it active.
+    Same order the Flow activate route and the strategy monitor use.
+
+    If marking it active fails, the job just registered is removed before the
+    error propagates. Left behind, it would fire every minute for the life of
+    the process against a workflow that stays inactive.
+    """
+    from database.flow_db import set_schedule_job_id
+    from services.flow_scheduler_service import get_flow_scheduler
+
+    scheduler = get_flow_scheduler()
+    job_id = scheduler.add_workflow_job(
+        workflow_id=workflow_id,
+        schedule_type="interval",
+        interval_value=start_data["intervalValue"],
+        interval_unit=start_data["intervalUnit"],
+        market_hours_only=True,
+    )
+    try:
+        set_schedule_job_id(workflow_id, job_id)
+        db_activate_workflow(workflow_id, api_key=api_key)
+    except Exception:
+        scheduler.remove_workflow_job(workflow_id)
+        raise
 
 
 def create_and_activate(
@@ -507,13 +718,30 @@ def create_and_activate(
             500,
         )
 
+    candle_wf = db_create_workflow(
+        name=f"{base_name} (1m Candle)",
+        description="",
+        nodes=[],
+        edges=[],
+        account_id=account_id,
+        owner_username=owner_username,
+    )
+    if not candle_wf:
+        db_delete_workflow(entry_wf.id)
+        db_delete_workflow(sl_target_wf.id)
+        return (
+            False,
+            {"status": "error", "message": "Failed to create the 1-minute candle workflow"},
+            500,
+        )
+
     # Record the call_id -> workflow_id(s) mapping so
-    # /api/v1/pricebreach/<call_id>/deactivate can resolve both of them
-    # later.
+    # /api/v1/pricebreach/<call_id>/deactivate can resolve all of them later.
     record_price_breach_call(
         call_id,
         sl_target_workflow_id=sl_target_wf.id,
         entry_recross_workflow_id=(entry_wf.id if entry_wf else None),
+        candle_workflow_id=candle_wf.id,
     )
 
     # Pass 2: build the real graphs -- each watch's own deactivate chain
@@ -553,6 +781,28 @@ def create_and_activate(
         )
         update_workflow(entry_wf.id, nodes=entry_graph["nodes"], edges=entry_graph["edges"])
 
+    armed_from = _armed_from_epoch()
+    candle_graph = _candle_check_graph(
+        call_id,
+        mentor_id,
+        symbol,
+        exchange,
+        entry_price,
+        stop_loss,
+        target1,
+        webhook_url,
+        api_key,
+        own_id=candle_wf.id,
+        name=candle_wf.name,
+        armed_from_epoch=armed_from,
+    )
+    update_workflow(
+        candle_wf.id,
+        nodes=candle_graph["nodes"],
+        edges=candle_graph["edges"],
+        description=candle_graph["description"],
+    )
+
     # Pass 3: register the live watches and flip is_active.
     price_monitor = get_flow_price_monitor()
     price_monitor.add_alert(
@@ -588,6 +838,23 @@ def create_and_activate(
         # step (and the call_id teardown) see a live workflow.
         db_activate_workflow(entry_wf.id, api_key=api_key)
 
+    # A backup, so failing to arm it does not undo the live watches the call
+    # already has; it is reported in the response instead.
+    candle_info: dict[str, Any] = {
+        "workflow_id": candle_wf.id,
+        "watching": f"1-minute candle high/low outside [{lower}, {upper}]",
+        "checks_candles_from": datetime.fromtimestamp(armed_from).isoformat(),
+        "active": True,
+    }
+    try:
+        _arm_candle_check(candle_wf.id, api_key, candle_graph["nodes"][0]["data"])
+    except Exception:
+        logger.exception(
+            f"Price-breach call {call_id}: could not arm 1-minute candle check {candle_wf.id}"
+        )
+        candle_info["active"] = False
+        candle_info["error"] = "Could not schedule the candle check; the LTP watches are live"
+
     logger.info(
         f"Price-breach call {call_id} ({_call_side(stop_loss, target1)}): "
         f"sl_target={sl_target_wf.id} outside [{lower}, {upper}]"
@@ -596,6 +863,7 @@ def create_and_activate(
             if entry_condition is not None
             else f", entry_recross={entry_wf.id} executed immediately (active_price == entry_price)"
         )
+        + f", candle_1m={candle_wf.id} ({'armed' if candle_info['active'] else 'NOT armed'})"
     )
 
     workflows: dict[str, Any] = {
@@ -626,6 +894,11 @@ def create_and_activate(
             "(its notify reaches your webhook and it then deactivates itself). The sl_target watch "
             "stays live."
         )
+    workflows["candle_1m"] = candle_info
+    message += (
+        " A 1-minute candle check also runs as a backup for stop_loss/target1; whichever check "
+        "sees the breach first notifies and deactivates every watch for the call."
+    )
 
     if entry_condition is None:
         # Submitted last, once everything above has used this request's ORM
@@ -670,6 +943,20 @@ def deactivate_one(workflow_id: int, api_key: str) -> tuple[bool, str, int]:
         return False, "This apikey did not create this workflow", 403
 
     get_flow_price_monitor().remove_alert(workflow_id)
+    # The 1-minute candle check runs on the scheduler, not the price monitor.
+    # A no-op for the LTP watches, which have no job. Strict, so a jobstore
+    # failure leaves the workflow visibly active rather than marked inactive
+    # with its job still running.
+    from database.flow_db import set_schedule_job_id
+    from services.flow_scheduler_service import get_flow_scheduler
+
+    try:
+        get_flow_scheduler().remove_workflow_job(workflow_id, strict=True)
+    except Exception:
+        logger.exception(f"Could not remove the schedule of price-breach workflow {workflow_id}")
+        return False, f"Failed to stop workflow {workflow_id}'s schedule", 500
+    if workflow.schedule_job_id:
+        set_schedule_job_id(workflow_id, None)
     db_deactivate_workflow(workflow_id)
 
     logger.info(f"Price-breach workflow {workflow_id} deactivated")

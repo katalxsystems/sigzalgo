@@ -532,6 +532,19 @@ def execute_workflow_scheduled(
     the key in the jobstore, still run. New jobs pass None and the current key
     is decrypted from the workflow row on every run.
     """
+    from utils.db_sessions import remove_all_scoped_sessions
+
+    try:
+        _run_scheduled_workflow(workflow_id, api_key, market_hours_only)
+    finally:
+        # APScheduler runs this on its own worker thread with no Flask app
+        # context, so teardown_appcontext never fires and the sessions this run
+        # touched would stay bound to that thread. Every exit, not only a run
+        # that executed: a skipped run has already read the workflow row.
+        remove_all_scoped_sessions()
+
+
+def _run_scheduled_workflow(workflow_id: int, api_key: str | None, market_hours_only: bool):
     from services.flow_executor_service import execute_workflow
 
     logger.info(f"Scheduled execution of workflow {workflow_id}")
@@ -597,13 +610,6 @@ def execute_workflow_scheduled(
         )
     except Exception as e:
         logger.exception(f"Scheduled execution failed for workflow {workflow_id}: {e}")
-    finally:
-        # APScheduler runs this on its own worker thread with no Flask app
-        # context, so teardown_appcontext never fires and the sessions this run
-        # touched would stay bound to that thread.
-        from utils.db_sessions import remove_all_scoped_sessions
-
-        remove_all_scoped_sessions()
 
 
 # Global scheduler instance
