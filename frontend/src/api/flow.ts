@@ -37,6 +37,9 @@ export interface WorkflowListItem {
   last_execution_status: string | null
   account_id?: string | null
   owner_username?: string | null
+  /** External ids found in the workflow's graph (price-breach and strategy monitors) */
+  call_ids?: string[]
+  mentor_ids?: string[]
 }
 
 export interface WorkflowExecution {
