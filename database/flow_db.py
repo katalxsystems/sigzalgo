@@ -4,7 +4,6 @@ import logging
 import os
 import secrets
 
-from cachetools import TTLCache
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -21,11 +20,13 @@ from sqlalchemy.orm import relationship, scoped_session, sessionmaker
 from sqlalchemy.pool import NullPool
 from sqlalchemy.sql import func
 
+from utils.thread_safe_cache import LockedTTLCache
+
 logger = logging.getLogger(__name__)
 
 # Flow workflow caches - 5 minute TTL for webhook lookups (high frequency)
-_workflow_webhook_cache = TTLCache(maxsize=5000, ttl=300)  # 5 minutes TTL
-_workflow_cache = TTLCache(maxsize=1000, ttl=600)  # 10 minutes TTL
+_workflow_webhook_cache = LockedTTLCache(maxsize=5000, ttl=300)  # 5 minutes TTL
+_workflow_cache = LockedTTLCache(maxsize=1000, ttl=600)  # 10 minutes TTL
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -344,8 +345,7 @@ def set_workflow_owner(workflow_id, account_id, owner_username):
         workflow.owner_username = owner_username
         db_session.commit()
         _workflow_cache.clear()
-        if workflow.webhook_token in _workflow_webhook_cache:
-            del _workflow_webhook_cache[workflow.webhook_token]
+        _workflow_webhook_cache.invalidate(workflow.webhook_token)
         logger.info(f"Workflow {workflow_id} assigned to account {account_id}")
         return workflow
     except Exception as e:
@@ -441,8 +441,7 @@ def update_workflow(workflow_id, **kwargs):
 
         # Clear caches
         _workflow_cache.clear()
-        if workflow.webhook_token in _workflow_webhook_cache:
-            del _workflow_webhook_cache[workflow.webhook_token]
+        _workflow_webhook_cache.invalidate(workflow.webhook_token)
 
         logger.info(f"Updated workflow {workflow_id}")
         return workflow
@@ -467,8 +466,7 @@ def delete_workflow(workflow_id):
 
         # Clear caches
         _workflow_cache.clear()
-        if webhook_token in _workflow_webhook_cache:
-            del _workflow_webhook_cache[webhook_token]
+        _workflow_webhook_cache.invalidate(webhook_token)
 
         logger.info(f"Deleted workflow {workflow_id}")
         return True
@@ -503,8 +501,7 @@ def regenerate_webhook_token(workflow_id):
         db_session.commit()
 
         # Clear old token from cache
-        if old_token in _workflow_webhook_cache:
-            del _workflow_webhook_cache[old_token]
+        _workflow_webhook_cache.invalidate(old_token)
 
         logger.info(f"Regenerated webhook token for workflow {workflow_id}")
         return workflow.webhook_token
