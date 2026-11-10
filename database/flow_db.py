@@ -85,6 +85,7 @@ def _encrypt_api_key(api_key):
     if not api_key:
         return None
     from database.auth_db import encrypt_token
+
     return encrypt_token(api_key)
 
 
@@ -133,6 +134,8 @@ class PriceBreachCall(Base):
     which FlowWorkflow row(s) to tear down. entry_recross_workflow_id is
     nullable because create_and_activate() does not create that workflow
     when active_price == entry_price (see services/price_breach_service.py).
+    candle_workflow_id is the 1-minute candle backup check; nullable because
+    calls created before it existed have none.
     """
 
     __tablename__ = "price_breach_calls"
@@ -141,6 +144,7 @@ class PriceBreachCall(Base):
     call_id = Column(String(100), nullable=False, index=True)
     sl_target_workflow_id = Column(Integer, ForeignKey("flow_workflows.id"), nullable=False)
     entry_recross_workflow_id = Column(Integer, ForeignKey("flow_workflows.id"), nullable=True)
+    candle_workflow_id = Column(Integer, ForeignKey("flow_workflows.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -170,6 +174,27 @@ def init_db():
     # Migrate: Add api_key column if it doesn't exist (for existing databases)
     _migrate_add_api_key_column()
     _migrate_add_ownership_columns()
+    _migrate_add_price_breach_candle_column()
+
+
+def _migrate_add_price_breach_candle_column():
+    """Add price_breach_calls.candle_workflow_id if it is missing. Idempotent.
+    Existing rows keep NULL: those calls were created without a candle check."""
+    try:
+        from sqlalchemy import inspect, text
+
+        inspector = inspect(engine)
+        if "price_breach_calls" not in inspector.get_table_names():
+            return
+        columns = {col["name"] for col in inspector.get_columns("price_breach_calls")}
+        if "candle_workflow_id" not in columns:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE price_breach_calls ADD COLUMN candle_workflow_id INTEGER")
+                )
+            logger.info("Migration: Added 'candle_workflow_id' column to price_breach_calls")
+    except Exception:
+        logger.exception("Migration of price_breach_calls.candle_workflow_id failed")
 
 
 def _migrate_add_ownership_columns():
@@ -190,7 +215,9 @@ def _migrate_add_ownership_columns():
         for column in ("account_id", "owner_username"):
             if column not in columns:
                 with engine.begin() as conn:
-                    conn.execute(text(f"ALTER TABLE flow_workflows ADD COLUMN {column} VARCHAR(255)"))
+                    conn.execute(
+                        text(f"ALTER TABLE flow_workflows ADD COLUMN {column} VARCHAR(255)")
+                    )
                 logger.info(f"Migration: Added '{column}' column to flow_workflows table")
 
         unassigned = FlowWorkflow.query.filter(
@@ -372,7 +399,9 @@ def get_active_workflows():
         return []
 
 
-def record_price_breach_call(call_id, sl_target_workflow_id, entry_recross_workflow_id=None):
+def record_price_breach_call(
+    call_id, sl_target_workflow_id, entry_recross_workflow_id=None, candle_workflow_id=None
+):
     """Persist the call_id -> workflow_id(s) mapping for one
     /api/v1/pricebreach/create call, so it can later be resolved by
     get_workflow_ids_by_call_id()."""
@@ -381,6 +410,7 @@ def record_price_breach_call(call_id, sl_target_workflow_id, entry_recross_workf
             call_id=call_id,
             sl_target_workflow_id=sl_target_workflow_id,
             entry_recross_workflow_id=entry_recross_workflow_id,
+            candle_workflow_id=candle_workflow_id,
         )
         db_session.add(row)
         db_session.commit()
@@ -404,6 +434,8 @@ def get_workflow_ids_by_call_id(call_id):
             workflow_ids.append(row.sl_target_workflow_id)
             if row.entry_recross_workflow_id is not None:
                 workflow_ids.append(row.entry_recross_workflow_id)
+            if row.candle_workflow_id is not None:
+                workflow_ids.append(row.candle_workflow_id)
         return workflow_ids
     except Exception as e:
         logger.exception(f"Error looking up workflows for call_id {call_id}: {str(e)}")

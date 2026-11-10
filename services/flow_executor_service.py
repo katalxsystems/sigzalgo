@@ -1436,6 +1436,7 @@ class NodeExecutor:
         lookback without a separate node per unit.
         """
         from services.indicator_service import (
+            _parse_timestamp,
             bar_at_offset,
             clamp_bars,
             fetch_history_cached,
@@ -1469,12 +1470,20 @@ class NodeExecutor:
                 "message": f"Not enough history to reach {offset_bars} bars back for {symbol}",
             }
 
+        # Brokers return `timestamp` as epoch seconds or as an ISO string; the
+        # epoch form is always numeric, so a varCondition can compare bar times.
+        try:
+            timestamp_epoch = int(_parse_timestamp(row.get("timestamp")).timestamp())
+        except (TypeError, ValueError, OverflowError, OSError):
+            timestamp_epoch = None
+
         output = {
             "status": "success",
             "symbol": symbol,
             "exchange": exchange,
             "offsetBars": offset_bars,
             "timestamp": row.get("timestamp"),
+            "timestamp_epoch": timestamp_epoch,
             "open": row.get("open"),
             "high": row.get("high"),
             "low": row.get("low"),
