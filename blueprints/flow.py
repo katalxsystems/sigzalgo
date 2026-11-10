@@ -5,6 +5,7 @@ Provides routes for managing and executing workflows
 """
 
 import logging
+import re
 from datetime import datetime
 
 from flask import Blueprint, jsonify, request, session
@@ -71,6 +72,32 @@ def _ownership_fields(workflow):
     return {"account_id": workflow.account_id, "owner_username": workflow.owner_username}
 
 
+# A caller's id as json.dumps writes it into a notify body. Price-breach watches
+# and strategy monitors both build their bodies with json.dumps, so the
+# `"key": "value"` spacing is fixed. Values are limited to the API's id format.
+_EXTERNAL_ID_FIELD = re.compile(r'"(call_id|mentor_id)": "([A-Za-z0-9_.:-]{1,100})"')
+
+
+def _external_ids(nodes):
+    """(call_ids, mentor_ids) a workflow carries, so the list page can search
+    on them. Neither monitor type stores them in a column: price-breach puts
+    both in its notify bodies, the strategy monitor puts mentor_id in its
+    notify body and a call_id on each leg of its P&L node."""
+    call_ids, mentor_ids = set(), set()
+    for node in nodes or []:
+        data = node.get("data") if isinstance(node, dict) else None
+        if not isinstance(data, dict):
+            continue
+        for leg in data.get("legs") or []:
+            if isinstance(leg, dict) and leg.get("call_id"):
+                call_ids.add(str(leg["call_id"]))
+        body = data.get("body")
+        if isinstance(body, str):
+            for key, value in _EXTERNAL_ID_FIELD.findall(body):
+                (call_ids if key == "call_id" else mentor_ids).add(value)
+    return sorted(call_ids), sorted(mentor_ids)
+
+
 # === Workflow CRUD Routes ===
 
 
@@ -93,6 +120,7 @@ def list_workflows():
     for wf in workflows:
         executions = get_workflow_executions(wf.id, limit=1)
         last_exec = executions[0] if executions else None
+        call_ids, mentor_ids = _external_ids(wf.nodes)
 
         items.append(
             {
@@ -104,6 +132,8 @@ def list_workflows():
                 "created_at": wf.created_at.isoformat() if wf.created_at else None,
                 "updated_at": wf.updated_at.isoformat() if wf.updated_at else None,
                 "last_execution_status": last_exec.status if last_exec else None,
+                "call_ids": call_ids,
+                "mentor_ids": mentor_ids,
                 **_ownership_fields(wf),
             }
         )
@@ -938,6 +968,7 @@ def _execute_webhook(token, webhook_data=None, url_secret=None):
     # The column is encrypted at rest; use the helper that decrypts it
     # (and falls back to plaintext for pre-migration rows).
     from database.flow_db import get_workflow_api_key
+
     api_key = get_workflow_api_key(workflow)  # Use API key stored when workflow was activated
     if not api_key and workflow.account_id:
         # The workflow's own account (webhook calls carry no browser session).
@@ -955,9 +986,7 @@ def _execute_webhook(token, webhook_data=None, url_secret=None):
 
     blocked = _execution_blocked(workflow)
     if blocked:
-        logger.error(
-            f"Webhook for workflow {workflow.id} rejected: {blocked['message']}"
-        )
+        logger.error(f"Webhook for workflow {workflow.id} rejected: {blocked['message']}")
         return jsonify(blocked), 400
 
     try:

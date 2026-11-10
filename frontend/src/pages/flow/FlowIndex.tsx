@@ -15,12 +15,14 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Search,
   Trash2,
   Upload,
   Webhook,
+  X,
   XCircle,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 import {
   activateWorkflow,
@@ -57,6 +59,13 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
@@ -75,6 +84,58 @@ function StatusIcon({ status }: { status: string | null }) {
     default:
       return <AlertCircle className="h-4 w-4 text-muted-foreground" />
   }
+}
+
+type StatusFilter = 'all' | 'active' | 'inactive'
+
+interface WorkflowFilters {
+  status: StatusFilter
+  /** Inclusive created-date range, as yyyy-mm-dd in local time ('' = open) */
+  fromDate: string
+  toDate: string
+  callId: string
+  mentorId: string
+}
+
+const EMPTY_FILTERS: WorkflowFilters = {
+  status: 'all',
+  fromDate: '',
+  toDate: '',
+  callId: '',
+  mentorId: '',
+}
+
+/** The server writes timestamps without an offset; they are UTC. */
+function parseServerDate(value: string | null | undefined): Date | null {
+  if (!value) return null
+  const hasOffset = /([zZ]|[+-]\d{2}:?\d{2})$/.test(value)
+  const date = new Date(hasOffset ? value : `${value}Z`)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+/** yyyy-mm-dd of a date in the viewer's local time, comparable as a string. */
+function localDay(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+function matchesId(ids: string[] | undefined, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  return (ids ?? []).some((id) => id.toLowerCase().includes(q))
+}
+
+function matchesFilters(workflow: WorkflowListItem, filters: WorkflowFilters): boolean {
+  if (filters.status === 'active' && !workflow.is_active) return false
+  if (filters.status === 'inactive' && workflow.is_active) return false
+  if (filters.fromDate || filters.toDate) {
+    const created = parseServerDate(workflow.created_at)
+    if (!created) return false
+    const day = localDay(created)
+    if (filters.fromDate && day < filters.fromDate) return false
+    if (filters.toDate && day > filters.toDate) return false
+  }
+  return matchesId(workflow.call_ids, filters.callId) && matchesId(workflow.mentor_ids, filters.mentorId)
 }
 
 function WorkflowCard({
@@ -266,6 +327,20 @@ function WorkflowCard({
           {workflow.description && (
             <CardDescription className="line-clamp-2">{workflow.description}</CardDescription>
           )}
+          {(workflow.call_ids?.length || workflow.mentor_ids?.length) ? (
+            <div className="space-y-0.5 text-xs text-muted-foreground">
+              {workflow.call_ids && workflow.call_ids.length > 0 && (
+                <p className="truncate" title={workflow.call_ids.join(', ')}>
+                  Call: <span className="font-mono">{workflow.call_ids.join(', ')}</span>
+                </p>
+              )}
+              {workflow.mentor_ids && workflow.mentor_ids.length > 0 && (
+                <p className="truncate" title={workflow.mentor_ids.join(', ')}>
+                  Mentor: <span className="font-mono">{workflow.mentor_ids.join(', ')}</span>
+                </p>
+              )}
+            </div>
+          ) : null}
           {showOwner && (
             <p className="text-xs text-muted-foreground">
               {workflow.account_id
@@ -559,11 +634,25 @@ export default function FlowIndex() {
   const [newWorkflowName, setNewWorkflowName] = useState('')
   const [importJson, setImportJson] = useState('')
   const [importError, setImportError] = useState<string | null>(null)
+  const [filters, setFilters] = useState<WorkflowFilters>(EMPTY_FILTERS)
 
   const { data: workflows, isLoading } = useQuery({
     queryKey: flowQueryKeys.workflows(),
     queryFn: listWorkflows,
   })
+
+  const filteredWorkflows = useMemo(
+    () => (workflows ?? []).filter((w) => matchesFilters(w, filters)),
+    [workflows, filters]
+  )
+  const filtersActive =
+    filters.status !== 'all' ||
+    !!filters.fromDate ||
+    !!filters.toDate ||
+    !!filters.callId.trim() ||
+    !!filters.mentorId.trim()
+  const setFilter = <K extends keyof WorkflowFilters>(key: K, value: WorkflowFilters[K]) =>
+    setFilters((prev) => ({ ...prev, [key]: value }))
 
   // Only an administrator's list spans several accounts or has unassigned
   // workflows; a user's own list is a single account, so the owner line would
@@ -664,11 +753,111 @@ export default function FlowIndex() {
       </div>
 
       {workflows && workflows.length > 0 ? (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {workflows.map((workflow) => (
-            <WorkflowCard key={workflow.id} workflow={workflow} showOwner={showOwners} />
-          ))}
-        </div>
+        <>
+          <div className="mb-6 grid gap-3 rounded-lg border p-4 sm:grid-cols-2 lg:grid-cols-6">
+            <div className="space-y-1.5 lg:col-span-1">
+              <Label htmlFor="flow-filter-status" className="text-xs">
+                Status
+              </Label>
+              <Select
+                value={filters.status}
+                onValueChange={(value) => setFilter('status', value as StatusFilter)}
+              >
+                <SelectTrigger id="flow-filter-status">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="inactive">Inactive</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5 lg:col-span-1">
+              <Label htmlFor="flow-filter-from" className="text-xs">
+                Created from
+              </Label>
+              <Input
+                id="flow-filter-from"
+                type="date"
+                value={filters.fromDate}
+                max={filters.toDate || undefined}
+                onChange={(e) => setFilter('fromDate', e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5 lg:col-span-1">
+              <Label htmlFor="flow-filter-to" className="text-xs">
+                Created to
+              </Label>
+              <Input
+                id="flow-filter-to"
+                type="date"
+                value={filters.toDate}
+                min={filters.fromDate || undefined}
+                onChange={(e) => setFilter('toDate', e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5 lg:col-span-1">
+              <Label htmlFor="flow-filter-call" className="text-xs">
+                Call ID
+              </Label>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="flow-filter-call"
+                  placeholder="Search call ID"
+                  className="pl-8"
+                  value={filters.callId}
+                  onChange={(e) => setFilter('callId', e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5 lg:col-span-1">
+              <Label htmlFor="flow-filter-mentor" className="text-xs">
+                Mentor ID
+              </Label>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="flow-filter-mentor"
+                  placeholder="Search mentor ID"
+                  className="pl-8"
+                  value={filters.mentorId}
+                  onChange={(e) => setFilter('mentorId', e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="flex items-end justify-between gap-2 lg:col-span-1">
+              <span className="pb-2 text-xs text-muted-foreground">
+                {filteredWorkflows.length} of {workflows.length}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setFilters(EMPTY_FILTERS)}
+                disabled={!filtersActive}
+              >
+                <X className="mr-1 h-4 w-4" />
+                Clear
+              </Button>
+            </div>
+          </div>
+
+          {filteredWorkflows.length > 0 ? (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {filteredWorkflows.map((workflow) => (
+                <WorkflowCard key={workflow.id} workflow={workflow} showOwner={showOwners} />
+              ))}
+            </div>
+          ) : (
+            <Card className="flex flex-col items-center justify-center py-12">
+              <h3 className="mb-2 text-lg font-medium">No workflows match these filters</h3>
+              <Button variant="outline" onClick={() => setFilters(EMPTY_FILTERS)}>
+                Clear filters
+              </Button>
+            </Card>
+          )}
+        </>
       ) : (
         <Card className="flex flex-col items-center justify-center py-16">
           <div className="mb-4 rounded-full bg-muted p-4">
