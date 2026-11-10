@@ -14,13 +14,16 @@ TOKEN_ENDPOINT = f"{BASE_URL}/oauth2/token"
 USER_INFO_ENDPOINT = f"{BASE_URL}/api/v1/user/trading_info"
 
 
-def authenticate_broker(auth_code=None, state=None, account_id=None):
+def authenticate_broker(auth_code=None, state=None, account_id=None, redirect_uri=None):
     """
     Authenticate with Pocketful using OAuth2 flow
 
     Args:
         auth_code: The authorization code received from Pocketful
         state: The state parameter received from Pocketful (for verification)
+        redirect_uri: The exact redirect URI the login was started with.
+            Defaults to REDIRECT_URL; the CMS login flow
+            (blueprints/cms_broker.py) passes its own callback URL.
 
     Returns:
         Tuple of (access_token, feed_token, client_id, error_message)
@@ -52,9 +55,11 @@ def authenticate_broker(auth_code=None, state=None, account_id=None):
         credentials = f"{client_id}:{client_secret}"
         encoded_credentials = base64.b64encode(credentials.encode()).decode()
 
-        # Get the redirect URL from environment variable
-        # This should match the registered redirect URI in Pocketful
-        redirect_uri = os.getenv("REDIRECT_URL", "http://127.0.0.1:5000/pocketful/callback")
+        # Must match the redirect URI the login was started with (and the one
+        # registered in Pocketful). Defaults to this server's REDIRECT_URL.
+        redirect_uri = redirect_uri or os.getenv(
+            "REDIRECT_URL", "http://127.0.0.1:5000/pocketful/callback"
+        )
 
         # Prepare the token request
         headers = {
