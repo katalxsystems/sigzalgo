@@ -393,6 +393,47 @@ def _async_master_contract_download(broker):
     return master_contract_status
 
 
+def persist_broker_auth(auth_token, account_id, broker, feed_token=None, user_id=None,
+                        owner_username=None):
+    """Store a freshly obtained broker token for ``account_id`` and make sure
+    the broker's master contract is loaded.
+
+    The session-independent half of a successful broker login: no Flask
+    session, request or response is touched, so it is also safe to call from
+    a server-to-server request (blueprints/cms_broker.py), not only from a
+    browser login (handle_auth_success()).
+
+    Returns:
+        The upserted Auth row id, or None when the token could not be stored.
+    """
+    inserted_id = upsert_auth(
+        account_id, auth_token, broker, feed_token=feed_token, user_id=user_id,
+        owner_username=owner_username,
+    )
+    if not inserted_id:
+        return None
+
+    logger.info(f"Database record upserted with ID: {inserted_id}")
+    # Initialize master contract status for this broker
+    init_broker_status(broker)
+
+    # Smart download: Check if we need to download or can use cached data
+    should_download, reason = should_download_master_contract(broker)
+    logger.info(f"Smart download check for {broker}: should_download={should_download}, reason={reason}")
+
+    if should_download:
+        # Start async download in background thread
+        thread = Thread(target=async_master_contract_download, args=(broker,), daemon=True)
+        thread.start()
+    else:
+        # Use cached data - load existing master contract
+        logger.info(f"Skipping download for {broker}: {reason}")
+        thread = Thread(target=load_existing_master_contract, args=(broker,), daemon=True)
+        thread.start()
+
+    return inserted_id
+
+
 def handle_auth_success(auth_token, user_session_key, broker, feed_token=None, user_id=None,
                          owner_username=None):
     """
@@ -474,30 +515,11 @@ def handle_auth_success(auth_token, user_session_key, broker, feed_token=None, u
     except Exception:
         pass  # Don't block login if logging fails
 
-    # Store auth token in database
-    inserted_id = upsert_auth(
-        user_session_key, auth_token, broker, feed_token=feed_token, user_id=user_id,
+    inserted_id = persist_broker_auth(
+        auth_token, user_session_key, broker, feed_token=feed_token, user_id=user_id,
         owner_username=owner_username,
     )
     if inserted_id:
-        logger.info(f"Database record upserted with ID: {inserted_id}")
-        # Initialize master contract status for this broker
-        init_broker_status(broker)
-
-        # Smart download: Check if we need to download or can use cached data
-        should_download, reason = should_download_master_contract(broker)
-        logger.info(f"Smart download check for {broker}: should_download={should_download}, reason={reason}")
-
-        if should_download:
-            # Start async download in background thread
-            thread = Thread(target=async_master_contract_download, args=(broker,), daemon=True)
-            thread.start()
-        else:
-            # Use cached data - load existing master contract
-            logger.info(f"Skipping download for {broker}: {reason}")
-            thread = Thread(target=load_existing_master_contract, args=(broker,), daemon=True)
-            thread.start()
-
         # Return JSON for AJAX requests (React), redirect for OAuth callbacks
         if is_ajax_request():
             return jsonify(

@@ -59,6 +59,7 @@ from blueprints.broker_credentials import (
 )
 from blueprints.chart_test import chart_test_bp  # Standalone chart test page (dev/testing only)
 from blueprints.chartink import chartink_bp  # Import the chartink blueprint
+from blueprints.cms_broker import cms_broker_bp  # CMS server-to-server broker login API
 from blueprints.core import core_bp
 from blueprints.custom_straddle import custom_straddle_bp  # Import custom straddle blueprint
 from blueprints.dashboard import dashboard_bp
@@ -339,6 +340,10 @@ def create_app():
     app.register_blueprint(flow_bp)  # Register Flow blueprint
     app.register_blueprint(broker_credentials_bp)  # Register Broker credentials blueprint
     app.register_blueprint(broker_accounts_bp)  # Register Broker accounts (multi-account) blueprint
+    app.register_blueprint(cms_broker_bp)  # Register CMS server-to-server broker login API
+    # Called only by the CMS server, never a browser: the HMAC signature +
+    # single-use nonce in blueprints/cms_broker.py is the authentication.
+    csrf.exempt(cms_broker_bp)
     app.register_blueprint(system_permissions_bp)  # Register System permissions blueprint
     app.register_blueprint(menu_visibility_bp)  # Register profile menu visibility blueprint
     app.register_blueprint(strategy_portfolio_bp)  # Register Strategy Portfolio blueprint
