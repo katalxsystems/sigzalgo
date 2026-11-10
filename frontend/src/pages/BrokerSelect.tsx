@@ -43,6 +43,7 @@ const allBrokers = [
   { id: 'paytm', name: 'Paytm Money', authType: 'oauth' },
   { id: 'pocketful', name: 'Pocketful', authType: 'oauth' },
   { id: 'rmoney', name: 'RMoney', authType: 'oauth' },
+  { id: 'sahi', name: 'Sahi', authType: 'totp' },
   { id: 'samco', name: 'Samco', authType: 'totp' },
   { id: 'shoonya', name: 'Shoonya', authType: 'totp' },
   { id: 'tradejini', name: 'Tradejini', authType: 'totp' },

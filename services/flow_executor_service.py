@@ -55,26 +55,102 @@ def get_workflow_lock(workflow_id: int) -> threading.Lock:
 # failing. Deactivating or deleting the workflow now gives them back.
 _workflow_subscriptions: dict[int, set[tuple[str, str, str]]] = {}
 _workflow_subscriptions_lock = threading.Lock()
+# A subscription may be recorded again while a previous release waits for
+# the proxy. Versions prevent that older release from forgetting the new owner.
+_workflow_subscription_versions: dict[int, dict[tuple[str, str, str], int]] = {}
+_workflow_subscription_owners: dict[int, dict[tuple[str, str, str], tuple[str, str]]] = {}
+_workflow_subscription_version = 0
 
 
 def record_workflow_subscription(
-    workflow_id: int | None, symbol: str, exchange: str, mode: str
+    workflow_id: int | None,
+    symbol: str,
+    exchange: str,
+    mode: str,
+    username: str | None = None,
+    broker: str | None = None,
 ) -> None:
     """Remember a subscription so it can be released with the workflow."""
     if workflow_id is None:
         return
+    global _workflow_subscription_version
+    entry = (symbol, exchange, mode)
     with _workflow_subscriptions_lock:
-        _workflow_subscriptions.setdefault(workflow_id, set()).add((symbol, exchange, mode))
+        _workflow_subscription_version += 1
+        _workflow_subscriptions.setdefault(workflow_id, set()).add(entry)
+        _workflow_subscription_versions.setdefault(workflow_id, {})[entry] = (
+            _workflow_subscription_version
+        )
+        if username:
+            _workflow_subscription_owners.setdefault(workflow_id, {})[entry] = (
+                username,
+                broker or "unknown",
+            )
+
+
+def has_workflow_subscriptions(workflow_id: int) -> bool:
+    """Whether an unsubscribe still needs a retry before cleanup can finish."""
+    with _workflow_subscriptions_lock:
+        return bool(_workflow_subscriptions.get(workflow_id))
+
+
+def _forget_released_subscription(workflow_id: int, entry, version: int) -> None:
+    """Forget only the admission this unsubscribe actually released."""
+    with _workflow_subscriptions_lock:
+        versions = _workflow_subscription_versions.get(workflow_id, {})
+        if versions.get(entry) != version:
+            return
+        entries = _workflow_subscriptions.get(workflow_id)
+        if entries is None:
+            return
+        entries.discard(entry)
+        versions.pop(entry, None)
+        _workflow_subscription_owners.get(workflow_id, {}).pop(entry, None)
+        if not entries:
+            _workflow_subscriptions.pop(workflow_id, None)
+            _workflow_subscription_versions.pop(workflow_id, None)
+            _workflow_subscription_owners.pop(workflow_id, None)
+
+
+def _release_shared_workflow_owner(workflow_id: int, entry, version: int, username: str) -> bool:
+    """Drop this owner's claim without touching a feed another Flow still uses."""
+    with _workflow_subscriptions_lock:
+        if _workflow_subscription_versions.get(workflow_id, {}).get(entry) != version:
+            # A new subscribe for this same workflow took over the key while
+            # release was in progress; it must remain subscribed.
+            return True
+        shared = any(
+            other_id != workflow_id
+            and entry in other_entries
+            and (
+                _workflow_subscription_owners.get(other_id, {}).get(entry, (username, ""))[0]
+                == username
+            )
+            for other_id, other_entries in _workflow_subscriptions.items()
+        )
+        if not shared:
+            return False
+        entries = _workflow_subscriptions[workflow_id]
+        entries.discard(entry)
+        _workflow_subscription_versions[workflow_id].pop(entry, None)
+        _workflow_subscription_owners.get(workflow_id, {}).pop(entry, None)
+        if not entries:
+            _workflow_subscriptions.pop(workflow_id, None)
+            _workflow_subscription_versions.pop(workflow_id, None)
+            _workflow_subscription_owners.pop(workflow_id, None)
+        return True
 
 
 def release_workflow_subscriptions(workflow_id: int) -> int:
-    """Drop every subscription a workflow opened. Returns how many were released.
+    """Release subscriptions, retaining failures for a later retry.
 
     Called when a workflow is deactivated or deleted. Safe to call for a
     workflow that never subscribed, and safe to call twice.
     """
     with _workflow_subscriptions_lock:
-        entries = _workflow_subscriptions.pop(workflow_id, set())
+        entries = list(_workflow_subscriptions.get(workflow_id, ()))
+        versions = dict(_workflow_subscription_versions.get(workflow_id, {}))
+        owners = dict(_workflow_subscription_owners.get(workflow_id, {}))
     if not entries:
         return 0
 
@@ -84,27 +160,112 @@ def release_workflow_subscriptions(workflow_id: int) -> int:
         logger.exception("Cannot release subscriptions: websocket service unavailable")
         return 0
 
-    # Resolved once, not per symbol: it is a database read.
-    username, broker = _subscription_owner(workflow_id)
-    if not username:
-        logger.warning(
-            f"Workflow {workflow_id} has {len(entries)} subscription(s) but no "
-            f"resolvable session to release them from"
-        )
-        return 0
+    # Legacy records lack a captured owner. Resolve only once for those; new
+    # records keep their owner even if the workflow's API key later changes.
+    fallback_owner = _subscription_owner(workflow_id) if len(owners) < len(entries) else (None, "")
 
     released = 0
-    for symbol, exchange, mode in entries:
+    for entry in entries:
+        symbol, exchange, mode = entry
+        username, broker = owners.get(entry, fallback_owner)
+        if not username:
+            # Legacy unowned bookkeeping from a lost session has no client to
+            # unsubscribe. Do not keep an unretryable workflow entry forever.
+            _forget_released_subscription(workflow_id, entry, versions.get(entry, 0))
+            logger.warning(
+                f"Workflow {workflow_id} subscription {exchange}:{symbol} has no "
+                "resolvable session to release it from"
+            )
+            continue
+        if _release_shared_workflow_owner(workflow_id, entry, versions.get(entry, 0), username):
+            released += 1
+            continue
         try:
             ok, _result, _ = unsubscribe_from_symbols(
                 username, broker, [{"symbol": symbol, "exchange": exchange}], mode
             )
-            released += 1 if ok else 0
+            if ok:
+                released += 1
+                _forget_released_subscription(workflow_id, entry, versions.get(entry, 0))
         except Exception:
             # One symbol failing must not strand the rest.
             logger.exception(f"Failed to release {mode} on {exchange}:{symbol}")
     logger.info(f"Released {released}/{len(entries)} subscription(s) for workflow {workflow_id}")
     return released
+
+
+# Workflows that were deactivated or deleted while one of their
+# subscriptions could not be released (typically the feed client was
+# disconnected, e.g. after the daily broker token expiry). Upstream refuses
+# the deactivate/delete in that case and leaves the triggers running; here the
+# workflow is always stopped and the release is retried later, because a user
+# must be able to stop a live trading workflow while the feed is down. The
+# owner (username, broker) is captured at subscribe time, so a retry still
+# works after the workflow row is gone.
+_pending_release_ids: set[int] = set()
+
+
+def release_workflow_subscriptions_or_defer(workflow_id: int) -> bool:
+    """Release a workflow's subscriptions, queueing a retry for any that fail.
+
+    Returns:
+        True when nothing is left to release, False when a retry is pending.
+    """
+    release_workflow_subscriptions(workflow_id)
+    pending = has_workflow_subscriptions(workflow_id)
+    with _workflow_subscriptions_lock:
+        if pending:
+            _pending_release_ids.add(workflow_id)
+        else:
+            _pending_release_ids.discard(workflow_id)
+    if pending:
+        logger.warning(
+            f"Workflow {workflow_id}: market-data release pending; will retry on the next "
+            "Flow activate, deactivate or delete"
+        )
+    return not pending
+
+
+def defer_release(workflow_id: int) -> None:
+    """Queue a release without attempting it now (a run holds the workflow).
+
+    The retry skips the workflow while its lock is held, so whatever the run
+    subscribes to before it ends is released afterwards too.
+    """
+    with _workflow_subscriptions_lock:
+        _pending_release_ids.add(workflow_id)
+
+
+def cancel_pending_release(workflow_id: int) -> None:
+    """Stop retrying a release: the workflow was activated and owns its feed again."""
+    with _workflow_subscriptions_lock:
+        _pending_release_ids.discard(workflow_id)
+
+
+def retry_pending_releases() -> int:
+    """Retry deferred releases. Returns how many workflows are now fully released.
+
+    A workflow whose lock is held is skipped: a run in progress (Run Now works
+    on an inactive workflow) may be using the subscription right now.
+    """
+    with _workflow_subscriptions_lock:
+        pending = list(_pending_release_ids)
+    cleared = 0
+    for workflow_id in pending:
+        lock = get_workflow_lock(workflow_id)
+        if not lock.acquire(blocking=False):
+            continue
+        try:
+            with _workflow_subscriptions_lock:
+                if workflow_id not in _pending_release_ids:
+                    continue  # activated meanwhile
+            if release_workflow_subscriptions_or_defer(workflow_id):
+                cleared += 1
+        except Exception:
+            logger.exception(f"Retrying market-data release for workflow {workflow_id} failed")
+        finally:
+            lock.release()
+    return cleared
 
 
 def _subscription_owner(workflow_id: int) -> tuple[str | None, str]:
@@ -2412,7 +2573,12 @@ class NodeExecutor:
                 sub_success, sub_result, _ = subscribe_to_symbols(username, broker, symbols, mode)
                 if sub_success:
                     record_workflow_subscription(
-                        getattr(self.context, "workflow_id", None), symbol, exchange, mode
+                        getattr(self.context, "workflow_id", None),
+                        symbol,
+                        exchange,
+                        mode,
+                        username,
+                        broker,
                     )
 
                 if not sub_success:

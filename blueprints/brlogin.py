@@ -594,6 +594,12 @@ def broker_callback(broker, para=None):
         auth_token, error_message = auth_function(code, account_id=account_id)
         forward_url = "broker.html"
 
+    elif broker == "sahi":
+        # Sahi mints the day's token from this account's stored API key and
+        # secret; there is nothing for the trader to enter.
+        auth_token, error_message = auth_function("sahi", account_id=account_id)
+        forward_url = "broker.html"
+
     elif broker == "wisdom":
         code = "wisdom"
         logger.debug(f"Wisdom broker - The code is {code}")

@@ -1651,6 +1651,7 @@ _BROKER_PROBE_HOSTS = {
     "definedge": "trading.definedgesecurities.com",
     "wisdom": "api.wisdomcapital.in",
     "groww": "api.groww.in",
+    "sahi": "direct.sahi.com",
 }
 
 
