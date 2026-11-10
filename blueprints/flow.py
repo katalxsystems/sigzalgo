@@ -317,8 +317,33 @@ def update_workflow(workflow_id):
 @require_app_session
 def delete_workflow(workflow_id):
     """Delete a workflow"""
+    from services.flow_executor_service import get_workflow_lock, retry_pending_releases
+
+    retry_pending_releases()
+
+    # Checked before the lock: get_workflow_lock keeps an entry per id for the
+    # life of the process, so an unknown id from the URL must not create one.
+    _workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
+
+    # Taken without waiting: a run in progress could subscribe again after the
+    # release below and leave a feed nobody owns.
+    lock = get_workflow_lock(workflow_id)
+    if not lock.acquire(blocking=False):
+        return jsonify(
+            {"error": "This workflow is still running. Try again when it finishes."}
+        ), 409
+    try:
+        return _delete_workflow_locked(workflow_id)
+    finally:
+        lock.release()
+
+
+def _delete_workflow_locked(workflow_id):
+    """Tear down triggers, release the feed (or queue a retry) and delete."""
     from database.flow_db import delete_workflow
-    from services.flow_executor_service import release_workflow_subscriptions
+    from services.flow_executor_service import release_workflow_subscriptions_or_defer
     from services.flow_order_update_monitor_service import get_flow_order_update_monitor
     from services.flow_price_monitor_service import get_flow_price_monitor
     from services.flow_scheduler_service import get_flow_scheduler
@@ -339,13 +364,29 @@ def delete_workflow(workflow_id):
 
     # Unconditionally, not only when active: a workflow deactivated and then
     # deleted has already been released, and this is a no-op, but one that
-    # subscribed while active and was never deactivated still holds them.
-    release_workflow_subscriptions(workflow_id)
+    # subscribed while active and was never deactivated still holds them. A
+    # failed release does not block the delete: the owner was captured at
+    # subscribe time, so the retry still works once the row is gone.
+    released = release_workflow_subscriptions_or_defer(workflow_id)
 
     if delete_workflow(workflow_id):
-        return jsonify({"status": "success", "message": "Workflow deleted"})
+        return jsonify(
+            _with_release_status({"status": "success", "message": "Workflow deleted"}, released)
+        )
     else:
         return jsonify({"error": "Failed to delete workflow"}), 500
+
+
+def _with_release_status(body, released):
+    """Note on a success response that a market-data release is still pending."""
+    if not released:
+        body["feed_release_pending"] = True
+        body["message"] += (
+            ". Its market-data subscriptions could not be released yet (the feed is "
+            "not connected, or a run is still in progress) and will be released "
+            "automatically later"
+        )
+    return body
 
 
 # === Activation/Deactivation Routes ===
@@ -455,6 +496,14 @@ def activate_workflow(workflow_id):
         # Update workflow as active and store API key for webhook execution
         db_activate(workflow_id, api_key=api_key)
 
+        # Active again: any subscription still recorded from an earlier
+        # deactivate belongs to this workflow now, so stop retrying its
+        # release. Then retry the other workflows' pending releases.
+        from services.flow_executor_service import cancel_pending_release, retry_pending_releases
+
+        cancel_pending_release(workflow_id)
+        retry_pending_releases()
+
         return jsonify(
             {"status": "success", "message": f"Workflow activated with {trigger_type} trigger"}
         )
@@ -468,19 +517,61 @@ def activate_workflow(workflow_id):
 @require_app_session
 def deactivate_workflow(workflow_id):
     """Deactivate a workflow"""
+    from services.flow_executor_service import get_workflow_lock, retry_pending_releases
+
+    retry_pending_releases()
+
+    # Checked before the lock, as in delete: an unknown id must not create a
+    # lock entry that is kept for the life of the process.
+    _workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
+
+    # Unlike delete, never refused while a run is in progress: a Wait Until
+    # run holds the lock for up to 30 minutes, and the user must be able to
+    # stop the triggers meanwhile. The release is then only queued -- the
+    # retry waits for the run to finish, so whatever it subscribes to before
+    # it ends is released too.
+    lock = get_workflow_lock(workflow_id)
+    if not lock.acquire(blocking=False):
+        return _deactivate_workflow_locked(workflow_id, run_in_progress=True)
+    try:
+        return _deactivate_workflow_locked(workflow_id)
+    finally:
+        lock.release()
+
+
+def _deactivate_workflow_locked(workflow_id, run_in_progress=False):
+    """Deactivate. With run_in_progress the feed release is queued, not tried."""
     from database.flow_db import deactivate_workflow as db_deactivate
     from database.flow_db import set_schedule_job_id
-    from services.flow_executor_service import release_workflow_subscriptions
+    from services.flow_executor_service import (
+        defer_release,
+        release_workflow_subscriptions_or_defer,
+    )
     from services.flow_order_update_monitor_service import get_flow_order_update_monitor
     from services.flow_price_monitor_service import get_flow_price_monitor
     from services.flow_scheduler_service import get_flow_scheduler
+
+    def release():
+        if run_in_progress:
+            defer_release(workflow_id)
+            return False
+        return release_workflow_subscriptions_or_defer(workflow_id)
 
     workflow, error = load_workflow(workflow_id)
     if error:
         return error
 
     if not workflow.is_active:
-        return jsonify({"status": "already_inactive", "message": "Workflow is already inactive"})
+        # Still release: a Run Now on an inactive workflow can have subscribed.
+        released = release()
+        return jsonify(
+            _with_release_status(
+                {"status": "already_inactive", "message": "Workflow is already inactive"},
+                released,
+            )
+        )
 
     try:
         # Removed by workflow id, not by the stored schedule_job_id. The id is
@@ -507,14 +598,17 @@ def deactivate_workflow(workflow_id):
         # websocket client is a process-wide singleton, so a subscription left
         # behind is held for the life of the worker and counts against the
         # per-broker symbol ceiling that /trading and the sandbox engine share.
-        release_workflow_subscriptions(workflow_id)
+        # A failed release does not keep the workflow running; it is retried.
+        released = release()
 
         # Update workflow as inactive
         if not db_deactivate(workflow_id):
             logger.error(f"Failed to persist inactive state for workflow {workflow_id}")
             return jsonify({"error": "Could not deactivate workflow"}), 500
 
-        return jsonify({"status": "success", "message": "Workflow deactivated"})
+        return jsonify(
+            _with_release_status({"status": "success", "message": "Workflow deactivated"}, released)
+        )
 
     except Exception as e:
         logger.exception(f"Failed to deactivate workflow {workflow_id}: {e}")

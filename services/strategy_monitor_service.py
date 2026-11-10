@@ -386,7 +386,7 @@ def upsert(api_key: str, strategy: str, **settings) -> tuple[bool, dict[str, Any
 def deactivate(api_key: str, strategy: str) -> tuple[bool, dict[str, Any], int]:
     """Disarm the strategy's monitor. Idempotent: an already inactive monitor
     is a success. Returns (success, response_data, status_code)."""
-    from services.flow_executor_service import release_workflow_subscriptions
+    from services.flow_executor_service import release_workflow_subscriptions_or_defer
     from services.flow_scheduler_service import get_flow_scheduler
 
     account_id, _owner = owner_for_api_key(api_key)
@@ -416,7 +416,9 @@ def deactivate(api_key: str, strategy: str) -> tuple[bool, dict[str, Any], int]:
     # a workflow marked inactive.
     get_flow_scheduler().remove_workflow_job(workflow.id, strict=True)
     set_schedule_job_id(workflow.id, None)
-    release_workflow_subscriptions(workflow.id)
+    # A failed release is queued for retry (see flow_executor_service), not
+    # allowed to keep the monitor armed.
+    release_workflow_subscriptions_or_defer(workflow.id)
     if not db_deactivate_workflow(workflow.id):
         return False, {"status": "error", "message": "Failed to deactivate monitor"}, 500
 
