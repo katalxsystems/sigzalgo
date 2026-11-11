@@ -116,7 +116,9 @@ class PriceBreachDeactivate(Resource):
                     jsonify({"status": "error", "message": "Invalid openalgo apikey"}), 403
                 )
 
-            success, response_data, status_code = deactivate_by_call_id(call_id, api_key)
+            success, response_data, status_code = deactivate_by_call_id(
+                call_id, api_key, breach=data["breach"]
+            )
             return make_response(jsonify(response_data), status_code)
 
         except ValidationError as err:
@@ -153,7 +155,9 @@ class PriceBreachDeactivateWorkflow(Resource):
                     jsonify({"status": "error", "message": "Invalid openalgo apikey"}), 403
                 )
 
-            success, message, status_code = deactivate_one(workflow_id, api_key)
+            success, message, status_code = deactivate_one(
+                workflow_id, api_key, breach=data["breach"]
+            )
             return make_response(
                 jsonify({"status": "success" if success else "error", "message": message}),
                 status_code,

@@ -176,6 +176,52 @@ def test_unassigned_workflow_is_claimed_on_run(app, flows):
     assert (wf.account_id, wf.owner_username) == (ADMIN_ACCT, ADMIN)
 
 
+def test_the_list_gives_monitors_their_breach_status(app):
+    """A price-breach workflow carries `monitor` and, once it breached,
+    `breached_at`; re-activating clears it; an ordinary workflow has neither."""
+    breached = create_workflow("own-test-pb-breached", account_id=ALICE_ACCT, owner_username=ALICE)
+    armed = create_workflow("own-test-pb-armed", account_id=ALICE_ACCT, owner_username=ALICE)
+    plain = create_workflow("own-test-plain", account_id=ALICE_ACCT, owner_username=ALICE)
+    # delete_workflow leaves price_breach_calls rows behind and SQLite reuses
+    # freed ids, so a row from an earlier run can point at these new ids.
+    # Cleared here so this test is about the status, not about that leftover.
+    ids = [breached.id, armed.id, plain.id]
+    PBC = flow_db.PriceBreachCall
+    PBC.query.filter(
+        PBC.sl_target_workflow_id.in_(ids)
+        | PBC.entry_recross_workflow_id.in_(ids)
+        | PBC.candle_workflow_id.in_(ids)
+        | PBC.candle_entry_workflow_id.in_(ids)
+    ).delete(synchronize_session=False)
+    db_session.commit()
+    row = flow_db.record_price_breach_call(
+        "own-test-call", sl_target_workflow_id=breached.id, candle_workflow_id=armed.id
+    )
+    try:
+        flow_db.activate_workflow(armed.id)
+        flow_db.mark_breached(breached.id)
+
+        items = client_for(app, ALICE, ALICE_ACCT).get("/flow/api/workflows").get_json()
+        mine = {w["name"]: w for w in items if w["name"].startswith("own-test-")}
+        assert mine["own-test-pb-breached"]["monitor"] == "price_breach"
+        assert mine["own-test-pb-breached"]["breached_at"] is not None
+        assert mine["own-test-pb-armed"]["monitor"] == "price_breach"
+        assert mine["own-test-pb-armed"]["breached_at"] is None
+        assert (mine["own-test-plain"]["monitor"], mine["own-test-plain"]["breached_at"]) == (
+            None,
+            None,
+        )
+
+        # Re-arming a breached monitor makes it a live, unbreached one again.
+        flow_db.activate_workflow(breached.id)
+        wf = get_workflow(breached.id)
+        db_session.refresh(wf)
+        assert wf.breached_at is None and wf.is_active
+    finally:
+        db_session.delete(row)
+        db_session.commit()
+
+
 def test_backfill_assigns_from_stored_api_key(app):
     wf = create_workflow("own-test-backfill")
     wf.api_key = flow_db._encrypt_api_key("KEY-BOB")

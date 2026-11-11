@@ -86,6 +86,15 @@ Details:
 - When one candle breaks both `stop_loss` and `target1`, it is reported as
   `stop_loss`: a candle cannot say which level was touched first.
 - A failed or empty candle fetch never reports a breach.
+- **Alert when a check goes blind.** An expired broker session can return
+  empty history that looks like a quiet market. If a candle check gets no
+  candle data for 3 consecutive runs (`CANDLE_CHECK_ALERT_AFTER_RUNS`), it
+  logs an error to `log/errors.jsonl` and sends **one** Telegram alert (when
+  the Telegram bot is running and linked). The alert says whether a live
+  quote still works, which separates a dead session from missing history.
+  One more message is sent when data returns. The check then rescans its
+  2-hour window, so a breach during the outage is still reported if the
+  broker's history has those candles.
 
 Each workflow notifies `webhook_url` when it fires, then deactivates —
 automatically, via a Flow `httpRequest` node calling back into this same

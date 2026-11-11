@@ -110,20 +110,32 @@ def list_workflows():
     """List the current account's workflows (every workflow for administrators)"""
     from database.flow_db import (
         get_all_workflows,
+        get_price_breach_workflow_ids,
         get_workflow_executions,
         get_workflows_for_account,
     )
+    from services.strategy_monitor_service import NAME_PREFIX as STRATEGY_MONITOR_PREFIX
 
     if is_flow_admin():
         workflows = get_all_workflows()
     else:
         workflows = get_workflows_for_account(current_account_id())
     items = []
+    price_breach_ids = get_price_breach_workflow_ids()
 
     for wf in workflows:
         executions = get_workflow_executions(wf.id, limit=1)
         last_exec = executions[0] if executions else None
         call_ids, mentor_ids = _external_ids(wf.nodes)
+        # Monitors get a breach status in the list (breached / monitoring /
+        # deactivated); ordinary workflows do not.
+        if wf.id in price_breach_ids:
+            monitor = "price_breach"
+        elif (wf.name or "").startswith(STRATEGY_MONITOR_PREFIX):
+            monitor = "strategy_monitor"
+        else:
+            monitor = None
+        breached_at = getattr(wf, "breached_at", None)
 
         items.append(
             {
@@ -137,6 +149,8 @@ def list_workflows():
                 "last_execution_status": last_exec.status if last_exec else None,
                 "call_ids": call_ids,
                 "mentor_ids": mentor_ids,
+                "monitor": monitor,
+                "breached_at": breached_at.isoformat() if breached_at else None,
                 **_ownership_fields(wf),
             }
         )

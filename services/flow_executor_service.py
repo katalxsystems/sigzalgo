@@ -1554,10 +1554,26 @@ class NodeExecutor:
             self.client, symbol, exchange, interval, start_date, end_date, source
         )
         history_error = self._history_error(result, symbol, interval, source)
+        records = [] if history_error else trim_records((result or {}).get("data") or [])
+        if node_data.get("alertOnNoData"):
+            # An expired broker session can come back as an empty, successful
+            # history response, so "no candles at all in the fetched range" is
+            # treated as a failure too, not only an error status.
+            no_data_reason = history_error or (
+                None
+                if records
+                else f"no {interval} candles returned for {start_date} to {end_date}"
+            )
+            self._track_candle_data(symbol, exchange, interval, no_data_reason)
         if history_error:
             self.log(history_error, "error")
             return {"status": "error", "message": history_error}
-        records = trim_records((result or {}).get("data") or [])
+        if not records:
+            # Nothing to scan. Stored as an error, not as "no breach", so a
+            # condition on it takes neither branch and the run log shows why.
+            message = f"No {interval} candles returned for {symbol} ({exchange})"
+            self.log(message, "error")
+            return {"status": "error", "message": message}
         scan = first_candle_breach(
             records,
             above=above,
@@ -1581,6 +1597,72 @@ class NodeExecutor:
             )
         self.store_output(node_data, output)
         return output
+
+    def _track_candle_data(
+        self, symbol: str, exchange: str, interval: str, no_data_reason: str | None
+    ) -> None:
+        """Record whether this candle-check run had usable data, and alert once
+        when a workflow has gone CANDLE_CHECK_ALERT_AFTER_RUNS runs without
+        any (and once more when it recovers). See services/candle_check_health.
+
+        Never raises: alerting must not change what the run itself does.
+        """
+        from services import candle_check_health as health
+
+        workflow_id = getattr(self.context, "workflow_id", None)
+        try:
+            event = health.record_run(workflow_id, has_data=no_data_reason is None)
+            if event is None:
+                return
+            name = f"workflow {workflow_id}"
+            try:
+                from database.flow_db import get_workflow
+
+                workflow = get_workflow(workflow_id)
+                if workflow is not None:
+                    name = f"workflow {workflow_id} '{workflow.name}'"
+            except Exception:
+                logger.debug(f"Could not read the name of workflow {workflow_id}")
+
+            if event == health.OUTAGE:
+                message = (
+                    f"Candle check NOT WORKING: {name}, {symbol} on {exchange}. "
+                    f"No usable {interval} candle data for {health.failure_count(workflow_id)} "
+                    f"consecutive runs ({no_data_reason}). {self._quote_probe(symbol, exchange)} "
+                    "Breaches are not being checked from candles until data returns. "
+                    "Check the broker session (log in again if it expired) and that the "
+                    f"broker serves {interval} history for this contract."
+                )
+                logger.error(message)
+                self.log(message, "error")
+            else:
+                message = (
+                    f"Candle check recovered: {name}, {symbol} on {exchange} is receiving "
+                    f"{interval} candle data again and rescans its look-back window."
+                )
+                logger.info(message)
+                self.log(message)
+            if self.client is not None:
+                result = self.client.telegram(message=message) or {}
+                if result.get("status") != "success":
+                    logger.info(
+                        f"Candle check alert for {name} not sent to Telegram: "
+                        f"{result.get('error') or result.get('message')}"
+                    )
+        except Exception:
+            logger.exception(f"Candle check health tracking failed for workflow {workflow_id}")
+
+    def _quote_probe(self, symbol: str, exchange: str) -> str:
+        """One live quote, to say whether the broker answers at all. Run only
+        when an alert is about to go out, never on every failing run."""
+        try:
+            quote = self.client.get_quotes(symbol=symbol, exchange=exchange) or {}
+        except Exception as e:
+            return f"A live quote also failed ({e}), so the broker session is likely down."
+        if quote.get("status") == "success":
+            return "A live quote works, so the broker session is up; the history data is missing."
+        detail = quote.get("message") or quote.get("error") or "no detail"
+        return f"A live quote also failed ({detail}), so the broker session is likely down."
 
     def execute_indicator(self, node_data: dict) -> dict:
         """Execute Indicator node - any openalgo.ta indicator over a symbol's
