@@ -66,8 +66,8 @@ def _node(node_id: str, node_type: str, y: int, **data) -> dict:
 def _notify_body(
     workflow_id: int,
     strategy: str,
-    strategy_id: str,
-    mentor_id: str,
+    strategy_id: int,
+    mentor_id: int,
     levels: dict[str, Any],
 ) -> str:
     """The webhook JSON, with Flow references spliced in unquoted where the
@@ -110,8 +110,8 @@ def build_graph(
     workflow_id: int,
     strategy: str,
     api_key: str,
-    strategy_id: str,
-    mentor_id: str,
+    strategy_id: int,
+    mentor_id: int,
     webhook_url: str,
     webhook_secret: str | None,
     target: float | None,

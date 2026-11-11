@@ -128,6 +128,7 @@ const NODE_TITLES: Record<string, string> = {
   priorPeriodOhlc: 'Prior Period OHLC',
   strategyPnl: 'Strategy P&L',
   barOffset: 'Bar Offset',
+  candleScan: 'Candle Breach Scan',
   expiry: 'Get Expiry',
   calendar: 'Calendar',
   intervals: 'Intervals',
@@ -2329,6 +2330,120 @@ export function ConfigPanel() {
                     value={(nodeData.outputVariable as string) || ''}
                     onChange={(e) => handleDataChange('outputVariable', e.target.value)}
                   />
+                </div>
+              </>
+            )}
+
+            {nodeType === 'candleScan' && (
+              <>
+                <div className="space-y-2">
+                  <Label className="text-xs">Symbol</Label>
+                  <Input
+                    className="h-8"
+                    placeholder="RELIANCE"
+                    value={(nodeData.symbol as string) || ''}
+                    onChange={(e) => handleDataChange('symbol', e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs">Exchange</Label>
+                  <Select
+                    value={(nodeData.exchange as string) || 'NSE'}
+                    onValueChange={(v) => handleDataChange('exchange', v)}
+                  >
+                    <SelectTrigger className="h-8">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {EXCHANGES.map((e) => (
+                        <SelectItem key={e.value} value={e.value}>
+                          {e.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs">Interval</Label>
+                  <Input
+                    className="h-8"
+                    placeholder="1m"
+                    value={(nodeData.interval as string) || '1m'}
+                    onChange={(e) => handleDataChange('interval', e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs">Look-back (minutes)</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    className="h-8"
+                    value={(nodeData.lookbackMinutes as number) ?? 120}
+                    onChange={(e) =>
+                      handleDataChange('lookbackMinutes', parseInt(e.target.value, 10) || 120)
+                    }
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Every closed candle in this window is checked, oldest first.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs">High above</Label>
+                  <Input
+                    className="h-8"
+                    placeholder="e.g. 1220 or {{target}}"
+                    value={String(nodeData.above ?? '')}
+                    onChange={(e) => handleDataChange('above', e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs">Low below</Label>
+                  <Input
+                    className="h-8"
+                    placeholder="e.g. 1160 or {{stopLoss}}"
+                    value={String(nodeData.below ?? '')}
+                    onChange={(e) => handleDataChange('below', e.target.value)}
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Set one or both. Comparisons are strict.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs">Ignore candles before (epoch seconds)</Label>
+                  <Input
+                    className="h-8"
+                    placeholder="optional"
+                    value={String(nodeData.sinceEpoch ?? '')}
+                    onChange={(e) => handleDataChange('sinceEpoch', e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs">If one candle breaks both</Label>
+                  <Select
+                    value={(nodeData.tiePrefer as string) || 'below'}
+                    onValueChange={(v) => handleDataChange('tiePrefer', v)}
+                  >
+                    <SelectTrigger className="h-8">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="below">Report low below</SelectItem>
+                      <SelectItem value="above">Report high above</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs">Output Variable</Label>
+                  <Input
+                    className="h-8"
+                    placeholder="scan"
+                    value={(nodeData.outputVariable as string) || ''}
+                    onChange={(e) => handleDataChange('outputVariable', e.target.value)}
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Read {'{{scan.breached}}'} (1/0), {'{{scan.is_above}}'},{' '}
+                    {'{{scan.is_below}}'}, {'{{scan.breach_price}}'}, {'{{scan.candle.high}}'}.
+                  </p>
                 </div>
               </>
             )}

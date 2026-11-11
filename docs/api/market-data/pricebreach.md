@@ -22,7 +22,7 @@ POST http://127.0.0.1:5000/api/v1/pricebreach/workflow/<workflow_id>/deactivate
 
 ## What gets created
 
-One call creates **three** Flow workflows:
+One call creates up to **four** Flow workflows:
 
 1. **`sl_target`** — always created. Fires once price leaves the channel
    between `stop_loss` and `target1`. Works for buy and sell calls, told
@@ -44,44 +44,65 @@ One call creates **three** Flow workflows:
      **immediately**, in the background — see "Immediate notification"
      below.
 
-3. **`candle_1m`** — always created. A backup check for the same
-   stop-loss/target channel as `sl_target`, using the last **closed**
-   1-minute candle instead of the LTP. It runs every minute during the
-   exchange's market hours and tests the candle's **high and low**:
-   - buy call: `low < stop_loss` is a stop-loss breach, `high > target1` a
-     target breach;
-   - sell call: `high > stop_loss` is a stop-loss breach, `low < target1` a
-     target breach.
+3. **`candle_sl_target`** — always created. A backup for `sl_target` that
+   reads **1-minute candles** instead of the LTP.
+4. **`candle_entry`** — a backup for `entry_recross`, created whenever
+   `entry_recross` watches a direction (not when `active_price` equals
+   `entry_price`).
 
-   This catches a level touched between two LTP samples, which `sl_target`
-   can miss when the WebSocket feed is down and it is running on its REST
-   poll (one LTP sample every `FLOW_PRICE_ALERT_POLL_INTERVAL` seconds,
-   default 30). Details:
-   - Only candles that start **after** the call was created are checked
-     (`checks_candles_from` in the response). The candle the call was made
-     in also contains prices from before the call, so that minute is covered
-     by `sl_target` alone.
-   - When one candle spans both levels, it is reported as `stop_loss`: a
-     candle cannot say which level was touched first.
-   - A failed or empty candle fetch never reports a breach.
-   - A breach ends the call exactly like an `sl_target` breach: it notifies,
-     then deactivates every workflow for the `call_id`.
+### The 1-minute candle checks
+
+Both candle checks run **every minute** during the exchange's market hours.
+Each run scans **every closed 1-minute candle of the last 2 hours**, oldest
+first, and reports the **first** one that broke a level:
+
+| Check | Breach |
+|---|---|
+| `candle_sl_target`, buy call | `low < stop_loss` (stop-loss) or `high > target1` (target) |
+| `candle_sl_target`, sell call | `high > stop_loss` (stop-loss) or `low < target1` (target) |
+| `candle_entry`, crossing below | `low < entry_price` |
+| `candle_entry`, crossing above | `high > entry_price` |
+
+Why candles, and why 2 hours:
+
+- A candle's high/low catches a level touched **between two LTP samples**,
+  which the LTP watches can miss while the WebSocket feed is down and they
+  fall back to REST polling (one LTP sample every
+  `FLOW_PRICE_ALERT_POLL_INTERVAL` seconds, default 30).
+- Scanning the whole window, not only the last candle, means a breach that
+  one run missed (a skipped or failed run, a broker history error, a
+  restart) is **still found by the next run**, and reported with the candle
+  it actually happened in.
+
+Details:
+
+- Only candles that start **after** the call was created are checked
+  (`checks_candles_from` in the response). The candle the call was made in
+  also contains prices from before the call, so that minute is covered by
+  the LTP watches alone. Until the call is 2 hours old, the window is
+  therefore shorter than 2 hours.
+- Comparisons are strict, the same as the LTP watches: a candle that only
+  touches a level is not a breach.
+- When one candle breaks both `stop_loss` and `target1`, it is reported as
+  `stop_loss`: a candle cannot say which level was touched first.
+- A failed or empty candle fetch never reports a breach.
 
 Each workflow notifies `webhook_url` when it fires, then deactivates —
 automatically, via a Flow `httpRequest` node calling back into this same
 instance — but **at a different scope depending on which one fired**, since
 they mean different things for the call:
 
-- **`sl_target` or `candle_1m` firing is a real stop-loss/target breach —
-  the call is over.** Its cleanup node calls
+- **`sl_target` or `candle_sl_target` firing is a real stop-loss/target
+  breach — the call is over.** Its cleanup node calls
   `/api/v1/pricebreach/<call_id>/deactivate`, which tears down **all**
   workflows for the call together. Whichever of the two sees the breach
   first wins; the other is stopped by that teardown.
-- **`entry_recross` firing just means price came back to entry — the call is
-  not over** (price can still go on to hit `stop_loss` or `target1`
-  afterwards). Its cleanup node calls
-  `/api/v1/pricebreach/workflow/<workflow_id>/deactivate` with its own
-  `workflow_id`, deactivating **only itself**; `sl_target` stays live.
+- **`entry_recross` or `candle_entry` firing just means price came back to
+  entry — the call is not over** (price can still go on to hit `stop_loss`
+  or `target1` afterwards). Its cleanup nodes call
+  `/api/v1/pricebreach/workflow/<workflow_id>/deactivate` for **both entry
+  workflows** (itself and its sibling), so one re-cross is reported once.
+  The SL/Target workflows stay live.
 
 Your webhook receiver does not need to call deactivate itself either way.
 
@@ -133,23 +154,33 @@ curl -X POST http://127.0.0.1:5000/api/v1/pricebreach/create \
   "workflows": {
     "sl_target": { "workflow_id": 1, "watching": "price outside [1160.0, 1220.0]" },
     "entry_recross": { "workflow_id": 2, "watching": "price crosses_below 1180.0" },
-    "candle_1m": {
+    "candle_sl_target": {
       "workflow_id": 3,
       "watching": "1-minute candle high/low outside [1160.0, 1220.0]",
+      "lookback_minutes": 120,
+      "checks_candles_from": "2026-09-12T09:13:00",
+      "active": true
+    },
+    "candle_entry": {
+      "workflow_id": 4,
+      "watching": "1-minute candle crosses_below 1180.0",
+      "lookback_minutes": 120,
       "checks_candles_from": "2026-09-12T09:13:00",
       "active": true
     }
   },
-  "message": "Each watch fires once and notifies your webhook. sl_target firing ends the call and deactivates both watches; entry_recross firing deactivates only itself, since price can still go on to hit stop_loss or target1 afterwards -- no separate deactivate call needed either way. A 1-minute candle check also runs as a backup for stop_loss/target1; whichever check sees the breach first notifies and deactivates every watch for the call."
+  "message": "Each watch fires once and notifies your webhook. sl_target firing ends the call and deactivates both watches; entry_recross firing deactivates only itself, since price can still go on to hit stop_loss or target1 afterwards -- no separate deactivate call needed either way. 1-minute candle checks also run every minute as backups, each scanning the last 120 minutes of candles so a breach between runs is not missed: one for stop_loss/target1 (a breach ends the call and deactivates every watch) and, when there is an entry direction, one for the entry re-cross (a breach retires both entry watches)."
 }
 ```
 
-If the candle check cannot be scheduled, `create` still succeeds (the LTP
-watches are live) and `candle_1m` comes back with `"active": false` and an
-`error` message.
+If a candle check cannot be scheduled, `create` still succeeds (the LTP
+watches are live) and that check comes back with `"active": false` and an
+`error` message. `candle_entry` is `null` when `active_price` equals
+`entry_price`.
 
 The workflows created above are named from `call_id`, `mentor_id`, and
-`symbol` (the "script"), e.g. `CALL-001_MENTOR-007_RELIANCE (SL/Target)` and `... (1m Candle)` —
+`symbol` (the "script"), e.g. `CALL-001_MENTOR-007_RELIANCE (SL/Target)`, `... (1m Candle SL/Target)` and
+`... (1m Candle Entry)` —
 unless you pass an explicit `name` to override the base.
 
 If `active_price` had equaled `entry_price`, `entry_recross` would be `null`
@@ -205,8 +236,10 @@ within the same moment before the teardown lands. De-duplicate on `call_id`
 }
 ```
 
-From the 1-minute candle check (`breach_price` is the candle extreme that
-crossed the level; all candle values are strings):
+From a 1-minute candle check (`breach_price` is the extreme of the candle
+that crossed the level, `candle` is that candle, which may be older than the
+last minute if an earlier run missed it, and `candles_scanned` is how many
+candles that run checked; these values are strings):
 
 ```json
 {
@@ -222,6 +255,7 @@ crossed the level; all candle values are strings):
   "stop_loss": 1160,
   "target1": 1220,
   "breach_price": "1158.9",
+  "candles_scanned": "12",
   "candle": {
     "interval": "1m",
     "timestamp": "1789188240",
@@ -299,7 +333,7 @@ matching the two the auto-cleanup nodes use:
 
 Pass the `call_id` from `create` in the path — not a `workflow_id` from its
 response; deactivating a call_id tears down its `sl_target`,
-`entry_recross` and `candle_1m` workflows together:
+`entry_recross`, `candle_sl_target` and `candle_entry` workflows together:
 
 ```bash
 curl -X POST http://127.0.0.1:5000/api/v1/pricebreach/CALL-001/deactivate \
@@ -308,7 +342,7 @@ curl -X POST http://127.0.0.1:5000/api/v1/pricebreach/CALL-001/deactivate \
 ```
 
 ```json
-{ "status": "success", "message": "Call CALL-001 deactivated", "workflow_ids": [1, 2, 3] }
+{ "status": "success", "message": "Call CALL-001 deactivated", "workflow_ids": [1, 2, 3, 4] }
 ```
 
 Requires the same `apikey` the call was created with — a different
@@ -347,7 +381,7 @@ key gets `403`. An unknown `workflow_id` gets `404`.
 | stop_loss | number | create | Mandatory | Stop-loss level. Below `target1` for a buy call, above it for a sell call; must not equal `target1` |
 | target1 | number | create | Mandatory | Target level |
 | webhook_url | string | create | Mandatory | Where breach notifications are POSTed |
-| name | string | create | Optional | Base workflow name (default: `"<call_id>_<mentor_id>_<symbol>"`); the workflows suffix `(SL/Target)` / `(Entry re-cross)` / `(1m Candle)` |
+| name | string | create | Optional | Base workflow name (default: `"<call_id>_<mentor_id>_<symbol>"`); the workflows suffix `(SL/Target)` / `(Entry re-cross)` / `(1m Candle SL/Target)` / `(1m Candle Entry)` |
 
 ## Notes
 
@@ -376,10 +410,12 @@ key gets `403`. An unknown `workflow_id` gets `404`.
   self-call fails (network hiccup, instance restarting mid-run), call
   deactivate manually — by `call_id` or by the specific `workflow_id` — if you
   notice a workflow still active after it should have fired.
-- The candle check fetches 1-minute history through this account's broker
-  session once a minute per call (requests for the same symbol share a short
-  cache), so the broker must support the `1m` interval. Calls created before
-  the candle check existed have none; re-create them to get one.
+- Each candle check fetches 1-minute history through this account's broker
+  session once a minute (requests for the same symbol share a short cache,
+  so the two checks of one call usually cost one fetch), so the broker must
+  support the `1m` interval. Calls created before the candle checks existed
+  have none, and calls created with the earlier single `candle_1m` check keep
+  that one; re-create a call to get both.
 - Rate-limited via `WEBSOCKET_CONTROL_LIMIT` (default `10 per minute`),
   shared with the `/api/v1/ws/*` control endpoints.
 

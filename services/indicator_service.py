@@ -537,6 +537,92 @@ def bar_at_offset(
     return closed[index]
 
 
+def first_candle_breach(
+    records: list[dict[str, Any]],
+    *,
+    above: float | None = None,
+    below: float | None = None,
+    lookback_minutes: int = 120,
+    since_epoch: int | None = None,
+    interval: str = "1m",
+    tie_prefer: str = "below",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """The earliest CLOSED candle in the look-back window that broke a level.
+
+    A candle breaks `above` when its high is strictly above it, and `below`
+    when its low is strictly below it. Candles are scanned oldest first, so a
+    breach that a previous run missed (a skipped run, a failed fetch, a
+    restart) is still found, and reported as the one that happened first.
+
+    The window is the last `lookback_minutes` of closed candles, further
+    limited to candles that started at or after `since_epoch`: a candle that
+    began before that moment can hold prices from before the levels applied.
+
+    A single candle that breaks both levels cannot say which came first, so it
+    is reported as `tie_prefer` ("above" or "below").
+
+    `records` must be ascending by timestamp. Rows whose timestamp or prices
+    cannot be read are skipped rather than counted as a breach.
+    """
+    now = now or datetime.now()
+    closed = _drop_forming_bar(records, interval, now)
+    window_start = now - timedelta(minutes=max(int(lookback_minutes), 1))
+    scanned = 0
+    first_epoch = last_epoch = None
+    for row in closed:
+        try:
+            started = _parse_timestamp(row.get("timestamp"))
+            epoch = int(started.timestamp())
+            high, low = float(row.get("high")), float(row.get("low"))
+        except (TypeError, ValueError, OverflowError, OSError):
+            continue
+        if started < window_start or (since_epoch is not None and epoch < since_epoch):
+            continue
+        scanned += 1
+        first_epoch = epoch if first_epoch is None else first_epoch
+        last_epoch = epoch
+        hit_above = above is not None and high > above
+        hit_below = below is not None and low < below
+        if not (hit_above or hit_below):
+            continue
+        if hit_above and hit_below:
+            side = "above" if tie_prefer == "above" else "below"
+        else:
+            side = "above" if hit_above else "below"
+        return {
+            "breached": 1,
+            "side": side,
+            "is_above": int(side == "above"),
+            "is_below": int(side == "below"),
+            # The candle extreme on the side that crossed the level.
+            "breach_price": high if side == "above" else low,
+            "timestamp_epoch": epoch,
+            "candle": {
+                "timestamp": row.get("timestamp"),
+                "open": row.get("open"),
+                "high": row.get("high"),
+                "low": row.get("low"),
+                "close": row.get("close"),
+            },
+            "candles_scanned": scanned,
+            "window_from_epoch": first_epoch,
+            "window_to_epoch": last_epoch,
+        }
+    return {
+        "breached": 0,
+        "side": None,
+        "is_above": 0,
+        "is_below": 0,
+        "breach_price": None,
+        "timestamp_epoch": None,
+        "candle": None,
+        "candles_scanned": scanned,
+        "window_from_epoch": first_epoch,
+        "window_to_epoch": last_epoch,
+    }
+
+
 _PERIOD_TO_PANDAS_FREQ = {"previous_week": "W", "previous_month": "M"}
 
 

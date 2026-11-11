@@ -55,8 +55,8 @@ POST http://127.0.0.1:5000/api/v1/strategymonitor/deactivate
 {
   "apikey": "<your_app_apikey>",
   "strategy": "NIFTY_STRADDLE_27OCT",
-  "strategy_id": "strat-42",
-  "mentor_id": "mentor-7",
+  "strategy_id": 301,
+  "mentor_id": 7,
   "target": 3000,
   "stoploss": 2000,
   "underlying": "NIFTY",
@@ -67,9 +67,9 @@ POST http://127.0.0.1:5000/api/v1/strategymonitor/deactivate
   "webhook_secret": "shared-secret",
   "interval_seconds": 60,
   "legs": [
-    { "call_id": "call-1001", "symbol": "NIFTY27OCT2622700CE", "exchange": "NFO",
+    { "call_id": 1001, "symbol": "NIFTY27OCT2622700CE", "exchange": "NFO",
       "product": "NRML", "quantity": 65, "entry_price": 50.0 },
-    { "call_id": "call-1002", "symbol": "NIFTY27OCT2622700PE", "exchange": "NFO",
+    { "call_id": 1002, "symbol": "NIFTY27OCT2622700PE", "exchange": "NFO",
       "product": "NRML", "quantity": 65, "entry_price": 40.0 }
   ]
 }
@@ -82,8 +82,8 @@ POST http://127.0.0.1:5000/api/v1/strategymonitor/deactivate
   "status": "success",
   "workflow_id": 42,
   "strategy": "NIFTY_STRADDLE_27OCT",
-  "strategy_id": "strat-42",
-  "mentor_id": "mentor-7",
+  "strategy_id": 301,
+  "mentor_id": 7,
   "created": true,
   "active": true,
   "message": "Monitor created and armed"
@@ -96,8 +96,8 @@ POST http://127.0.0.1:5000/api/v1/strategymonitor/deactivate
 |---|---|---|
 | `apikey` | Yes | OpenAlgo API key of the account the strategy trades on |
 | `strategy` | Yes | Strategy tag the legs' orders carry. Letters, digits, `_ . : -`, max 100 |
-| `strategy_id` | Yes | Your id for the strategy. Stored and echoed in the webhook. Letters, digits, `_ . : -`, max 100 |
-| `mentor_id` | Yes | Your id for the mentor. Stored and echoed in the webhook. Same format |
+| `strategy_id` | Yes | Integer. Your id for the strategy. Stored and echoed in the webhook |
+| `mentor_id` | Yes | Integer. Your id for the mentor. Stored and echoed in the webhook |
 | `target` | No* | Exit when combined P&L (rupees) reaches this, e.g. `3000` |
 | `stoploss` | No* | Loss amount as a positive number: `2000` fires at a P&L of -2000 |
 | `underlying` | With a spot level | Spot symbol, e.g. `NIFTY`, `BANKNIFTY` |
@@ -116,7 +116,7 @@ POST http://127.0.0.1:5000/api/v1/strategymonitor/deactivate
 
 | Field | Required | Description |
 |---|---|---|
-| `call_id` | Yes | Your id for the call this leg belongs to. Echoed on the same leg in the webhook. Letters, digits, `_ . : -`, max 100 |
+| `call_id` | Yes | Integer. Your id for the call this leg belongs to. Echoed on the same leg in the webhook |
 | `symbol` | Yes | OpenAlgo symbol, e.g. `NIFTY27OCT2622700CE` |
 | `exchange` | Yes | e.g. `NFO`, `BFO`, `MCX` |
 | `product` | No | `NRML` (default), `MIS` or `CNC` |
@@ -124,7 +124,9 @@ POST http://127.0.0.1:5000/api/v1/strategymonitor/deactivate
 | `entry_price` | Yes | Average entry price of the open quantity |
 | `realized_pnl` | No | Rupees already booked on this leg (partial exits, closed legs). Default `0` |
 
-`strategy_id`, `mentor_id` and `call_id` are stored with the monitor and only
+`strategy_id`, `mentor_id` and `call_id` must be JSON integers of 1 or more
+(`42`, not `"42"` or `42.0`); anything else is a `400`. They come back as
+integers in the response and the webhook. They are stored with the monitor and only
 echoed back; they do not identify it (that is still account + `strategy`). An
 upsert replaces them along with the legs and levels.
 
@@ -150,8 +152,8 @@ for that strategy.
   "event": "strategy_breach",
   "workflow_id": 42,
   "strategy": "NIFTY_STRADDLE_27OCT",
-  "strategy_id": "strat-42",
-  "mentor_id": "mentor-7",
+  "strategy_id": 301,
+  "mentor_id": 7,
   "reason": "LOWER_SPOT_SL",
   "idempotency_key": "NIFTY_STRADDLE_27OCT-2026-10-27-LOWER_SPOT_SL",
   "levels": {
@@ -163,7 +165,7 @@ for that strategy.
   "spot": { "symbol": "NIFTY", "exchange": "NSE_INDEX", "ltp": 22390.0 },
   "open_legs": 2,
   "legs": [
-    { "call_id": "call-1001", "symbol": "NIFTY27OCT2622700CE", "exchange": "NFO", "product": "NRML", "quantity": 65.0,
+    { "call_id": 1001, "symbol": "NIFTY27OCT2622700CE", "exchange": "NFO", "product": "NRML", "quantity": 65.0,
       "average_price": 50.0, "ltp": 55.0, "realized": 0.0, "today_realized": 0.0, "unrealized": 325.0 }
   ],
   "triggered_at": "2026-10-27T11:42:02.118203",

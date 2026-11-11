@@ -29,6 +29,7 @@ import {
   Radio,
   RadioTower,
   Receipt,
+  ScanSearch,
   Send,
   Shield,
   ShoppingCart,
@@ -313,6 +314,13 @@ export function NodePalette({ onDragStart }: NodePaletteProps) {
       label: 'Bar Offset',
       description: 'OHLCV N bars back',
       icon: <History className="h-3.5 w-3.5 text-cyan-500" />,
+      color: 'bg-cyan-500/10',
+    },
+    {
+      type: 'candleScan',
+      label: 'Candle Breach Scan',
+      description: 'First candle past a level',
+      icon: <ScanSearch className="h-3.5 w-3.5 text-cyan-500" />,
       color: 'bg-cyan-500/10',
     },
     {
