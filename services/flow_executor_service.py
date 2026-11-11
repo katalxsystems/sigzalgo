@@ -1494,6 +1494,94 @@ class NodeExecutor:
         self.store_output(node_data, output)
         return output
 
+    def execute_candle_scan(self, node_data: dict) -> dict:
+        """Execute Candle Breach Scan node.
+
+        Scans every closed candle of the last `lookbackMinutes` (default 120)
+        for the first one whose high went above `above` or whose low went
+        below `below`. Unlike Bar Offset, which reads one bar, this finds a
+        breach in any bar of the window, so a run that was skipped or failed
+        does not lose the breach it would have seen.
+
+        `sinceEpoch` (optional) excludes candles that started before it. A
+        fetch failure returns an error and stores no output, so a condition
+        on `{{name.breached}}` errors and takes neither branch.
+        """
+        from services.indicator_service import (
+            fetch_history_cached,
+            first_candle_breach,
+            history_window,
+            trim_records,
+        )
+
+        symbol = self.context.interpolate(self.get_str(node_data, "symbol"))
+        exchange = self.get_str(node_data, "exchange", "NSE")
+        interval = self.get_str(node_data, "interval", "1m")
+        source = self.get_str(node_data, "source", "api")
+        lookback_minutes = max(self.get_int(node_data, "lookbackMinutes", 120), 1)
+        if not symbol:
+            return {"status": "error", "message": "Symbol is required"}
+
+        def level(key):
+            raw = node_data.get(key)
+            if raw in (None, ""):
+                return None
+            try:
+                return float(self.context.interpolate(str(raw)))
+            except (TypeError, ValueError):
+                raise ValueError(f"{key} did not resolve to a number: {raw!r}") from None
+
+        try:
+            above, below = level("above"), level("below")
+            since_raw = node_data.get("sinceEpoch")
+            since_epoch = (
+                int(float(self.context.interpolate(str(since_raw))))
+                if since_raw not in (None, "")
+                else None
+            )
+        except ValueError as e:
+            self.log(f"Candle scan aborted: {e}", "error")
+            return {"status": "error", "message": str(e)}
+        if above is None and below is None:
+            return {"status": "error", "message": "Set at least one of above / below"}
+
+        # A few bars of headroom so the window is fully covered after the
+        # forming bar is dropped.
+        start_date, end_date = history_window(
+            lookback_bars=lookback_minutes + 10, interval=interval
+        )
+        result = fetch_history_cached(
+            self.client, symbol, exchange, interval, start_date, end_date, source
+        )
+        history_error = self._history_error(result, symbol, interval, source)
+        if history_error:
+            self.log(history_error, "error")
+            return {"status": "error", "message": history_error}
+        records = trim_records((result or {}).get("data") or [])
+        scan = first_candle_breach(
+            records,
+            above=above,
+            below=below,
+            lookback_minutes=lookback_minutes,
+            since_epoch=since_epoch,
+            interval=interval,
+            tie_prefer=self.get_str(node_data, "tiePrefer", "below"),
+        )
+
+        output = {"status": "success", "symbol": symbol, "exchange": exchange, **scan}
+        if scan["breached"]:
+            self.log(
+                f"Candle scan {symbol}: {scan['side']} breach at {scan['breach_price']} "
+                f"(candle {scan['candle']['timestamp']}, {scan['candles_scanned']} scanned)"
+            )
+        else:
+            self.log(
+                f"Candle scan {symbol}: no breach in {scan['candles_scanned']} candle(s) "
+                f"(above={above}, below={below})"
+            )
+        self.store_output(node_data, output)
+        return output
+
     def execute_indicator(self, node_data: dict) -> dict:
         """Execute Indicator node - any openalgo.ta indicator over a symbol's
         history, or nested on top of another Indicator node's output series
@@ -3127,6 +3215,8 @@ def execute_node_chain(
         result = executor.execute_prior_period_ohlc(node_data)
     elif node_type == "barOffset":
         result = executor.execute_bar_offset(node_data)
+    elif node_type == "candleScan":
+        result = executor.execute_candle_scan(node_data)
     elif node_type == "indicator":
         result = executor.execute_indicator(node_data)
     elif node_type == "symbol":

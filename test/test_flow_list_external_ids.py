@@ -29,7 +29,7 @@ def test_price_breach_watch_exposes_its_call_and_mentor():
 def test_strategy_monitor_exposes_every_leg_call_and_the_mentor():
     legs = [
         {
-            "call_id": "call-ce",
+            "call_id": 1001,
             "symbol": "NIFTY27OCT2622700CE",
             "exchange": "NFO",
             "product": "NRML",
@@ -38,7 +38,7 @@ def test_strategy_monitor_exposes_every_leg_call_and_the_mentor():
             "realized_pnl": 0.0,
         },
         {
-            "call_id": "call-pe",
+            "call_id": 1002,
             "symbol": "NIFTY27OCT2622700PE",
             "exchange": "NFO",
             "product": "NRML",
@@ -51,8 +51,8 @@ def test_strategy_monitor_exposes_every_leg_call_and_the_mentor():
         7,
         "NIFTY_STRADDLE",
         "key-1",
-        strategy_id="strat-42",
-        mentor_id="mentor-7",
+        strategy_id=42,
+        mentor_id=7,
         webhook_url="https://signalz.example/hooks/strategy",
         webhook_secret=None,
         target=3000.0,
@@ -64,7 +64,7 @@ def test_strategy_monitor_exposes_every_leg_call_and_the_mentor():
         interval_seconds=60,
         legs=legs,
     )
-    assert _external_ids(graph["nodes"]) == (["call-ce", "call-pe"], ["mentor-7"])
+    assert _external_ids(graph["nodes"]) == (["1001", "1002"], ["7"])
 
 
 def test_an_ordinary_workflow_has_no_ids():

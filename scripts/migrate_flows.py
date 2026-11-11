@@ -231,26 +231,30 @@ def main() -> int:
                     )
 
         links = 0
-        # A source from before the 1-minute candle check has no
-        # candle_workflow_id column; selecting the mapped entity would fail on it.
+        # A source from before the 1-minute candle checks lacks their columns;
+        # selecting the mapped entity would fail on them, so read only the
+        # columns the source has.
         source_columns = {
             col["name"] for col in inspect(source.get_bind()).get_columns("price_breach_calls")
         }
-        has_candle = "candle_workflow_id" in source_columns
+        optional = [
+            c for c in ("candle_workflow_id", "candle_entry_workflow_id") if c in source_columns
+        ]
         call_columns = [
             PriceBreachCall.call_id,
             PriceBreachCall.sl_target_workflow_id,
             PriceBreachCall.entry_recross_workflow_id,
             PriceBreachCall.created_at,
+            *(getattr(PriceBreachCall, c) for c in optional),
         ]
-        if has_candle:
-            call_columns.append(PriceBreachCall.candle_workflow_id)
         for call in source.query(*call_columns).all():
             if call.sl_target_workflow_id not in selected:
                 continue
             sl = id_map.get(call.sl_target_workflow_id)
             entry = call.entry_recross_workflow_id
-            candle = call.candle_workflow_id if has_candle else None
+            linked = {
+                c: id_map.get(getattr(call, c)) if getattr(call, c) else None for c in optional
+            }
             links += 1
             if args.apply:
                 db_session.add(
@@ -258,8 +262,8 @@ def main() -> int:
                         call_id=call.call_id,
                         sl_target_workflow_id=sl,
                         entry_recross_workflow_id=id_map.get(entry) if entry else None,
-                        candle_workflow_id=id_map.get(candle) if candle else None,
                         created_at=call.created_at,
+                        **linked,
                     )
                 )
 

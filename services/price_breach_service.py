@@ -27,6 +27,19 @@ from `call_id`, `mentor_id`, and `symbol` (the "script"), in that order:
     Execution Log, and its own deactivate step retires it; the sl_target
     watch stays live.
 
+Each LTP watch has a 1-minute candle backup, a scheduled workflow that runs
+every minute and scans the last CANDLE_LOOKBACK_MINUTES of closed 1-minute
+candles (only those after the call was armed) with a candleScan node:
+
+- candle_sl_target: a candle whose range left the stop_loss/target1 channel.
+  Ends the call, same as sl_target.
+- candle_entry: a candle that crossed back through entry_price in the watched
+  direction. Retires both entry watches; sl_target stays live. Not created
+  when active_price == entry_price.
+
+Scanning the whole window, not just the last candle, means a breach that one
+run missed (a skipped or failed run, a restart) is still found by the next.
+
 Each live watch's action chain ends in one [deactivate] node: a loopback HTTP
 request to this same instance's own apikey-authenticated /api/v1/pricebreach/*
 -- possible (unlike the session-cookie authenticated
@@ -399,7 +412,11 @@ def _entry_recross_graph(
     api_key: str,
     own_id: int,
     name: str,
+    candle_entry_id: int | None = None,
 ) -> dict[str, Any]:
+    """`candle_entry_id`, when set, is the 1-minute candle entry check for the
+    same call. It is retired along with this watch, so one re-cross is
+    reported once whichever of the two sees it first."""
     trigger_data = {
         "symbol": symbol,
         "exchange": exchange,
@@ -430,12 +447,22 @@ def _entry_recross_graph(
     ]
     edges = [{"id": "edge-trigger-notify", "source": "trigger", "target": "notify"}]
 
-    # Self only, not the call_id pair: coming back to entry does not end the
-    # call, so the sl_target watch must stay live. See module docstring.
+    # The entry watches only, not the call_id: coming back to entry does not
+    # end the call, so the sl_target watches must stay live. See module
+    # docstring.
+    previous = "notify"
+    if candle_entry_id is not None:
+        nodes.append(
+            _deactivate_self_node("deactivate_candle_entry", 250, candle_entry_id, api_key)
+        )
+        edges.append(
+            {"id": "edge-notify-candle", "source": "notify", "target": "deactivate_candle_entry"}
+        )
+        previous = "deactivate_candle_entry"
     deact_nodes, deact_edges, last_id = _deactivate_self_chain(own_id, api_key, start_y=300)
     nodes += deact_nodes
     edges += deact_edges
-    edges.append({"id": f"edge-notify-{last_id}", "source": "notify", "target": last_id})
+    edges.append({"id": f"edge-{previous}-{last_id}", "source": previous, "target": last_id})
 
     return {
         "name": name,
@@ -449,7 +476,13 @@ def _entry_recross_graph(
 # exchanges only, so an index is gated by the exchange it is computed on.
 _CALENDAR_EXCHANGE = {"NSE_INDEX": "NSE", "BSE_INDEX": "BSE", "MCX_INDEX": "MCX"}
 
-CANDLE_VARIABLE = "candle1m"
+SCAN_VARIABLE = "scan"
+
+# How far back each candle-check run looks. Every closed 1-minute candle in
+# this window (and after the call was armed) is scanned, so a breach that one
+# run missed -- a skipped or failed run, a broker history hiccup, a restart --
+# is still found by a later one.
+CANDLE_LOOKBACK_MINUTES = 120
 
 
 def _armed_from_epoch(now: float | None = None) -> int:
@@ -458,13 +491,86 @@ def _armed_from_epoch(now: float | None = None) -> int:
     The candle a call is created in began before the call existed, so its
     high/low may include prices from before the levels applied; checking it
     could report a breach that never happened while the call was live. That
-    minute is covered by the LTP watch alone.
+    minute is covered by the LTP watches alone.
     """
     now = time.time() if now is None else now
     return (int(now) // 60 + 1) * 60
 
 
-def _candle_check_graph(
+def _scan_ref(path: str) -> str:
+    return "{{" + f"{SCAN_VARIABLE}.{path}" + "}}"
+
+
+def _candle_schedule_node(exchange: str) -> dict:
+    """Every minute, during the symbol's market hours."""
+    return {
+        "id": "start",
+        "type": "start",
+        "position": {"x": 0, "y": 0},
+        "data": {
+            "label": "Every minute",
+            "scheduleType": "interval",
+            "intervalValue": 1,
+            "intervalUnit": "minutes",
+            "marketHoursOnly": True,
+            "marketHoursExchange": _CALENDAR_EXCHANGE.get(exchange, exchange),
+        },
+    }
+
+
+def _candle_scan_node(
+    symbol: str,
+    exchange: str,
+    armed_from_epoch: int,
+    above: float | None = None,
+    below: float | None = None,
+    tie_prefer: str = "below",
+) -> dict:
+    """candleScan over the last CANDLE_LOOKBACK_MINUTES of closed 1-minute
+    candles, ignoring any that began before the call was armed. A failed
+    fetch stores no output, so the breached check after it errors and takes
+    neither branch: missing data never reports a breach."""
+    data: dict[str, Any] = {
+        "symbol": symbol,
+        "exchange": exchange,
+        "interval": "1m",
+        "source": "api",
+        "lookbackMinutes": CANDLE_LOOKBACK_MINUTES,
+        "sinceEpoch": armed_from_epoch,
+        "tiePrefer": tie_prefer,
+        "outputVariable": SCAN_VARIABLE,
+    }
+    if above is not None:
+        data["above"] = above
+    if below is not None:
+        data["below"] = below
+    return {"id": "scan", "type": "candleScan", "position": {"x": 0, "y": 100}, "data": data}
+
+
+def _cond_node(node_id: str, y: int, left: str, op: str, right: Any) -> dict:
+    return {
+        "id": node_id,
+        "type": "varCondition",
+        "position": {"x": 0, "y": y},
+        "data": {"leftValue": left, "operator": op, "rightValue": str(right)},
+    }
+
+
+def _candle_notify_fields() -> dict[str, Any]:
+    """What every candle-detected breach adds to the notify body."""
+    return {
+        "detected_by": "candle_1m",
+        "breach_price": _scan_ref("breach_price"),
+        "triggered_at": "{{iso_timestamp}}",
+        "candles_scanned": _scan_ref("candles_scanned"),
+        "candle": {
+            "interval": "1m",
+            **{f: _scan_ref(f"candle.{f}") for f in ("timestamp", "open", "high", "low", "close")},
+        },
+    }
+
+
+def _candle_sl_target_graph(
     call_id: str,
     mentor_id: str,
     symbol: str,
@@ -480,34 +586,26 @@ def _candle_check_graph(
 ) -> dict[str, Any]:
     """The 1-minute candle backup for the sl_target watch.
 
-    Every minute during market hours: fetch the last CLOSED 1-minute candle
-    (barOffset, offset 0) and test its high/low against the same channel the
-    LTP watch uses. A candle range catches a level touched between two LTP
-    samples, which the LTP watch can miss when it is running on its REST poll
-    backstop (one sample every FLOW_PRICE_ALERT_POLL_INTERVAL seconds).
+    Every minute: scan the closed 1-minute candles of the last
+    CANDLE_LOOKBACK_MINUTES for the first whose range left the channel
+    between stop_loss and target1 -- a buy call's stop-loss is broken by a low
+    below it and its target by a high above it, a sell call the other way
+    round. Comparisons are strict, matching the LTP watch's outside_channel.
 
-    The stop-loss side is checked first: when one candle spans both levels its
-    range cannot say which was hit first, and the stop-loss is the outcome a
-    receiver must not miss. Comparisons are strict, matching the LTP watch's
-    outside_channel test. A breach notifies, then deactivates the whole call
-    (all its watches) exactly as an sl_target breach does.
-
-    A failed or empty candle fetch leaves `candle1m.*` unresolved, so the
-    varCondition below errors and takes neither branch: missing data never
-    reports a breach.
+    When one candle breaks both levels its range cannot say which came first;
+    it is reported as the stop-loss, the outcome a receiver must not miss. A
+    breach ends the call exactly as an sl_target breach does: notify, then
+    deactivate every watch for the call_id.
     """
-    side = _call_side(stop_loss, target1)
-    if side == "BUY":
-        sl_check = (f"{{{{{CANDLE_VARIABLE}.low}}}}", "<", stop_loss)
-        target_check = (f"{{{{{CANDLE_VARIABLE}.high}}}}", ">", target1)
-    else:
-        sl_check = (f"{{{{{CANDLE_VARIABLE}.high}}}}", ">", stop_loss)
-        target_check = (f"{{{{{CANDLE_VARIABLE}.low}}}}", "<", target1)
-
-    candle_ref = {
-        field: f"{{{{{CANDLE_VARIABLE}.{field}}}}}"
-        for field in ("timestamp", "open", "high", "low", "close")
-    }
+    is_buy = _call_side(stop_loss, target1) == "BUY"
+    scan = _candle_scan_node(
+        symbol,
+        exchange,
+        armed_from_epoch,
+        above=target1 if is_buy else stop_loss,
+        below=stop_loss if is_buy else target1,
+        tie_prefer="below" if is_buy else "above",
+    )
     common = _base_notify_body(
         call_id,
         mentor_id,
@@ -519,92 +617,48 @@ def _candle_check_graph(
         stop_loss,
         target1,
     )
-    common["detected_by"] = "candle_1m"
-    common["triggered_at"] = "{{iso_timestamp}}"
-    common["candle"] = {"interval": "1m", **candle_ref}
-    # The extreme of the candle on the side that crossed the level.
-    sl_body = {**common, "breach_type": "stop_loss", "breach_price": sl_check[0]}
-    target_body = {**common, "breach_type": "target1", "breach_price": target_check[0]}
-
-    def cond(node_id, y, left, op, right):
-        return {
-            "id": node_id,
-            "type": "varCondition",
-            "position": {"x": 0, "y": y},
-            "data": {"leftValue": left, "operator": op, "rightValue": str(right)},
-        }
+    common.update(_candle_notify_fields())
+    sl_body = {**common, "breach_type": "stop_loss"}
+    target_body = {**common, "breach_type": "target1"}
+    # A breach on the low side is the stop-loss for a buy, the target for a sell.
+    low_side, high_side = (
+        ("notify_sl", "notify_target") if is_buy else ("notify_target", "notify_sl")
+    )
 
     nodes = [
-        {
-            "id": "start",
-            "type": "start",
-            "position": {"x": 0, "y": 0},
-            "data": {
-                "label": "Every minute",
-                "scheduleType": "interval",
-                "intervalValue": 1,
-                "intervalUnit": "minutes",
-                "marketHoursOnly": True,
-                "marketHoursExchange": _CALENDAR_EXCHANGE.get(exchange, exchange),
-            },
-        },
-        {
-            "id": "candle",
-            "type": "barOffset",
-            "position": {"x": 0, "y": 100},
-            "data": {
-                "symbol": symbol,
-                "exchange": exchange,
-                "interval": "1m",
-                "offsetBars": 0,
-                "source": "api",
-                "outputVariable": CANDLE_VARIABLE,
-            },
-        },
-        cond(
-            "fresh",
-            200,
-            f"{{{{{CANDLE_VARIABLE}.timestamp_epoch}}}}",
-            ">=",
-            armed_from_epoch,
-        ),
-        cond("check_sl", 300, *sl_check),
-        cond("check_target", 400, *target_check),
-        _notify_node("notify_sl", 500, webhook_url, sl_body),
-        _notify_node("notify_target", 500, webhook_url, target_body),
+        _candle_schedule_node(exchange),
+        scan,
+        _cond_node("breached", 200, _scan_ref("breached"), "==", 1),
+        _cond_node("low_side", 300, _scan_ref("is_below"), "==", 1),
+        _notify_node("notify_sl", 400, webhook_url, sl_body),
+        _notify_node("notify_target", 400, webhook_url, target_body),
     ]
     edges = [
-        {"id": "edge-start-candle", "source": "start", "target": "candle"},
-        {"id": "edge-candle-fresh", "source": "candle", "target": "fresh"},
+        {"id": "edge-start-scan", "source": "start", "target": "scan"},
+        {"id": "edge-scan-breached", "source": "scan", "target": "breached"},
         {
-            "id": "edge-fresh-check_sl",
-            "source": "fresh",
+            "id": "edge-breached-low_side",
+            "source": "breached",
             "sourceHandle": "true",
-            "target": "check_sl",
+            "target": "low_side",
         },
         {
-            "id": "edge-check_sl-notify_sl",
-            "source": "check_sl",
+            "id": "edge-low_side-true",
+            "source": "low_side",
             "sourceHandle": "true",
-            "target": "notify_sl",
+            "target": low_side,
         },
         {
-            "id": "edge-check_sl-check_target",
-            "source": "check_sl",
+            "id": "edge-low_side-false",
+            "source": "low_side",
             "sourceHandle": "false",
-            "target": "check_target",
-        },
-        {
-            "id": "edge-check_target-notify_target",
-            "source": "check_target",
-            "sourceHandle": "true",
-            "target": "notify_target",
+            "target": high_side,
         },
     ]
 
     # The call is over on a breach, same scope as sl_target: tear down every
     # watch for this call_id, this one included.
-    deact_nodes, deact_edges, last_id = _deactivate_chain(call_id, api_key, start_y=600)
+    deact_nodes, deact_edges, last_id = _deactivate_chain(call_id, api_key, start_y=500)
     nodes += deact_nodes
     edges += deact_edges
     edges.append({"id": "edge-notify_sl-deactivate", "source": "notify_sl", "target": last_id})
@@ -616,8 +670,83 @@ def _candle_check_graph(
     return {
         "name": name,
         "description": (
-            f"1-minute candle check: {symbol} candle range outside [{lower}, {upper}] "
-            "(backup for the SL/Target watch)"
+            f"1-minute candle check: {symbol} candle range outside [{lower}, {upper}] in the "
+            f"last {CANDLE_LOOKBACK_MINUTES} min (backup for the SL/Target watch)"
+        ),
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+def _candle_entry_graph(
+    call_id: str,
+    mentor_id: str,
+    symbol: str,
+    exchange: str,
+    entry_price: float,
+    stop_loss: float,
+    target1: float,
+    condition: str,
+    webhook_url: str,
+    api_key: str,
+    own_id: int,
+    name: str,
+    armed_from_epoch: int,
+    ltp_entry_id: int,
+) -> dict[str, Any]:
+    """The 1-minute candle backup for the entry_recross watch.
+
+    Every minute: scan the closed 1-minute candles of the last
+    CANDLE_LOOKBACK_MINUTES for the first that crossed back through
+    entry_price in the watched direction -- a low below it for
+    "crosses_below", a high above it for "crosses_above". Strict, matching the
+    LTP watch's cross test.
+
+    Coming back to entry does not end the call, so on a breach this retires
+    only the entry watches: the LTP entry_recross watch (so the same re-cross
+    is not reported twice) and then itself. The sl_target watches stay live.
+    """
+    below = entry_price if condition == "crosses_below" else None
+    above = entry_price if condition == "crosses_above" else None
+    body = _base_notify_body(
+        call_id,
+        mentor_id,
+        own_id,
+        "entry_recross",
+        symbol,
+        exchange,
+        entry_price,
+        stop_loss,
+        target1,
+    )
+    body["breach_type"] = "entry_price"
+    body.update(_candle_notify_fields())
+
+    nodes = [
+        _candle_schedule_node(exchange),
+        _candle_scan_node(symbol, exchange, armed_from_epoch, above=above, below=below),
+        _cond_node("breached", 200, _scan_ref("breached"), "==", 1),
+        _notify_node("notify", 300, webhook_url, body),
+        _deactivate_self_node("deactivate_ltp_entry", 400, ltp_entry_id, api_key),
+        _deactivate_self_node("deactivate_self", 500, own_id, api_key),
+    ]
+    edges = [
+        {"id": "edge-start-scan", "source": "start", "target": "scan"},
+        {"id": "edge-scan-breached", "source": "scan", "target": "breached"},
+        {
+            "id": "edge-breached-notify",
+            "source": "breached",
+            "sourceHandle": "true",
+            "target": "notify",
+        },
+        {"id": "edge-notify-ltp", "source": "notify", "target": "deactivate_ltp_entry"},
+        {"id": "edge-ltp-self", "source": "deactivate_ltp_entry", "target": "deactivate_self"},
+    ]
+    return {
+        "name": name,
+        "description": (
+            f"1-minute candle check: {symbol} {condition} {entry_price} in the last "
+            f"{CANDLE_LOOKBACK_MINUTES} min (backup for the Entry re-cross watch)"
         ),
         "nodes": nodes,
         "edges": edges,
@@ -718,22 +847,48 @@ def create_and_activate(
             500,
         )
 
-    candle_wf = db_create_workflow(
-        name=f"{base_name} (1m Candle)",
-        description="",
-        nodes=[],
-        edges=[],
-        account_id=account_id,
-        owner_username=owner_username,
-    )
-    if not candle_wf:
-        db_delete_workflow(entry_wf.id)
-        db_delete_workflow(sl_target_wf.id)
+    # The 1-minute candle backups: one for SL/Target, always, and one for the
+    # entry re-cross when there is a direction to watch.
+    created = [sl_target_wf, entry_wf]
+
+    def create_or_roll_back(suffix):
+        workflow = db_create_workflow(
+            name=f"{base_name} ({suffix})",
+            description="",
+            nodes=[],
+            edges=[],
+            account_id=account_id,
+            owner_username=owner_username,
+        )
+        if workflow:
+            created.append(workflow)
+        else:
+            for earlier in reversed(created):
+                db_delete_workflow(earlier.id)
+        return workflow
+
+    candle_sl_wf = create_or_roll_back("1m Candle SL/Target")
+    if not candle_sl_wf:
         return (
             False,
-            {"status": "error", "message": "Failed to create the 1-minute candle workflow"},
+            {
+                "status": "error",
+                "message": "Failed to create the 1-minute candle SL/Target workflow",
+            },
             500,
         )
+    candle_entry_wf = None
+    if entry_condition is not None:
+        candle_entry_wf = create_or_roll_back("1m Candle Entry")
+        if not candle_entry_wf:
+            return (
+                False,
+                {
+                    "status": "error",
+                    "message": "Failed to create the 1-minute candle entry workflow",
+                },
+                500,
+            )
 
     # Record the call_id -> workflow_id(s) mapping so
     # /api/v1/pricebreach/<call_id>/deactivate can resolve all of them later.
@@ -741,7 +896,8 @@ def create_and_activate(
         call_id,
         sl_target_workflow_id=sl_target_wf.id,
         entry_recross_workflow_id=(entry_wf.id if entry_wf else None),
-        candle_workflow_id=candle_wf.id,
+        candle_workflow_id=candle_sl_wf.id,
+        candle_entry_workflow_id=(candle_entry_wf.id if candle_entry_wf else None),
     )
 
     # Pass 2: build the real graphs -- each watch's own deactivate chain
@@ -778,30 +934,63 @@ def create_and_activate(
             api_key,
             own_id=entry_wf.id,
             name=entry_wf.name,
+            candle_entry_id=candle_entry_wf.id if candle_entry_wf else None,
         )
         update_workflow(entry_wf.id, nodes=entry_graph["nodes"], edges=entry_graph["edges"])
 
     armed_from = _armed_from_epoch()
-    candle_graph = _candle_check_graph(
-        call_id,
-        mentor_id,
-        symbol,
-        exchange,
-        entry_price,
-        stop_loss,
-        target1,
-        webhook_url,
-        api_key,
-        own_id=candle_wf.id,
-        name=candle_wf.name,
-        armed_from_epoch=armed_from,
-    )
-    update_workflow(
-        candle_wf.id,
-        nodes=candle_graph["nodes"],
-        edges=candle_graph["edges"],
-        description=candle_graph["description"],
-    )
+    candle_graphs = [
+        (
+            "candle_sl_target",
+            candle_sl_wf,
+            _candle_sl_target_graph(
+                call_id,
+                mentor_id,
+                symbol,
+                exchange,
+                entry_price,
+                stop_loss,
+                target1,
+                webhook_url,
+                api_key,
+                own_id=candle_sl_wf.id,
+                name=candle_sl_wf.name,
+                armed_from_epoch=armed_from,
+            ),
+            f"1-minute candle high/low outside [{lower}, {upper}]",
+        )
+    ]
+    if candle_entry_wf:
+        candle_graphs.append(
+            (
+                "candle_entry",
+                candle_entry_wf,
+                _candle_entry_graph(
+                    call_id,
+                    mentor_id,
+                    symbol,
+                    exchange,
+                    entry_price,
+                    stop_loss,
+                    target1,
+                    entry_condition,
+                    webhook_url,
+                    api_key,
+                    own_id=candle_entry_wf.id,
+                    name=candle_entry_wf.name,
+                    armed_from_epoch=armed_from,
+                    ltp_entry_id=entry_wf.id,
+                ),
+                f"1-minute candle {entry_condition} {entry_price}",
+            )
+        )
+    for _key, workflow, graph, _watching in candle_graphs:
+        update_workflow(
+            workflow.id,
+            nodes=graph["nodes"],
+            edges=graph["edges"],
+            description=graph["description"],
+        )
 
     # Pass 3: register the live watches and flip is_active.
     price_monitor = get_flow_price_monitor()
@@ -838,22 +1027,26 @@ def create_and_activate(
         # step (and the call_id teardown) see a live workflow.
         db_activate_workflow(entry_wf.id, api_key=api_key)
 
-    # A backup, so failing to arm it does not undo the live watches the call
+    # Backups, so failing to arm one does not undo the live watches the call
     # already has; it is reported in the response instead.
-    candle_info: dict[str, Any] = {
-        "workflow_id": candle_wf.id,
-        "watching": f"1-minute candle high/low outside [{lower}, {upper}]",
-        "checks_candles_from": datetime.fromtimestamp(armed_from).isoformat(),
-        "active": True,
-    }
-    try:
-        _arm_candle_check(candle_wf.id, api_key, candle_graph["nodes"][0]["data"])
-    except Exception:
-        logger.exception(
-            f"Price-breach call {call_id}: could not arm 1-minute candle check {candle_wf.id}"
-        )
-        candle_info["active"] = False
-        candle_info["error"] = "Could not schedule the candle check; the LTP watches are live"
+    candle_infos: dict[str, dict[str, Any]] = {}
+    for key, workflow, graph, watching in candle_graphs:
+        info: dict[str, Any] = {
+            "workflow_id": workflow.id,
+            "watching": watching,
+            "lookback_minutes": CANDLE_LOOKBACK_MINUTES,
+            "checks_candles_from": datetime.fromtimestamp(armed_from).isoformat(),
+            "active": True,
+        }
+        try:
+            _arm_candle_check(workflow.id, api_key, graph["nodes"][0]["data"])
+        except Exception:
+            logger.exception(
+                f"Price-breach call {call_id}: could not arm {key} check {workflow.id}"
+            )
+            info["active"] = False
+            info["error"] = "Could not schedule the candle check; the LTP watches are live"
+        candle_infos[key] = info
 
     logger.info(
         f"Price-breach call {call_id} ({_call_side(stop_loss, target1)}): "
@@ -863,7 +1056,10 @@ def create_and_activate(
             if entry_condition is not None
             else f", entry_recross={entry_wf.id} executed immediately (active_price == entry_price)"
         )
-        + f", candle_1m={candle_wf.id} ({'armed' if candle_info['active'] else 'NOT armed'})"
+        + "".join(
+            f", {key}={info['workflow_id']} ({'armed' if info['active'] else 'NOT armed'})"
+            for key, info in candle_infos.items()
+        )
     )
 
     workflows: dict[str, Any] = {
@@ -894,10 +1090,16 @@ def create_and_activate(
             "(its notify reaches your webhook and it then deactivates itself). The sl_target watch "
             "stays live."
         )
-    workflows["candle_1m"] = candle_info
+    workflows["candle_sl_target"] = candle_infos["candle_sl_target"]
+    # No candle entry check when active_price == entry_price: there is no
+    # direction to watch, and the entry notification has already been sent.
+    workflows["candle_entry"] = candle_infos.get("candle_entry")
     message += (
-        " A 1-minute candle check also runs as a backup for stop_loss/target1; whichever check "
-        "sees the breach first notifies and deactivates every watch for the call."
+        f" 1-minute candle checks also run every minute as backups, each scanning the last "
+        f"{CANDLE_LOOKBACK_MINUTES} minutes of candles so a breach between runs is not missed: "
+        "one for stop_loss/target1 (a breach ends the call and deactivates every watch) and, "
+        "when there is an entry direction, one for the entry re-cross (a breach retires both "
+        "entry watches)."
     )
 
     if entry_condition is None:

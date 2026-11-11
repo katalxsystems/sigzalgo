@@ -39,7 +39,7 @@ WEBHOOK = "https://signalz.example/hooks/breach"
 # P&L = 65 * ((ce - 50) + (pe - 40)).
 LEGS = [
     {
-        "call_id": "call-ce-1",
+        "call_id": 1001,
         "symbol": "NIFTY27OCT2622700CE",
         "exchange": "NFO",
         "product": "NRML",
@@ -48,7 +48,7 @@ LEGS = [
         "realized_pnl": 0.0,
     },
     {
-        "call_id": "call-pe-1",
+        "call_id": 1002,
         "symbol": "NIFTY27OCT2622700PE",
         "exchange": "NFO",
         "product": "NRML",
@@ -58,8 +58,8 @@ LEGS = [
     },
 ]
 
-STRATEGY_ID = "strat-42"
-MENTOR_ID = "mentor-7"
+STRATEGY_ID = 42
+MENTOR_ID = 7
 IDS = {"strategy_id": STRATEGY_ID, "mentor_id": MENTOR_ID}
 
 ALL_LEVELS = {
@@ -236,7 +236,7 @@ def test_realized_pnl_from_a_closed_leg_counts_toward_the_total():
     legs = [
         *LEGS,
         {
-            "call_id": "call-ce-2",
+            "call_id": 1003,
             "symbol": "NIFTY27OCT2622800CE",
             "exchange": "NFO",
             "product": "NRML",
@@ -354,6 +354,13 @@ def test_an_invalid_key_is_refused(flow):
         ({"target": 100, "legs": [{**LEGS[0], "exchange": "NOPE"}]}, "legs"),
         ({"target": 100, "strategy_id": None}, "strategy_id"),
         ({"target": 100, "mentor_id": "{{pnl.total}}"}, "mentor_id"),
+        # Integers only: no numeric strings, floats or booleans, and positive.
+        ({"target": 100, "strategy_id": "42"}, "strategy_id"),
+        ({"target": 100, "strategy_id": 42.0}, "strategy_id"),
+        ({"target": 100, "mentor_id": True}, "mentor_id"),
+        ({"target": 100, "mentor_id": 0}, "mentor_id"),
+        ({"target": 100, "legs": [{**LEGS[0], "call_id": "1001"}]}, "legs"),
+        ({"target": 100, "legs": [{**LEGS[0], "call_id": -1}]}, "legs"),
         ({"target": 100, "legs": [{k: v for k, v in LEGS[0].items() if k != "call_id"}]}, "legs"),
     ],
 )
@@ -380,7 +387,7 @@ def test_schema_requires_legs():
 
 def test_schema_defaults_a_leg_product_and_realized_pnl():
     leg = {
-        "call_id": "call-ce-1",
+        "call_id": 1001,
         "symbol": "NIFTY27OCT2622700CE",
         "exchange": "NFO",
         "quantity": -65,
@@ -407,15 +414,18 @@ def test_the_breach_event_carries_the_callers_ids():
     assert body["strategy_id"] == STRATEGY_ID
     assert body["mentor_id"] == MENTOR_ID
     assert {leg["symbol"]: leg["call_id"] for leg in body["legs"]} == {
-        "NIFTY27OCT2622700CE": "call-ce-1",
-        "NIFTY27OCT2622700PE": "call-pe-1",
+        "NIFTY27OCT2622700CE": 1001,
+        "NIFTY27OCT2622700PE": 1002,
     }
+    # JSON numbers on the wire, not strings.
+    ids = [body["strategy_id"], body["mentor_id"], *(leg["call_id"] for leg in body["legs"])]
+    assert all(type(i) is int for i in ids)
 
 
 def test_a_closed_legs_call_id_is_kept_after_the_open_first_sort():
     closed_first = [
         {
-            "call_id": "call-old",
+            "call_id": 1000,
             "symbol": "NIFTY27OCT2622800CE",
             "exchange": "NFO",
             "product": "NRML",
@@ -426,16 +436,16 @@ def test_a_closed_legs_call_id_is_kept_after_the_open_first_sort():
         *LEGS,
     ]
     webhooks, _, _ = run(graph_for(legs=closed_first), 82, 40, 22700)
-    assert [leg["call_id"] for leg in webhooks[0]["legs"]] == ["call-ce-1", "call-pe-1", "call-old"]
+    assert [leg["call_id"] for leg in webhooks[0]["legs"]] == [1001, 1002, 1000]
 
 
 def test_upsert_echoes_and_updates_the_ids(flow):
     _, created, _ = sms.upsert(KEY, TAG, **ALL_LEVELS)
     assert created["strategy_id"] == STRATEGY_ID and created["mentor_id"] == MENTOR_ID
 
-    _, updated, _ = sms.upsert(KEY, TAG, **{**ALL_LEVELS, "mentor_id": "mentor-8"})
+    _, updated, _ = sms.upsert(KEY, TAG, **{**ALL_LEVELS, "mentor_id": 8})
     assert updated["workflow_id"] == created["workflow_id"]
     workflow = flow_db.get_workflow(created["workflow_id"])
     body = next(n for n in workflow.nodes if n["id"] == "notify")["data"]["body"]
-    assert '"mentor_id": "mentor-8"' in body
-    assert f'"strategy_id": "{STRATEGY_ID}"' in body
+    assert '"mentor_id": 8,' in body
+    assert f'"strategy_id": {STRATEGY_ID},' in body

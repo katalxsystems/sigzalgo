@@ -75,7 +75,10 @@ def _ownership_fields(workflow):
 # A caller's id as json.dumps writes it into a notify body. Price-breach watches
 # and strategy monitors both build their bodies with json.dumps, so the
 # `"key": "value"` spacing is fixed. Values are limited to the API's id format.
-_EXTERNAL_ID_FIELD = re.compile(r'"(call_id|mentor_id)": "([A-Za-z0-9_.:-]{1,100})"')
+# A quoted string id (price-breach) or a bare integer id (strategy monitor).
+_EXTERNAL_ID_FIELD = re.compile(
+    r'"(call_id|mentor_id)": (?:"([A-Za-z0-9_.:-]{1,100})"|(\d{1,20})\b)'
+)
 
 
 def _external_ids(nodes):
@@ -93,8 +96,8 @@ def _external_ids(nodes):
                 call_ids.add(str(leg["call_id"]))
         body = data.get("body")
         if isinstance(body, str):
-            for key, value in _EXTERNAL_ID_FIELD.findall(body):
-                (call_ids if key == "call_id" else mentor_ids).add(value)
+            for key, quoted, number in _EXTERNAL_ID_FIELD.findall(body):
+                (call_ids if key == "call_id" else mentor_ids).add(quoted or number)
     return sorted(call_ids), sorted(mentor_ids)
 
 
