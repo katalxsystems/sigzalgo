@@ -556,7 +556,7 @@ def test_a_skipped_scheduled_run_still_releases_its_sessions(monkeypatch, workfl
 
 @pytest.fixture
 def stored(monkeypatch):
-    workflow = types.SimpleNamespace(id=42, schedule_job_id="flow_workflow_42")
+    workflow = types.SimpleNamespace(id=42, schedule_job_id="flow_workflow_42", is_active=True)
     monkeypatch.setattr(pbs, "get_workflow", lambda wid: workflow if wid == 42 else None)
     monkeypatch.setattr(pbs, "get_workflow_api_key", lambda wf: KEY)
     monitor = mock.Mock()

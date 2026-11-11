@@ -986,6 +986,7 @@ export const DEFAULT_NODE_DATA = {
     below: '',
     sinceEpoch: '',
     tiePrefer: 'below' as const,
+    alertOnNoData: false,
     outputVariable: '',
   },
   openPosition: {

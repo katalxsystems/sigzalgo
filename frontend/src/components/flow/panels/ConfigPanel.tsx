@@ -2432,6 +2432,19 @@ export function ConfigPanel() {
                     </SelectContent>
                   </Select>
                 </div>
+                <div className="flex items-center justify-between rounded-lg border p-3">
+                  <div>
+                    <Label className="text-xs">Alert when data stops</Label>
+                    <p className="text-[10px] text-muted-foreground">
+                      Error log and Telegram alert once if several runs get no candles (for
+                      example, an expired broker session), and once on recovery.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={(nodeData.alertOnNoData as boolean) ?? false}
+                    onCheckedChange={(v) => handleDataChange('alertOnNoData', v)}
+                  />
+                </div>
                 <div className="space-y-2">
                   <Label className="text-xs">Output Variable</Label>
                   <Input

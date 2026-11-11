@@ -60,7 +60,9 @@ class StrategyMonitorDeactivate(Resource):
         """
         try:
             data = deactivate_schema.load(request.json or {})
-            _success, response_data, status_code = deactivate(data["apikey"], data["strategy"])
+            _success, response_data, status_code = deactivate(
+                data["apikey"], data["strategy"], breach=data["breach"]
+            )
             return make_response(jsonify(response_data), status_code)
         except ValidationError as err:
             return make_response(jsonify({"status": "error", "message": err.messages}), 400)

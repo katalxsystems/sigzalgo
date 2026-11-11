@@ -191,7 +191,8 @@ def test_each_breach_notifies_once_with_its_reason_then_deactivates(ce, pe, spot
     assert body["spot"]["ltp"] == spot_ltp
     assert body["levels"]["upper_spot_stoploss"] == 23000.0
     assert [leg["symbol"] for leg in body["legs"]] == [leg["symbol"] for leg in LEGS]
-    assert deactivations == [{"apikey": KEY, "strategy": TAG}]
+    # Flagged as a breach, so the Flow list shows the monitor red.
+    assert deactivations == [{"apikey": KEY, "strategy": TAG, "breach": True}]
 
 
 def test_inside_every_level_sends_nothing():
@@ -322,6 +323,25 @@ def test_deactivate_disarms_and_is_idempotent(flow):
 
     ok, again, status = sms.deactivate(KEY, TAG)
     assert ok and status == 200 and again["message"] == "Monitor already inactive"
+
+
+def test_a_breach_marks_the_monitor_and_re_arming_clears_it(flow):
+    _, created, _ = sms.upsert(KEY, TAG, **ALL_LEVELS)
+    wid = created["workflow_id"]
+
+    def breached_at():
+        workflow = flow_db.get_workflow(wid)
+        flow_db.db_session.refresh(workflow)
+        return workflow.breached_at
+
+    sms.deactivate(KEY, TAG, breach=True)
+    assert breached_at() is not None
+
+    sms.upsert(KEY, TAG, **ALL_LEVELS)  # re-arm
+    assert breached_at() is None
+
+    sms.deactivate(KEY, TAG)  # by hand
+    assert breached_at() is None
 
 
 def test_another_accounts_key_cannot_reach_the_monitor(flow):

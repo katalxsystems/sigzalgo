@@ -445,6 +445,8 @@ export interface CandleScanNodeData {
   sinceEpoch?: number | string
   /** Which side a candle that broke both levels is reported as. */
   tiePrefer?: 'above' | 'below'
+  /** Log an error and alert on Telegram once when runs keep getting no candle data. */
+  alertOnNoData?: boolean
   outputVariable?: string
 }
 

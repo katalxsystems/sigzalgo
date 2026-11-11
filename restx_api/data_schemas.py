@@ -89,6 +89,9 @@ class PriceBreachCreateSchema(Schema):
 
 class PriceBreachDeactivateSchema(Schema):
     apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
+    # Sent by a watch's own deactivate node after it notified a breach, so
+    # the Flow list can show it as breached rather than just deactivated.
+    breach = fields.Bool(load_default=False)
 
 
 # A strategy tag as orders carry it. Restricted so it is safe to embed in a
@@ -182,6 +185,8 @@ class StrategyMonitorUpsertSchema(Schema):
 class StrategyMonitorDeactivateSchema(Schema):
     apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
     strategy = fields.Str(required=True, validate=STRATEGY_TAG)
+    # Sent by the monitor's own deactivate node after a delivered breach.
+    breach = fields.Bool(load_default=False)
 
 
 # The four conditions the chart's own "Create Alert" dialog offers -- the

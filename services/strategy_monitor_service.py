@@ -305,7 +305,9 @@ def build_graph(
         method="POST",
         url=f"{_loopback_base_url()}/api/v1/strategymonitor/deactivate",
         headers={"Content-Type": "application/json"},
-        body=json.dumps({"apikey": api_key, "strategy": strategy}),
+        # Reached only after a delivered breach notification, so the monitor
+        # is marked breached (red in the Flow list), not just deactivated.
+        body=json.dumps({"apikey": api_key, "strategy": strategy, "breach": True}),
         timeout=10,
     )
     link(ok_high, stop, "true")
@@ -398,9 +400,12 @@ def upsert(api_key: str, strategy: str, **settings) -> tuple[bool, dict[str, Any
     )
 
 
-def deactivate(api_key: str, strategy: str) -> tuple[bool, dict[str, Any], int]:
+def deactivate(
+    api_key: str, strategy: str, breach: bool = False
+) -> tuple[bool, dict[str, Any], int]:
     """Disarm the strategy's monitor. Idempotent: an already inactive monitor
-    is a success. Returns (success, response_data, status_code)."""
+    is a success. `breach` (sent by the monitor's own deactivate node) also
+    stamps it breached. Returns (success, response_data, status_code)."""
     from services.flow_executor_service import release_workflow_subscriptions_or_defer
     from services.flow_scheduler_service import get_flow_scheduler
 
@@ -436,8 +441,15 @@ def deactivate(api_key: str, strategy: str) -> tuple[bool, dict[str, Any], int]:
     release_workflow_subscriptions_or_defer(workflow.id)
     if not db_deactivate_workflow(workflow.id):
         return False, {"status": "error", "message": "Failed to deactivate monitor"}, 500
+    if breach:
+        from database.flow_db import mark_breached
 
-    logger.info(f"Strategy monitor {workflow.id} for {strategy} deactivated")
+        mark_breached(workflow.id)
+
+    logger.info(
+        f"Strategy monitor {workflow.id} for {strategy} deactivated"
+        + (" after a breach" if breach else "")
+    )
     return (
         True,
         {"status": "success", "workflow_id": workflow.id, "message": "Monitor deactivated"},

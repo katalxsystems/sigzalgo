@@ -115,6 +115,10 @@ class FlowWorkflow(Base):
     # be determined -- visible to administrators only until one claims it.
     account_id = Column(String(255), nullable=True, index=True)
     owner_username = Column(String(255), nullable=True, index=True)
+    # When a monitor (price-breach call or strategy monitor) was deactivated
+    # because it detected a breach, in UTC. NULL when it has not breached,
+    # including a monitor deactivated by hand. Cleared on re-activation.
+    breached_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -178,6 +182,26 @@ def init_db():
     _migrate_add_api_key_column()
     _migrate_add_ownership_columns()
     _migrate_add_price_breach_candle_column()
+    _migrate_add_breached_at_column()
+
+
+def _migrate_add_breached_at_column():
+    """Add flow_workflows.breached_at if it is missing. Idempotent. Existing
+    rows keep NULL, so a monitor that breached before this existed shows as
+    deactivated rather than breached."""
+    try:
+        from sqlalchemy import inspect, text
+
+        inspector = inspect(engine)
+        if "flow_workflows" not in inspector.get_table_names():
+            return
+        columns = {col["name"] for col in inspector.get_columns("flow_workflows")}
+        if "breached_at" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE flow_workflows ADD COLUMN breached_at DATETIME"))
+            logger.info("Migration: Added 'breached_at' column to flow_workflows")
+    except Exception:
+        logger.exception("Migration of flow_workflows.breached_at failed")
 
 
 def _migrate_add_price_breach_candle_column():
@@ -470,6 +494,7 @@ def update_workflow(workflow_id, **kwargs):
             "webhook_enabled",
             "webhook_auth_type",
             "api_key",
+            "breached_at",
         ]
         for field in allowed_fields:
             if field in kwargs:
@@ -519,11 +544,43 @@ def delete_workflow(workflow_id):
 
 
 def activate_workflow(workflow_id, api_key=None):
-    """Activate a workflow and optionally store the API key for webhook execution"""
-    kwargs = {"is_active": True}
+    """Activate a workflow and optionally store the API key for webhook execution.
+
+    Re-arming clears any earlier breach: the workflow is monitoring again.
+    """
+    kwargs = {"is_active": True, "breached_at": None}
     if api_key:
         kwargs["api_key"] = api_key
     return update_workflow(workflow_id, **kwargs)
+
+
+def mark_breached(workflow_id):
+    """Record that a monitor was deactivated because it detected a breach.
+    Stored as naive UTC, the same as the server-default timestamps."""
+    from datetime import UTC, datetime
+
+    return update_workflow(workflow_id, breached_at=datetime.now(UTC).replace(tzinfo=None))
+
+
+def get_price_breach_workflow_ids():
+    """Every workflow id that belongs to a price-breach call, as a set."""
+    try:
+        ids = set()
+        for row in PriceBreachCall.query.all():
+            ids.update(
+                wid
+                for wid in (
+                    row.sl_target_workflow_id,
+                    row.entry_recross_workflow_id,
+                    row.candle_workflow_id,
+                    row.candle_entry_workflow_id,
+                )
+                if wid is not None
+            )
+        return ids
+    except Exception:
+        logger.exception("Error listing price-breach workflow ids")
+        return set()
 
 
 def deactivate_workflow(workflow_id):

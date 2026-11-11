@@ -40,6 +40,10 @@ export interface WorkflowListItem {
   /** External ids found in the workflow's graph (price-breach and strategy monitors) */
   call_ids?: string[]
   mentor_ids?: string[]
+  /** Set for price-breach calls and strategy monitors, which get a breach status */
+  monitor?: 'price_breach' | 'strategy_monitor' | null
+  /** When the monitor was deactivated by a detected breach (UTC); null otherwise */
+  breached_at?: string | null
 }
 
 export interface WorkflowExecution {

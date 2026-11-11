@@ -246,7 +246,9 @@ def _deactivate_node(node_id: str, position_y: int, call_id: str, api_key: str) 
             "method": "POST",
             "url": url,
             "headers": json.dumps({"Content-Type": "application/json"}),
-            "body": json.dumps({"apikey": api_key}),
+            # Only ever reached after a breach was notified, so it marks the
+            # workflows it stops as breached (red in the Flow list).
+            "body": json.dumps({"apikey": api_key, "breach": True}),
             "timeout": 10,
         },
     }
@@ -280,7 +282,9 @@ def _deactivate_self_node(node_id: str, position_y: int, workflow_id: int, api_k
             "method": "POST",
             "url": url,
             "headers": json.dumps({"Content-Type": "application/json"}),
-            "body": json.dumps({"apikey": api_key}),
+            # Only ever reached after a breach was notified, so it marks the
+            # workflows it stops as breached (red in the Flow list).
+            "body": json.dumps({"apikey": api_key, "breach": True}),
             "timeout": 10,
         },
     }
@@ -538,6 +542,10 @@ def _candle_scan_node(
         "lookbackMinutes": CANDLE_LOOKBACK_MINUTES,
         "sinceEpoch": armed_from_epoch,
         "tiePrefer": tie_prefer,
+        # Log an error and send a Telegram alert once if the check goes
+        # several runs without candle data (an expired broker session looks
+        # like a quiet market otherwise), and once more when it recovers.
+        "alertOnNoData": True,
         "outputVariable": SCAN_VARIABLE,
     }
     if above is not None:
@@ -1121,8 +1129,14 @@ def create_and_activate(
     )
 
 
-def deactivate_one(workflow_id: int, api_key: str) -> tuple[bool, str, int]:
+def deactivate_one(workflow_id: int, api_key: str, breach: bool = False) -> tuple[bool, str, int]:
     """Stop one live watch (if still registered) and flip is_active off.
+
+    `breach` is set by a watch's own deactivate node after it notified a
+    breach. A workflow that was still active is then stamped `breached_at`,
+    which the Flow list shows in red; a manual deactivation (no flag) leaves
+    it unstamped (amber). One already inactive is not stamped, so a watch the
+    operator switched off earlier stays amber when its call later breaches.
 
     Flow workflows have no owner column, so this is the one place this
     module adds a check the underlying /flow/api/workflows/* routes do not
@@ -1144,6 +1158,7 @@ def deactivate_one(workflow_id: int, api_key: str) -> tuple[bool, str, int]:
     if stored_key and stored_key != api_key:
         return False, "This apikey did not create this workflow", 403
 
+    was_active = bool(workflow.is_active)
     get_flow_price_monitor().remove_alert(workflow_id)
     # The 1-minute candle check runs on the scheduler, not the price monitor.
     # A no-op for the LTP watches, which have no job. Strict, so a jobstore
@@ -1160,12 +1175,26 @@ def deactivate_one(workflow_id: int, api_key: str) -> tuple[bool, str, int]:
     if workflow.schedule_job_id:
         set_schedule_job_id(workflow_id, None)
     db_deactivate_workflow(workflow_id)
+    if breach and was_active:
+        from database.flow_db import mark_breached
 
-    logger.info(f"Price-breach workflow {workflow_id} deactivated")
+        mark_breached(workflow_id)
+    # A candle check stopped mid-outage must not report a stale streak if
+    # it is ever re-armed.
+    from services.candle_check_health import forget
+
+    forget(workflow_id)
+
+    logger.info(
+        f"Price-breach workflow {workflow_id} deactivated"
+        + (" after a breach" if breach and was_active else "")
+    )
     return True, f"Workflow {workflow_id} deactivated", 200
 
 
-def deactivate_by_call_id(call_id: str, api_key: str) -> tuple[bool, dict[str, Any], int]:
+def deactivate_by_call_id(
+    call_id: str, api_key: str, breach: bool = False
+) -> tuple[bool, dict[str, Any], int]:
     """Deactivate every workflow create_and_activate() created for call_id
     (sl_target and, if present, entry_recross) as one unit.
 
@@ -1198,7 +1227,7 @@ def deactivate_by_call_id(call_id: str, api_key: str) -> tuple[bool, dict[str, A
 
     deactivated_ids = []
     for workflow in workflows:
-        success, _message, _status = deactivate_one(workflow.id, api_key)
+        success, _message, _status = deactivate_one(workflow.id, api_key, breach=breach)
         if success:
             deactivated_ids.append(workflow.id)
 
