@@ -240,13 +240,19 @@ function WorkflowCard({
     showToast.success(`${label} copied to clipboard`, 'clipboard')
   }
 
+  // A monitor (price-breach call or strategy monitor) that deactivated itself
+  // after detecting a breach. Re-activating clears breached_at.
+  const breached = !!workflow.monitor && !!workflow.breached_at && !workflow.is_active
+
   return (
     <>
       <Card
         className={cn(
           'group cursor-pointer transition-all duration-200 hover:border-primary/50',
-          workflow.is_active && 'border-green-500/30'
+          workflow.is_active && 'border-green-500/30',
+          breached && 'bg-red-500/10'
         )}
+        title={breached ? 'Breach detected' : undefined}
         onClick={() => navigate(`/flow/editor/${workflow.id}`)}
       >
         <CardHeader className="pb-3">
