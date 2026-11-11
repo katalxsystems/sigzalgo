@@ -138,43 +138,6 @@ function matchesFilters(workflow: WorkflowListItem, filters: WorkflowFilters): b
   return matchesId(workflow.call_ids, filters.callId) && matchesId(workflow.mentor_ids, filters.mentorId)
 }
 
-type MonitorState = 'breached' | 'monitoring' | 'deactivated'
-
-/**
- * Breach status of a price-breach call or strategy monitor: red once it
- * detected a breach, green while it is armed, amber when it was switched off
- * without one. Null for ordinary workflows, which keep the plain active dot.
- */
-function monitorState(workflow: WorkflowListItem): MonitorState | null {
-  if (!workflow.monitor) return null
-  if (workflow.breached_at && !workflow.is_active) return 'breached'
-  return workflow.is_active ? 'monitoring' : 'deactivated'
-}
-
-const MONITOR_STYLES: Record<
-  MonitorState,
-  { label: string; dot: string; border: string; badge: string }
-> = {
-  breached: {
-    label: 'Breached',
-    dot: 'bg-red-500',
-    border: 'border-red-500/50',
-    badge: 'border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400',
-  },
-  monitoring: {
-    label: 'No breach',
-    dot: 'bg-green-500',
-    border: 'border-green-500/40',
-    badge: 'border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-400',
-  },
-  deactivated: {
-    label: 'Deactivated',
-    dot: 'bg-amber-500',
-    border: 'border-amber-500/50',
-    badge: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400',
-  },
-}
-
 function WorkflowCard({
   workflow,
   showOwner = false,
@@ -277,45 +240,25 @@ function WorkflowCard({
     showToast.success(`${label} copied to clipboard`, 'clipboard')
   }
 
-  const state = monitorState(workflow)
-  const stateStyle = state ? MONITOR_STYLES[state] : null
-  const breachedAt =
-    state === 'breached' ? parseServerDate(workflow.breached_at)?.toLocaleString() : undefined
-
   return (
     <>
       <Card
         className={cn(
           'group cursor-pointer transition-all duration-200 hover:border-primary/50',
-          stateStyle ? stateStyle.border : workflow.is_active && 'border-green-500/30'
+          workflow.is_active && 'border-green-500/30'
         )}
         onClick={() => navigate(`/flow/editor/${workflow.id}`)}
       >
         <CardHeader className="pb-3">
           <div className="flex items-start justify-between">
-            <div className="flex min-w-0 items-center gap-3">
+            <div className="flex items-center gap-3">
               <div
                 className={cn(
-                  'h-2 w-2 shrink-0 rounded-full',
-                  stateStyle
-                    ? stateStyle.dot
-                    : workflow.is_active
-                      ? 'bg-green-500'
-                      : 'bg-muted-foreground'
+                  'h-2 w-2 rounded-full',
+                  workflow.is_active ? 'bg-green-500' : 'bg-muted-foreground'
                 )}
               />
               <CardTitle className="text-base">{workflow.name}</CardTitle>
-              {stateStyle && (
-                <span
-                  className={cn(
-                    'shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium',
-                    stateStyle.badge
-                  )}
-                  title={breachedAt ? `Breach detected ${breachedAt}` : undefined}
-                >
-                  {stateStyle.label}
-                </span>
-              )}
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
