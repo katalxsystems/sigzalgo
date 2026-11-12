@@ -165,6 +165,10 @@ class StrategyMonitorUpsertSchema(Schema):
         load_default=None, allow_none=True, validate=validate.Length(max=256)
     )
     interval_seconds = fields.Int(load_default=60, validate=validate.Range(min=10, max=3600))
+    # Same windows as the price-breach watches: checks run from 09:00 to 15:45
+    # IST for NSE/BSE/NFO/BFO and 08:45 to 23:45 for MCX/NCDEX, instead of the
+    # exchange's own session hours. Never at weekends or on trading holidays.
+    pause_outside_market_hours = fields.Bool(load_default=False)
     legs = fields.List(
         fields.Nested(StrategyLegSchema), required=True, validate=validate.Length(min=1, max=50)
     )

@@ -107,10 +107,26 @@ POST http://127.0.0.1:5000/api/v1/strategymonitor/deactivate
 | `webhook_url` | Yes | `http` or `https` URL that receives the notification |
 | `webhook_secret` | No | Sent as the `X-Webhook-Secret` header |
 | `interval_seconds` | No | Check interval, 10 to 3600. Default `60` |
+| `pause_outside_market_hours` | No | Boolean, default `false`. Run the checks only in the hours below instead of the exchange's session. Echoed in the response |
 | `legs` | Yes | 1 to 50 legs, see below |
 
 \* At least one of `target`, `stoploss`, `upper_spot_stoploss`,
 `lower_spot_stoploss`. Leave a level out to skip that check.
+
+### When the checks run
+
+The hours follow the underlying's exchange, or the first leg's when there is
+no `underlying`. Weekends and trading holidays never run either way.
+
+| Exchange | Default | With `pause_outside_market_hours: true` (IST) |
+|---|---|---|
+| `NSE`, `BSE`, `NFO`, `BFO`, `NSE_INDEX`, `BSE_INDEX` | The exchange session (09:15 to 15:30 for NSE) | 09:00 to 15:45 |
+| `MCX`, `NCDEX`, `MCX_INDEX` | The MCX session | 08:45 to 23:45 |
+
+These are the same windows the price-breach watches pause on
+([pricebreach.md](pricebreach.md)), so a call and the strategy it belongs to
+stop and resume together. The last check of the day is the one in the 15:44
+(or 23:44) minute. NCDEX uses MCX's holiday calendar.
 
 ### Leg fields
 

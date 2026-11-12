@@ -482,7 +482,9 @@ def _entry_recross_graph(
 
 # Market-hours calendar for a symbol's exchange. The calendar knows the trading
 # exchanges only, so an index is gated by the exchange it is computed on.
-_CALENDAR_EXCHANGE = {"NSE_INDEX": "NSE", "BSE_INDEX": "BSE", "MCX_INDEX": "MCX"}
+# NCDEX has no calendar entry (an unknown exchange reads as shut every day), so
+# it follows MCX's commodity calendar.
+_CALENDAR_EXCHANGE = {"NSE_INDEX": "NSE", "BSE_INDEX": "BSE", "MCX_INDEX": "MCX", "NCDEX": "MCX"}
 
 SCAN_VARIABLE = "scan"
 

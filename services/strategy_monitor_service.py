@@ -24,6 +24,7 @@ adjustment or partial exit so the stored legs stay current.
 
 import json
 import threading
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from database.flow_db import activate_workflow as db_activate_workflow
@@ -47,7 +48,28 @@ NAME_PREFIX = "Strategy Monitor - "
 _upsert_lock = threading.Lock()
 
 # The session whose market hours gate the schedule, by underlying exchange.
-_MARKET_EXCHANGE = {"NSE_INDEX": "NSE", "BSE_INDEX": "BSE", "MCX_INDEX": "MCX"}
+# The calendar has no NCDEX entry, and an exchange it does not know is treated
+# as shut every day, so NCDEX follows MCX's commodity calendar.
+_MARKET_EXCHANGE = {"NSE_INDEX": "NSE", "BSE_INDEX": "BSE", "MCX_INDEX": "MCX", "NCDEX": "MCX"}
+
+
+def _monitoring_window(exchange: str, pause_outside_market_hours: bool) -> dict:
+    """The schedule's clock override for the pause option.
+
+    The window is the price-breach watches' own (MONITORING_HOURS), so a call
+    and the strategy it belongs to stop and start at the same moment. The
+    scheduler's end time is inclusive to the minute, so the last run allowed is
+    the minute before the pause: 15:44 for 15:45. The exchange calendar still
+    decides the day, so weekends and trading holidays never run.
+    """
+    from services.flow_price_monitor_service import MONITORING_HOURS
+
+    hours = MONITORING_HOURS.get(str(exchange or "").upper())
+    if not pause_outside_market_hours or hours is None:
+        return {}
+    resume_at, pause_at = hours
+    last_run = (datetime.combine(date.min, pause_at) - timedelta(minutes=1)).time()
+    return {"marketHoursStart": f"{resume_at:%H:%M}", "marketHoursEnd": f"{last_run:%H:%M}"}
 
 
 def monitor_name(strategy: str) -> str:
@@ -122,6 +144,7 @@ def build_graph(
     lower_spot_stoploss: float | None,
     interval_seconds: int,
     legs: list[dict],
+    pause_outside_market_hours: bool = False,
 ) -> dict:
     """The monitor's nodes and edges. Only the checks whose level is set are
     included. Order per run: P&L target, P&L stoploss, upper spot, lower spot;
@@ -168,6 +191,9 @@ def build_graph(
         every = {"intervalValue": interval_seconds // 60, "intervalUnit": "minutes"}
     else:
         every = {"intervalValue": interval_seconds, "intervalUnit": "seconds"}
+    # The underlying's exchange, or the first leg's when there is no
+    # underlying: a commodity strategy has to follow MCX's hours, not NSE's.
+    session_exchange = underlying_exchange if underlying else legs[0].get("exchange", "NSE")
     start = add(
         "start",
         "start",
@@ -175,9 +201,8 @@ def build_graph(
         scheduleType="interval",
         **every,
         marketHoursOnly=True,
-        marketHoursExchange=_MARKET_EXCHANGE.get(underlying_exchange, underlying_exchange)
-        if underlying
-        else "NSE",
+        marketHoursExchange=_MARKET_EXCHANGE.get(session_exchange, session_exchange),
+        **_monitoring_window(session_exchange, pause_outside_market_hours),
     )
     pnl = add(
         "pnl",
@@ -390,6 +415,7 @@ def upsert(api_key: str, strategy: str, **settings) -> tuple[bool, dict[str, Any
             "strategy": strategy,
             "strategy_id": settings["strategy_id"],
             "mentor_id": settings["mentor_id"],
+            "pause_outside_market_hours": bool(settings.get("pause_outside_market_hours")),
             "created": created,
             "active": True,
             "message": "Monitor created and armed"

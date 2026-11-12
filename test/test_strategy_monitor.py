@@ -43,6 +43,7 @@ def _allow_example_webhook_host(monkeypatch):
     unresolvable or non-public destinations)."""
     monkeypatch.setenv("FLOW_HTTP_ALLOWED_HOSTS", "signalz.example")
 
+
 # Long straddle as Signalz records it: 90 net debit (50 + 40), 65 qty per leg.
 # P&L = 65 * ((ce - 50) + (pe - 40)).
 LEGS = [
@@ -481,3 +482,98 @@ def test_upsert_echoes_and_updates_the_ids(flow):
     body = next(n for n in workflow.nodes if n["id"] == "notify")["data"]["body"]
     assert '"mentor_id": 8,' in body
     assert f'"strategy_id": {STRATEGY_ID},' in body
+
+
+# --- pause outside market hours ------------------------------------------------
+
+MCX_LEGS = [
+    {**LEGS[0], "symbol": "CRUDEOIL19NOV266000CE", "exchange": "MCX"},
+    {**LEGS[1], "symbol": "CRUDEOIL19NOV266000PE", "exchange": "MCX"},
+]
+
+
+def _schedule(**overrides):
+    return graph_for(**overrides)["nodes"][0]["data"]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "exchange", "window"),
+    [
+        ({}, "NSE", ("09:00", "15:44")),
+        ({"underlying": "SENSEX", "underlying_exchange": "BSE_INDEX"}, "BSE", ("09:00", "15:44")),
+        ({"underlying": "CRUDEOIL", "underlying_exchange": "MCX"}, "MCX", ("08:45", "23:44")),
+        (
+            {
+                "underlying": None,
+                "upper_spot_stoploss": None,
+                "lower_spot_stoploss": None,
+                "legs": MCX_LEGS,
+            },
+            "MCX",
+            ("08:45", "23:44"),
+        ),
+        ({"underlying": "GUARSEED", "underlying_exchange": "NCDEX"}, "MCX", ("08:45", "23:44")),
+    ],
+)
+def test_the_pause_option_sets_the_same_window_as_the_price_watches(overrides, exchange, window):
+    data = _schedule(pause_outside_market_hours=True, **overrides)
+    assert data["marketHoursOnly"] is True
+    assert data["marketHoursExchange"] == exchange
+    assert (data["marketHoursStart"], data["marketHoursEnd"]) == window
+    graph = graph_for(pause_outside_market_hours=True, **overrides)
+    assert validate_workflow({"name": "m", **graph}, strict=True) == []
+
+
+def test_without_the_option_the_exchange_session_still_gates_the_schedule():
+    data = _schedule()
+    assert data["marketHoursOnly"] is True
+    assert "marketHoursStart" not in data and "marketHoursEnd" not in data
+
+
+def test_a_commodity_strategy_without_an_underlying_follows_mcx_hours():
+    # Previously gated on NSE's session, so it never ran in the MCX evening.
+    data = _schedule(
+        underlying=None, upper_spot_stoploss=None, lower_spot_stoploss=None, legs=MCX_LEGS
+    )
+    assert data["marketHoursExchange"] == "MCX"
+
+
+@pytest.mark.parametrize(
+    ("hhmm", "runs"),
+    [("08:59", False), ("09:00", True), ("15:44", True), ("15:45", False), ("15:50", False)],
+)
+def test_the_scheduler_runs_the_equity_monitor_from_0900_until_1545(monkeypatch, hhmm, runs):
+    import pytz
+
+    import database.market_calendar_db as cal
+    from services.flow_scheduler_service import is_within_market_hours
+
+    ist = pytz.timezone("Asia/Kolkata")
+    # 2026-11-11 is a Wednesday; the calendar is stubbed to an open NFO session.
+    monkeypatch.setattr(
+        cal, "get_effective_session_window", lambda day, exch: {"start_ms": 0, "end_ms": 0}
+    )
+    hour, minute = map(int, hhmm.split(":"))
+    now = ist.localize(__import__("datetime").datetime(2026, 11, 11, hour, minute, 30))
+    data = _schedule(pause_outside_market_hours=True)
+    assert (
+        is_within_market_hours(
+            now,
+            start=data["marketHoursStart"],
+            end=data["marketHoursEnd"],
+            exchange=data["marketHoursExchange"],
+        )
+        is runs
+    )
+
+
+def test_upsert_echoes_the_pause_option(flow):
+    _, body, _ = sms.upsert(KEY, TAG, **ALL_LEVELS, pause_outside_market_hours=True)
+    assert body["pause_outside_market_hours"] is True
+    workflow = flow_db.get_workflow(body["workflow_id"])
+    assert workflow.nodes[0]["data"]["marketHoursEnd"] == "15:44"
+
+
+def test_schema_defaults_the_pause_option_off():
+    body = {"apikey": KEY, "strategy": TAG, **ALL_LEVELS}
+    assert StrategyMonitorUpsertSchema().load(body)["pause_outside_market_hours"] is False
