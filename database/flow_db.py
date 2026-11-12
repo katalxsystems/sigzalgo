@@ -184,6 +184,69 @@ def init_db():
     _migrate_add_ownership_columns()
     _migrate_add_price_breach_candle_column()
     _migrate_add_breached_at_column()
+    _migrate_http_timeouts_to_ms()
+
+
+# The HTTP Request node's timeout was once read in seconds; it is now read in
+# milliseconds. The executor still converts a stored value of this size or
+# less (see NodeExecutor.HTTP_TIMEOUT_LEGACY_SECONDS_MAX, kept in step), but the
+# run-time validator rejects anything under 1000 ms, so such a workflow never
+# starts: every price-breach call, price alert and strategy monitor created
+# before the change.
+_HTTP_TIMEOUT_LEGACY_SECONDS_MAX = 60
+
+
+def _http_timeout_in_ms(timeout):
+    """The stored timeout rewritten in milliseconds, or None to leave it.
+    Templates (`{{...}}`) and values already in milliseconds are left alone."""
+    if isinstance(timeout, bool) or (isinstance(timeout, str) and "{{" in timeout):
+        return None
+    try:
+        seconds = float(timeout)
+    except (TypeError, ValueError):
+        return None
+    if 0 < seconds <= _HTTP_TIMEOUT_LEGACY_SECONDS_MAX:
+        return int(round(seconds * 1000))
+    return None
+
+
+def _migrate_http_timeouts_to_ms():
+    """Rewrite HTTP Request timeouts stored in seconds as milliseconds.
+
+    The same conversion the executor applies at run time, written back so the
+    stored graph passes the validator. Idempotent: a converted value is at
+    least 1000, which this never touches again.
+    """
+    try:
+        converted = []
+        for workflow in FlowWorkflow.query.all():
+            nodes = workflow.nodes or []
+            changed = False
+            new_nodes = []
+            for node in nodes:
+                is_http = isinstance(node, dict) and node.get("type") == "httpRequest"
+                data = node.get("data") if is_http else None
+                if isinstance(data, dict):
+                    milliseconds = _http_timeout_in_ms(data.get("timeout"))
+                    if milliseconds is not None:
+                        node = {**node, "data": {**data, "timeout": milliseconds}}
+                        changed = True
+                new_nodes.append(node)
+            if changed:
+                # Reassigned, not mutated in place: the JSON column only sees a
+                # new value as a change.
+                workflow.nodes = new_nodes
+                converted.append(workflow.id)
+        if converted:
+            db_session.commit()
+            _workflow_cache.clear()
+            logger.info(
+                f"Migration: converted HTTP Request timeouts from seconds to milliseconds "
+                f"in {len(converted)} workflow(s): {converted}"
+            )
+    except Exception:
+        db_session.rollback()
+        logger.exception("Migration of HTTP Request timeouts to milliseconds failed")
 
 
 def _migrate_add_breached_at_column():
@@ -812,9 +875,7 @@ def prune_workflow_executions(workflow_id, max_count=None, max_age_days=None):
             # stamped: their timestamp is null and would sort unpredictably.
             keep = [
                 row.id
-                for row in FlowWorkflowExecution.query.with_entities(
-                    FlowWorkflowExecution.id
-                )
+                for row in FlowWorkflowExecution.query.with_entities(FlowWorkflowExecution.id)
                 .filter(FlowWorkflowExecution.workflow_id == workflow_id)
                 .order_by(FlowWorkflowExecution.id.desc())
                 .limit(max_count)
