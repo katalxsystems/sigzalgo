@@ -14,6 +14,7 @@ from broker.mstock.mapping.transform_data import (
 )
 from database.auth_db import get_auth_token
 from database.token_db import get_symbol, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -81,7 +82,7 @@ def get_api_response(endpoint, auth, method="GET", payload=""):
         dict: JSON response from API
     """
     auth_token = auth
-    api_key = os.getenv("BROKER_API_SECRET")
+    _, api_key = resolve_broker_api_key(auth_token, "mstock")
 
     client = get_httpx_client()
 
@@ -245,7 +246,7 @@ def place_order_api(data, auth):
         tuple: (response, response_data, orderid)
     """
     auth_token = auth
-    api_key = os.getenv("BROKER_API_SECRET")
+    _, api_key = resolve_broker_api_key(auth_token, "mstock")
 
     # Get token and transform data
     token = get_token(data["symbol"], data["exchange"])
@@ -494,7 +495,7 @@ def cancel_order(orderid, auth):
         tuple: (response_dict, status_code)
     """
     auth_token = auth
-    api_key = os.getenv("BROKER_API_SECRET")
+    _, api_key = resolve_broker_api_key(auth_token, "mstock")
 
     client = get_httpx_client()
 
@@ -572,7 +573,7 @@ def modify_order(data, auth):
         tuple: (response_dict, status_code)
     """
     auth_token = auth
-    api_key = os.getenv("BROKER_API_SECRET")
+    _, api_key = resolve_broker_api_key(auth_token, "mstock")
 
     client = get_httpx_client()
 
@@ -663,7 +664,7 @@ def cancel_all_orders_api(data, auth):
         tuple: (canceled_orders_list, failed_cancellations_list)
     """
     auth_token = auth
-    api_key = os.getenv("BROKER_API_SECRET")
+    _, api_key = resolve_broker_api_key(auth_token, "mstock")
 
     # First, get the list of pending orders to return their IDs
     logger.info("Fetching order book to identify pending orders")

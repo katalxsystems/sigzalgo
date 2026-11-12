@@ -10,10 +10,12 @@ The legacy 4-step flow (/otp/generateOtp -> /otp/secretKeyGenerator ->
 /ip/ipUpdate endpoints are deprecated in v3.2 and are not used here. API keys,
 secrets and static IPs are managed in the Samco Web Dashboard at
 https://tradeapi.samco.in/app/login.
+
+Multi-account: the key and secret are the connected account's own
+(Profile > Accounts), not the instance-wide .env values.
 """
 
-import os
-
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -62,14 +64,14 @@ def _error_message(data, default):
     return f"{message}. {hint}" if hint else message
 
 
-def get_api_key():
-    """Get the OAuth app's API key from environment variables."""
-    return os.getenv("BROKER_API_KEY")
+def get_api_key(account_id=None):
+    """The account's OAuth app API key."""
+    return get_broker_api_key(account_id, broker="samco")
 
 
-def get_api_secret():
-    """Get the OAuth app's API secret from environment variables."""
-    return os.getenv("BROKER_API_SECRET")
+def get_api_secret(account_id=None):
+    """The account's OAuth app API secret."""
+    return get_broker_api_secret(account_id, broker="samco")
 
 
 def _log_ip_check(data):
@@ -172,7 +174,7 @@ def get_whoami(session_token):
         return None, str(e)
 
 
-def authenticate_broker():
+def authenticate_broker(account_id=None):
     """
     Authenticate with Samco and return a session token.
 
@@ -180,18 +182,19 @@ def authenticate_broker():
         tuple: (session_token, error_message)
     """
     try:
-        api_key = get_api_key()
-        api_secret = get_api_secret()
+        api_key = get_api_key(account_id)
+        api_secret = get_api_secret(account_id)
 
         if not api_key:
             return None, (
-                "API key not configured. Set BROKER_API_KEY in .env to the API Key of "
-                f"your Samco OAuth app (create one at {DASHBOARD_URL})"
+                "API key not configured. In Profile > Accounts, set this account's API "
+                f"key to the API Key of your Samco OAuth app (create one at {DASHBOARD_URL})"
             )
         if not api_secret:
             return None, (
-                "API secret not configured. Set BROKER_API_SECRET in .env to the API "
-                f"Secret shown once when the OAuth app was created (see {DASHBOARD_URL})"
+                "API secret not configured. In Profile > Accounts, set this account's API "
+                "secret to the API Secret shown once when the OAuth app was created "
+                f"(see {DASHBOARD_URL})"
             )
 
         data, error = generate_session_token(api_key, api_secret)

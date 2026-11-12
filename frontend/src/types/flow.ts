@@ -385,6 +385,27 @@ export interface BarOffsetNodeData {
   outputVariable?: string
 }
 
+/** Candle Breach Scan - first closed candle in a window that broke a level */
+export interface CandleScanNodeData {
+  label?: string
+  symbol: string
+  exchange: string
+  interval: string
+  source: 'api' | 'db'
+  lookbackMinutes: number
+  /** Breach when a candle's high is above this. Number or {{variable}}. */
+  above?: number | string
+  /** Breach when a candle's low is below this. Number or {{variable}}. */
+  below?: number | string
+  /** Ignore candles that started before this epoch (seconds). */
+  sinceEpoch?: number | string
+  /** Which side a candle that broke both levels is reported as. */
+  tiePrefer?: 'above' | 'below'
+  /** Log an error and alert on Telegram once when runs keep getting no candle data. */
+  alertOnNoData?: boolean
+  outputVariable?: string
+}
+
 /** Get Open Position - Fetch current position for a symbol */
 export interface OpenPositionNodeData {
   label?: string
@@ -707,6 +728,7 @@ export type DataNodeData =
   | PriorPeriodOhlcNodeData
   | StrategyPnlNodeData
   | BarOffsetNodeData
+  | CandleScanNodeData
   | OpenPositionNodeData
   | ExpiryNodeData
   | IntervalsNodeData

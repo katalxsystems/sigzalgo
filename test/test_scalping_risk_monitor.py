@@ -138,7 +138,9 @@ class TestTrailing:
         assert r2["breached"] and r2["reason"] == "sl"
 
 
-# --------------------------------------------------------------------- _on_tick wiring
+# --------------------------------------------------------------------- tick processing
+# The feed callback (_on_tick) only enqueues; _process_tick holds the logic and
+# runs on the hub via the drain loop. These tests exercise the logic directly.
 def _tick(symbol, exchange, ltp):
     return {"type": "market_data", "symbol": symbol, "exchange": exchange,
             "mode": "LTP", "data": {"ltp": ltp}}
@@ -158,7 +160,7 @@ class TestOnTickEventDriven:
                             lambda key, st, reason, ltp: fired.append((key, reason, ltp)))
         key = mod._slkey("NIFTY25JUN2623600CE", "NFO", "NRML")
         self.mon._states[key] = _long(current_sl=95.0)
-        self.mon._on_tick(_tick("NIFTY25JUN2623600CE", "NFO", 94.0))
+        self.mon._process_tick(_tick("NIFTY25JUN2623600CE", "NFO", 94.0))
         assert len(fired) == 1
         assert fired[0][1] == "sl"
 
@@ -168,7 +170,7 @@ class TestOnTickEventDriven:
                             lambda *a: fired.append(a))
         key = mod._slkey("NIFTY25JUN2623600CE", "NFO", "NRML")
         self.mon._states[key] = _long(current_sl=95.0)
-        self.mon._on_tick(_tick("NIFTY25JUN2623600CE", "NFO", 99.0))
+        self.mon._process_tick(_tick("NIFTY25JUN2623600CE", "NFO", 99.0))
         assert fired == []
 
     def test_trailing_updates_in_memory_and_persists(self, monkeypatch):
@@ -179,7 +181,7 @@ class TestOnTickEventDriven:
                             lambda *a: pytest.fail("should not exit on a trailing tick"))
         key = mod._slkey("NIFTY25JUN2623600CE", "NFO", "NRML")
         self.mon._states[key] = _long(trailing_enabled=True, trailing_step=3.0, current_sl=90.0)
-        self.mon._on_tick(_tick("NIFTY25JUN2623600CE", "NFO", 110.0))
+        self.mon._process_tick(_tick("NIFTY25JUN2623600CE", "NFO", 110.0))
         # in-memory state advanced and persist was invoked with the trailed stop
         assert self.mon._states[key]["current_sl"] == pytest.approx(107.0)
         assert persisted and persisted[0][1] == pytest.approx(107.0)
@@ -187,14 +189,14 @@ class TestOnTickEventDriven:
     def test_tick_for_unwatched_symbol_is_ignored(self, monkeypatch):
         monkeypatch.setattr(self.mon, "_dispatch_exit",
                             lambda *a: pytest.fail("no state for this symbol"))
-        self.mon._on_tick(_tick("SOMETHINGELSE", "NFO", 1.0))  # no states at all
+        self.mon._process_tick(_tick("SOMETHINGELSE", "NFO", 1.0))  # no states at all
 
     def test_zero_or_missing_ltp_ignored(self, monkeypatch):
         monkeypatch.setattr(self.mon, "_dispatch_exit", lambda *a: pytest.fail("no ltp"))
         key = mod._slkey("NIFTY25JUN2623600CE", "NFO", "NRML")
         self.mon._states[key] = _long(current_sl=95.0)
-        self.mon._on_tick(_tick("NIFTY25JUN2623600CE", "NFO", 0))
-        self.mon._on_tick({"type": "market_data", "symbol": "NIFTY25JUN2623600CE",
+        self.mon._process_tick(_tick("NIFTY25JUN2623600CE", "NFO", 0))
+        self.mon._process_tick({"type": "market_data", "symbol": "NIFTY25JUN2623600CE",
                            "exchange": "NFO", "data": {}})
 
 
@@ -212,7 +214,7 @@ class TestModeSegregation:
         monkeypatch.setattr(self.mon, "_dispatch_exit", lambda *a: fired.append(a))
         key = mod._slkey("NIFTY25JUN2623600CE", "NFO", "NRML")
         self.mon._states[key] = _long(current_sl=95.0, mode="analyze")
-        self.mon._on_tick(_tick("NIFTY25JUN2623600CE", "NFO", 94.0))  # would breach
+        self.mon._process_tick(_tick("NIFTY25JUN2623600CE", "NFO", 94.0))  # would breach
         assert fired == []  # skipped because mode mismatch
 
     def test_breaching_sl_in_current_mode_fires(self, monkeypatch):
@@ -221,7 +223,7 @@ class TestModeSegregation:
         monkeypatch.setattr(self.mon, "_dispatch_exit", lambda *a: fired.append(a))
         key = mod._slkey("NIFTY25JUN2623600CE", "NFO", "NRML")
         self.mon._states[key] = _long(current_sl=95.0, mode="live")
-        self.mon._on_tick(_tick("NIFTY25JUN2623600CE", "NFO", 94.0))
+        self.mon._process_tick(_tick("NIFTY25JUN2623600CE", "NFO", 94.0))
         assert len(fired) == 1
 
     def test_exit_worker_skips_when_mode_changed_since_detection(self, monkeypatch):
@@ -270,5 +272,44 @@ class TestModeSegregation:
         monkeypatch.setattr(self.mon, "_dispatch_exit", lambda *a: fired.append(a))
         key = mod._slkey("NIFTY25JUN2623600CE", "NFO", "NRML")
         self.mon._states[key] = _long(current_sl=95.0, mode="analyze")
-        self.mon._on_tick(_tick("NIFTY25JUN2623600CE", "NFO", 94.0))
+        self.mon._process_tick(_tick("NIFTY25JUN2623600CE", "NFO", 94.0))
         assert len(fired) == 1
+
+
+class TestFeedCallbackHandoff:
+    """_on_tick runs on the websocket client's real OS thread: it must only
+    enqueue (no green locks, DB writes or thread starts there); the drain loop
+    applies the tick on the hub."""
+
+    def test_on_tick_only_enqueues_and_drain_applies(self, monkeypatch):
+        import threading
+        import time as _time
+
+        mon = ScalpingRiskMonitor()
+        mon._states = {}
+        mon._exit_inflight = set()
+        mon._last_exit_attempt = {}
+        fired = []
+        monkeypatch.setattr(mon, "_dispatch_exit",
+                            lambda key, st, reason, ltp: fired.append((key, reason, ltp)))
+        monkeypatch.setattr(mon, "_mode", lambda: None)
+        key = mod._slkey("NIFTY25JUN2623600CE", "NFO", "NRML")
+        mon._states[key] = _long(current_sl=95.0)
+
+        caller = threading.Thread(
+            target=mon._on_tick, args=(_tick("NIFTY25JUN2623600CE", "NFO", 94.0),)
+        )
+        caller.start()
+        caller.join()
+        assert fired == []  # nothing applied on the feed thread
+        assert mon._tick_queue.qsize() == 1
+
+        mon._ensure_drain()
+        try:
+            for _ in range(200):
+                if fired:
+                    break
+                _time.sleep(0.01)
+        finally:
+            mon._drain_stop.set()
+        assert fired and fired[0][0] == key

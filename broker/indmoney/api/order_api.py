@@ -18,6 +18,7 @@ from broker.indmoney.mapping.transform_data import (
     transform_modify_order_data,
 )
 from database.token_db import get_br_symbol, get_symbol, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -548,7 +549,7 @@ def _extract_order_id(response_data):
 
 def place_order_api(data, auth):
     AUTH_TOKEN = auth
-    BROKER_API_KEY = os.getenv("BROKER_API_KEY")
+    BROKER_API_KEY, _ = resolve_broker_api_key(AUTH_TOKEN, "indmoney")
     data["apikey"] = BROKER_API_KEY
     token = get_token(data["symbol"], data["exchange"])
     logger.debug(f"Original order data: {data}")
@@ -833,7 +834,7 @@ def cancel_order(orderid, auth):
 def modify_order(data, auth):
     # Assuming you have a function to get the authentication token
     AUTH_TOKEN = auth
-    BROKER_API_KEY = os.getenv("BROKER_API_KEY")
+    BROKER_API_KEY, _ = resolve_broker_api_key(AUTH_TOKEN, "indmoney")
     data["apikey"] = BROKER_API_KEY
 
     orderid = data["orderid"]

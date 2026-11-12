@@ -10,7 +10,7 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-def authenticate_broker(mobile_number, totp, mpin):
+def authenticate_broker(mobile_number, totp, mpin, account_id=None):
     """
     Authenticate with Kotak using TOTP and MPIN flow.
 
@@ -39,8 +39,8 @@ def authenticate_broker(mobile_number, totp, mpin):
         # Get UCC from BROKER_API_KEY and access_token from BROKER_API_SECRET
         from utils.config import get_broker_api_key, get_broker_api_secret
 
-        ucc = get_broker_api_key()
-        access_token = get_broker_api_secret()
+        ucc = get_broker_api_key(account_id, broker="kotak")
+        access_token = get_broker_api_secret(account_id, broker="kotak")
 
         if not ucc:
             logger.error("BROKER_API_KEY (UCC) is not configured")

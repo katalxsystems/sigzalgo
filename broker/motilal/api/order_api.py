@@ -5,7 +5,12 @@ import time
 
 import httpx
 
-from broker.motilal.api.baseurl import get_base_url, get_common_headers, get_url
+from broker.motilal.api.baseurl import (
+    get_account_credentials,
+    get_base_url,
+    get_common_headers,
+    get_url,
+)
 from broker.motilal.mapping.transform_data import (
     map_exchange,
     map_product_type,
@@ -339,16 +344,10 @@ def get_open_position(tradingsymbol, exchange, producttype, auth):
 
 def place_order_api(data, auth):
     AUTH_TOKEN = auth
-    # Standard OpenAlgo credential convention (kept identical across brokers):
-    #   BROKER_API_KEY    = App API Key -> "Api Key of App" (doc 05) and the
-    #                       SHA-256(password + APIKey) login hash (doc 08)
-    #   BROKER_API_SECRET = App API Secret -> apisecretkey (doc 09)
-    # The Motilal client code is NOT an env var: it is the login ID entered on
-    # the TOTP page, persisted at login and read via baseurl.get_client_code().
-    # Keep this consistent with baseurl.get_common_headers(), auth_api.py and
-    # data.py. `apikey` is not in doc 14's documented body but is carried
-    # through transform_data(), so the value still has to be right.
-    data["apikey"] = os.getenv("BROKER_API_KEY")
+    # `apikey` is the app API key (not in doc 14's documented body, but carried
+    # through transform_data()). Per account it is the account's API secret
+    # field; see baseurl.get_account_credentials().
+    _, data["apikey"] = get_account_credentials(AUTH_TOKEN)
     token = get_token(data["symbol"], data["exchange"])
 
     logger.debug(

@@ -173,7 +173,10 @@ def api_get_websocket_apikey():
 
     from database.auth_db import get_api_key_for_tradingview
 
-    api_key = get_api_key_for_tradingview(username)
+    # Resolve the API key for the active broker account, falling back to the
+    # platform username for pre-multi-account installs (see historify.py /
+    # tv_json.py for the same pattern).
+    api_key = get_api_key_for_tradingview(session.get("user_session_key") or username)
 
     if not api_key:
         return jsonify(

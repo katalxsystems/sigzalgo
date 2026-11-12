@@ -18,7 +18,7 @@ from limiter import limiter
 from services.telegram_alert_service import TelegramAlertService
 from services.telegram_bot_service import telegram_bot_service
 from utils.logging import get_logger
-from utils.session import check_session_validity
+from utils.session import admin_required
 
 logger = get_logger(__name__)
 
@@ -52,9 +52,16 @@ telegram_bp = Blueprint("telegram_bp", __name__, url_prefix="/telegram")
 # ... (migrated to React /telegram/analytics)
 
 
+# Every route in this blueprint is admin-only: there is one Telegram bot
+# for the whole instance (one bot_token, one running bot process), and
+# TelegramUser rows / broadcast / unlink act across every platform user's
+# linked account, not just the caller's own. None of that is safe to expose
+# to a non-admin tenant on a multi-user deployment.
+
+
 # Config POST endpoint - kept for React API usage
 @telegram_bp.route("/config", methods=["POST"])
-@check_session_validity
+@admin_required
 def configuration():
     """Update bot configuration (JSON API)"""
     try:
@@ -90,7 +97,7 @@ def configuration():
 
 
 @telegram_bp.route("/bot/start", methods=["POST"])
-@check_session_validity
+@admin_required
 def start_bot():
     """Start the telegram bot"""
     try:
@@ -161,7 +168,7 @@ def start_bot():
 
 
 @telegram_bp.route("/bot/stop", methods=["POST"])
-@check_session_validity
+@admin_required
 def stop_bot():
     """Stop the telegram bot"""
     try:
@@ -179,7 +186,7 @@ def stop_bot():
 
 
 @telegram_bp.route("/bot/status", methods=["GET"])
-@check_session_validity
+@admin_required
 def bot_status():
     """Get bot status"""
     try:
@@ -200,7 +207,7 @@ def bot_status():
 
 
 @telegram_bp.route("/broadcast", methods=["POST"])
-@check_session_validity
+@admin_required
 def broadcast():
     """Send broadcast message"""
     try:
@@ -244,7 +251,7 @@ def broadcast():
 
 
 @telegram_bp.route("/user/<int:telegram_id>/unlink", methods=["POST"])
-@check_session_validity
+@admin_required
 def unlink_user(telegram_id):
     """Unlink a telegram user"""
     try:
@@ -261,7 +268,7 @@ def unlink_user(telegram_id):
 
 
 @telegram_bp.route("/test-message", methods=["POST"])
-@check_session_validity
+@admin_required
 def send_test_message():
     """Send a test message to the current user or first available user"""
     try:
@@ -311,7 +318,7 @@ def send_test_message():
 
 
 @telegram_bp.route("/send-message", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(TELEGRAM_MESSAGE_RATE_LIMIT)
 def send_message():
     """Send a message to a specific Telegram user (Admin only)"""
@@ -388,7 +395,7 @@ def _format_stats_for_react(stats_dict):
 
 
 @telegram_bp.route("/api/index")
-@check_session_validity
+@admin_required
 def api_index():
     """Get telegram index data for React frontend"""
     try:
@@ -434,7 +441,7 @@ def api_index():
 
 
 @telegram_bp.route("/api/config")
-@check_session_validity
+@admin_required
 def api_config():
     """Get bot configuration for React frontend"""
     try:
@@ -460,7 +467,7 @@ def api_config():
 
 
 @telegram_bp.route("/api/users")
-@check_session_validity
+@admin_required
 def api_users():
     """Get all telegram users for React frontend"""
     try:
@@ -485,7 +492,7 @@ def api_users():
 
 
 @telegram_bp.route("/api/analytics")
-@check_session_validity
+@admin_required
 def api_analytics():
     """Get analytics data for React frontend"""
     try:

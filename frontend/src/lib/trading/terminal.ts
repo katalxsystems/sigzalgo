@@ -119,7 +119,13 @@ import {
 } from './chartContract'
 import { DRAW_TOOL_METADATA } from './drawingToolMetadata'
 import { CurrentDrawingSource, profileObjectProvider } from './chartObjectsAdapter'
-import { buildChartTheme, mutedTradeColors, resolveCssColor, volumeColor } from './chartTheme'
+import {
+  algozBranding,
+  buildChartTheme,
+  mutedTradeColors,
+  resolveCssColor,
+  volumeColor,
+} from './chartTheme'
 import { CHART_TYPES } from './chartTypes'
 import { fmtPrice, money, priceDp, snapTick, tickSize } from './format'
 import {
@@ -1573,6 +1579,7 @@ export class TradingTerminal {
     this.chart = createChart(this.container, {
       priceAxisWidth: 78,
       theme,
+      branding: algozBranding(mode, appMode),
       // Corner clock and bar countdown. Both are off by default in the engine,
       // deliberately: a countdown repaints every second, and on the historical
       // range a chart usually opens on it counts against a bar that closed months

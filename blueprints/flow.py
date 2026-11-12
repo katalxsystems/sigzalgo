@@ -7,6 +7,7 @@ Provides routes for managing and executing workflows
 import json
 import logging
 import os
+import re
 from datetime import datetime
 
 from flask import Blueprint, jsonify, request, session
@@ -14,6 +15,8 @@ from flask import Blueprint, jsonify, request, session
 from database.auth_db import get_api_key_for_tradingview
 from limiter import limiter
 from utils.session import check_session_validity
+from utils.account_context import current_account_id, is_admin_session
+from utils.session import require_app_session
 
 logger = logging.getLogger(__name__)
 
@@ -26,28 +29,122 @@ WEBHOOK_RATE_LIMIT = os.getenv("WEBHOOK_RATE_LIMIT", "100 per minute")
 
 
 def get_current_api_key():
-    """Get API key for the current user from session"""
-    username = session.get("user")
-    if not username:
-        return None
-    return get_api_key_for_tradingview(username)
+    """API key of the session's current broker account"""
+    account_id = current_account_id()
+    return get_api_key_for_tradingview(account_id) if account_id else None
+
+
+def is_flow_admin():
+    """Whether the session user is an administrator (sees every workflow)."""
+    return is_admin_session()
+
+
+def can_access_workflow(workflow):
+    """Owners work on their account's workflows; administrators on all.
+
+    Unassigned workflows (from before per-account Flow, never activated) are
+    administrator-only until activated or run, which assigns them.
+    """
+    if is_flow_admin():
+        return True
+    return bool(workflow.account_id) and workflow.account_id == current_account_id()
+
+
+def load_workflow(workflow_id):
+    """(workflow, None), or (None, 404 response) when it does not exist or is
+    not the caller's. 404 rather than 403, so another account's workflow ids
+    are not confirmed to exist."""
+    from database.flow_db import get_workflow
+
+    workflow = get_workflow(workflow_id)
+    if not workflow or not can_access_workflow(workflow):
+        return None, (jsonify({"error": "Workflow not found"}), 404)
+    return workflow, None
+
+
+def workflow_api_key(workflow):
+    """API key a workflow runs with: its own account's key, so an administrator
+    running someone else's workflow trades on that workflow's account, not
+    their own. An unassigned workflow is claimed by the current account."""
+    if not workflow.account_id:
+        from database.auth_db import get_owner_username
+        from database.flow_db import set_workflow_owner
+
+        account_id = current_account_id()
+        owner = get_owner_username(account_id) or session.get("user")
+        set_workflow_owner(workflow.id, account_id, owner)
+        workflow.account_id, workflow.owner_username = account_id, owner
+    return get_api_key_for_tradingview(workflow.account_id)
+
+
+def _ownership_fields(workflow):
+    return {"account_id": workflow.account_id, "owner_username": workflow.owner_username}
+
+
+# A caller's id as json.dumps writes it into a notify body. Price-breach watches
+# and strategy monitors both build their bodies with json.dumps, so the
+# `"key": "value"` spacing is fixed. Values are limited to the API's id format.
+# A quoted string id (price-breach) or a bare integer id (strategy monitor).
+_EXTERNAL_ID_FIELD = re.compile(
+    r'"(call_id|mentor_id)": (?:"([A-Za-z0-9_.:-]{1,100})"|(\d{1,20})\b)'
+)
+
+
+def _external_ids(nodes):
+    """(call_ids, mentor_ids) a workflow carries, so the list page can search
+    on them. Neither monitor type stores them in a column: price-breach puts
+    both in its notify bodies, the strategy monitor puts mentor_id in its
+    notify body and a call_id on each leg of its P&L node."""
+    call_ids, mentor_ids = set(), set()
+    for node in nodes or []:
+        data = node.get("data") if isinstance(node, dict) else None
+        if not isinstance(data, dict):
+            continue
+        for leg in data.get("legs") or []:
+            if isinstance(leg, dict) and leg.get("call_id"):
+                call_ids.add(str(leg["call_id"]))
+        body = data.get("body")
+        if isinstance(body, str):
+            for key, quoted, number in _EXTERNAL_ID_FIELD.findall(body):
+                (call_ids if key == "call_id" else mentor_ids).add(quoted or number)
+    return sorted(call_ids), sorted(mentor_ids)
 
 
 # === Workflow CRUD Routes ===
 
 
 @flow_bp.route("/api/workflows", methods=["GET"])
-@check_session_validity
+@require_app_session
 def list_workflows():
-    """List all workflows"""
-    from database.flow_db import get_all_workflows, get_workflow_executions
+    """List the current account's workflows (every workflow for administrators)"""
+    from database.flow_db import (
+        get_all_workflows,
+        get_price_breach_workflow_ids,
+        get_workflow_executions,
+        get_workflows_for_account,
+    )
+    from services.strategy_monitor_service import NAME_PREFIX as STRATEGY_MONITOR_PREFIX
 
-    workflows = get_all_workflows()
+    if is_flow_admin():
+        workflows = get_all_workflows()
+    else:
+        workflows = get_workflows_for_account(current_account_id())
     items = []
+    price_breach_ids = get_price_breach_workflow_ids()
 
     for wf in workflows:
         executions = get_workflow_executions(wf.id, limit=1)
         last_exec = executions[0] if executions else None
+        call_ids, mentor_ids = _external_ids(wf.nodes)
+        # Monitors get a breach status in the list (breached / monitoring /
+        # deactivated); ordinary workflows do not.
+        if wf.id in price_breach_ids:
+            monitor = "price_breach"
+        elif (wf.name or "").startswith(STRATEGY_MONITOR_PREFIX):
+            monitor = "strategy_monitor"
+        else:
+            monitor = None
+        breached_at = getattr(wf, "breached_at", None)
 
         items.append(
             {
@@ -59,6 +156,11 @@ def list_workflows():
                 "created_at": wf.created_at.isoformat() if wf.created_at else None,
                 "updated_at": wf.updated_at.isoformat() if wf.updated_at else None,
                 "last_execution_status": last_exec.status if last_exec else None,
+                "call_ids": call_ids,
+                "mentor_ids": mentor_ids,
+                "monitor": monitor,
+                "breached_at": breached_at.isoformat() if breached_at else None,
+                **_ownership_fields(wf),
             }
         )
 
@@ -66,7 +168,7 @@ def list_workflows():
 
 
 @flow_bp.route("/api/workflows", methods=["POST"])
-@check_session_validity
+@require_app_session
 def create_workflow():
     """Create a new workflow"""
     from database.flow_db import create_workflow
@@ -129,7 +231,17 @@ def create_workflow():
     nodes = data.get("nodes", [])
     edges = data.get("edges", [])
 
-    workflow = create_workflow(name=name, description=description, nodes=nodes, edges=edges)
+    from database.auth_db import get_owner_username
+
+    account_id = current_account_id()
+    workflow = create_workflow(
+        name=name,
+        description=description,
+        nodes=nodes,
+        edges=edges,
+        account_id=account_id,
+        owner_username=get_owner_username(account_id) or session.get("user"),
+    )
 
     if not workflow:
         return jsonify({"error": "Failed to create workflow"}), 500
@@ -153,14 +265,12 @@ def create_workflow():
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>", methods=["GET"])
-@check_session_validity
+@require_app_session
 def get_workflow(workflow_id):
     """Get a workflow by ID"""
-    from database.flow_db import get_workflow
-
-    workflow = get_workflow(workflow_id)
-    if not workflow:
-        return jsonify({"error": "Workflow not found"}), 404
+    workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
 
     return jsonify(
         {
@@ -171,6 +281,7 @@ def get_workflow(workflow_id):
             "edges": workflow.edges,
             "is_active": workflow.is_active,
             "schedule_job_id": workflow.schedule_job_id,
+            **_ownership_fields(workflow),
             "webhook_token": workflow.webhook_token,
             "webhook_secret": workflow.webhook_secret,
             "webhook_enabled": workflow.webhook_enabled,
@@ -211,10 +322,14 @@ def _existing_for_trigger_check(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>", methods=["PUT"])
-@check_session_validity
+@require_app_session
 def update_workflow(workflow_id):
     """Update a workflow"""
     from database.flow_db import update_workflow
+
+    _, error = load_workflow(workflow_id)
+    if error:
+        return error
 
     data = request.get_json()
     if not data:
@@ -285,7 +400,11 @@ def update_workflow(workflow_id):
     trigger_before = trigger_config(existing.nodes or []) if existing else {}
     was_active = bool(existing.is_active) if existing else False
 
-    workflow = update_workflow(workflow_id, **data)
+    # Only what the editor edits. api_key, is_active and schedule_job_id are
+    # set by activation/deactivation (which register or tear down the
+    # trigger), and ownership is never client-settable.
+    editable = ("name", "description", "nodes", "edges", "webhook_enabled", "webhook_auth_type")
+    workflow = update_workflow(workflow_id, **{k: data[k] for k in editable if k in data})
     if not workflow:
         return jsonify({"error": "Workflow not found"}), 404
 
@@ -332,18 +451,43 @@ def update_workflow(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>", methods=["DELETE"])
-@check_session_validity
+@require_app_session
 def delete_workflow(workflow_id):
     """Delete a workflow"""
-    from database.flow_db import delete_workflow, get_workflow
-    from services.flow_executor_service import release_workflow_subscriptions
+    from services.flow_executor_service import get_workflow_lock, retry_pending_releases
+
+    retry_pending_releases()
+
+    # Checked before the lock: get_workflow_lock keeps an entry per id for the
+    # life of the process, so an unknown id from the URL must not create one.
+    _workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
+
+    # Taken without waiting: a run in progress could subscribe again after the
+    # release below and leave a feed nobody owns.
+    lock = get_workflow_lock(workflow_id)
+    if not lock.acquire(blocking=False):
+        return jsonify(
+            {"error": "This workflow is still running. Try again when it finishes."}
+        ), 409
+    try:
+        return _delete_workflow_locked(workflow_id)
+    finally:
+        lock.release()
+
+
+def _delete_workflow_locked(workflow_id):
+    """Tear down triggers, release the feed (or queue a retry) and delete."""
+    from database.flow_db import delete_workflow
+    from services.flow_executor_service import release_workflow_subscriptions_or_defer
     from services.flow_order_update_monitor_service import get_flow_order_update_monitor
     from services.flow_price_monitor_service import get_flow_price_monitor
     from services.flow_scheduler_service import get_flow_scheduler
 
-    workflow = get_workflow(workflow_id)
-    if not workflow:
-        return jsonify({"error": "Workflow not found"}), 404
+    workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
 
     # Deactivate if active. Every in-memory registration must be torn down
     # here too - deleting the row alone would strand the watch/alert, which
@@ -357,13 +501,29 @@ def delete_workflow(workflow_id):
 
     # Unconditionally, not only when active: a workflow deactivated and then
     # deleted has already been released, and this is a no-op, but one that
-    # subscribed while active and was never deactivated still holds them.
-    release_workflow_subscriptions(workflow_id)
+    # subscribed while active and was never deactivated still holds them. A
+    # failed release does not block the delete: the owner was captured at
+    # subscribe time, so the retry still works once the row is gone.
+    released = release_workflow_subscriptions_or_defer(workflow_id)
 
     if delete_workflow(workflow_id):
-        return jsonify({"status": "success", "message": "Workflow deleted"})
+        return jsonify(
+            _with_release_status({"status": "success", "message": "Workflow deleted"}, released)
+        )
     else:
         return jsonify({"error": "Failed to delete workflow"}), 500
+
+
+def _with_release_status(body, released):
+    """Note on a success response that a market-data release is still pending."""
+    if not released:
+        body["feed_release_pending"] = True
+        body["message"] += (
+            ". Its market-data subscriptions could not be released yet (the feed is "
+            "not connected, or a run is still in progress) and will be released "
+            "automatically later"
+        )
+    return body
 
 
 # === Activation/Deactivation Routes ===
@@ -516,25 +676,27 @@ def _rollback_activation(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/activate", methods=["POST"])
-@check_session_validity
+@require_app_session
 def activate_workflow(workflow_id):
     """Activate a workflow"""
     from database.flow_db import activate_workflow as db_activate
-    from database.flow_db import get_workflow, set_schedule_job_id
+    from database.flow_db import set_schedule_job_id
     from services.flow_order_update_monitor_service import get_flow_order_update_monitor
     from services.flow_price_monitor_service import get_flow_price_monitor
     from services.flow_scheduler_service import get_flow_scheduler
 
-    workflow = get_workflow(workflow_id)
-    if not workflow:
-        return jsonify({"error": "Workflow not found"}), 404
+    workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
 
     if workflow.is_active:
         return jsonify({"status": "already_active", "message": "Workflow is already active"})
 
-    api_key = get_current_api_key()
+    api_key = workflow_api_key(workflow)
     if not api_key:
-        return jsonify({"error": "API key not configured"}), 400
+        return jsonify(
+            {"error": f"No API key for account {workflow.account_id}. Generate one at /apikey."}
+        ), 400
 
     blocked = _execution_blocked(workflow)
     if blocked:
@@ -565,6 +727,14 @@ def activate_workflow(workflow_id):
     try:
         _register_trigger(workflow_id, trigger_type, trigger_data, api_key)
 
+        # Active again: any subscription still recorded from an earlier
+        # deactivate belongs to this workflow now, so stop retrying its
+        # release. Then retry the other workflows' pending releases.
+        from services.flow_executor_service import cancel_pending_release, retry_pending_releases
+
+        cancel_pending_release(workflow_id)
+        retry_pending_releases()
+
         return jsonify(
             {"status": "success", "message": f"Workflow activated with {trigger_type} trigger"}
         )
@@ -582,22 +752,64 @@ def activate_workflow(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/deactivate", methods=["POST"])
-@check_session_validity
+@require_app_session
 def deactivate_workflow(workflow_id):
     """Deactivate a workflow"""
+    from services.flow_executor_service import get_workflow_lock, retry_pending_releases
+
+    retry_pending_releases()
+
+    # Checked before the lock, as in delete: an unknown id must not create a
+    # lock entry that is kept for the life of the process.
+    _workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
+
+    # Unlike delete, never refused while a run is in progress: a Wait Until
+    # run holds the lock for up to 30 minutes, and the user must be able to
+    # stop the triggers meanwhile. The release is then only queued -- the
+    # retry waits for the run to finish, so whatever it subscribes to before
+    # it ends is released too.
+    lock = get_workflow_lock(workflow_id)
+    if not lock.acquire(blocking=False):
+        return _deactivate_workflow_locked(workflow_id, run_in_progress=True)
+    try:
+        return _deactivate_workflow_locked(workflow_id)
+    finally:
+        lock.release()
+
+
+def _deactivate_workflow_locked(workflow_id, run_in_progress=False):
+    """Deactivate. With run_in_progress the feed release is queued, not tried."""
     from database.flow_db import deactivate_workflow as db_deactivate
-    from database.flow_db import get_workflow, set_schedule_job_id
-    from services.flow_executor_service import release_workflow_subscriptions
+    from database.flow_db import set_schedule_job_id
+    from services.flow_executor_service import (
+        defer_release,
+        release_workflow_subscriptions_or_defer,
+    )
     from services.flow_order_update_monitor_service import get_flow_order_update_monitor
     from services.flow_price_monitor_service import get_flow_price_monitor
     from services.flow_scheduler_service import get_flow_scheduler
 
-    workflow = get_workflow(workflow_id)
-    if not workflow:
-        return jsonify({"error": "Workflow not found"}), 404
+    def release():
+        if run_in_progress:
+            defer_release(workflow_id)
+            return False
+        return release_workflow_subscriptions_or_defer(workflow_id)
+
+    workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
 
     if not workflow.is_active:
-        return jsonify({"status": "already_inactive", "message": "Workflow is already inactive"})
+        # Still release: a Run Now on an inactive workflow can have subscribed.
+        released = release()
+        return jsonify(
+            _with_release_status(
+                {"status": "already_inactive", "message": "Workflow is already inactive"},
+                released,
+            )
+        )
 
     try:
         # Removed by workflow id, not by the stored schedule_job_id. The id is
@@ -624,14 +836,17 @@ def deactivate_workflow(workflow_id):
         # websocket client is a process-wide singleton, so a subscription left
         # behind is held for the life of the worker and counts against the
         # per-broker symbol ceiling that /trading and the sandbox engine share.
-        release_workflow_subscriptions(workflow_id)
+        # A failed release does not keep the workflow running; it is retried.
+        released = release()
 
         # Update workflow as inactive
         if not db_deactivate(workflow_id):
             logger.error(f"Failed to persist inactive state for workflow {workflow_id}")
             return jsonify({"error": "Could not deactivate workflow"}), 500
 
-        return jsonify({"status": "success", "message": "Workflow deactivated"})
+        return jsonify(
+            _with_release_status({"status": "success", "message": "Workflow deactivated"}, released)
+        )
 
     except Exception as e:
         logger.exception(f"Failed to deactivate workflow {workflow_id}: {e}")
@@ -671,19 +886,20 @@ def _execution_blocked(workflow):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/execute", methods=["POST"])
-@check_session_validity
+@require_app_session
 def execute_workflow_now(workflow_id):
     """Execute a workflow immediately"""
-    from database.flow_db import get_workflow
     from services.flow_executor_service import execute_workflow
 
-    workflow = get_workflow(workflow_id)
-    if not workflow:
-        return jsonify({"error": "Workflow not found"}), 404
+    workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
 
-    api_key = get_current_api_key()
+    api_key = workflow_api_key(workflow)
     if not api_key:
-        return jsonify({"error": "API key not configured"}), 400
+        return jsonify(
+            {"error": f"No API key for account {workflow.account_id}. Generate one at /apikey."}
+        ), 400
 
     blocked = _execution_blocked(workflow)
     if blocked:
@@ -698,9 +914,12 @@ def execute_workflow_now(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/executions", methods=["GET"])
-@check_session_validity
+@require_app_session
 def get_workflow_executions(workflow_id):
     """Get execution history for a workflow"""
+    _, error = load_workflow(workflow_id)
+    if error:
+        return error
     from database.flow_db import get_workflow_executions
 
     # Clamped. The raw value went straight into SQL LIMIT, where SQLite reads a
@@ -739,14 +958,14 @@ def get_webhook_base_url():
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/webhook", methods=["GET"])
-@check_session_validity
+@require_app_session
 def get_webhook_info(workflow_id):
     """Get webhook configuration for a workflow"""
     from database.flow_db import ensure_webhook_credentials, get_workflow
 
-    workflow = get_workflow(workflow_id)
-    if not workflow:
-        return jsonify({"error": "Workflow not found"}), 404
+    workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
 
     # Ensure webhook token and secret exist
     ensure_webhook_credentials(workflow_id)
@@ -775,9 +994,12 @@ def get_webhook_info(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/webhook/enable", methods=["POST"])
-@check_session_validity
+@require_app_session
 def enable_webhook(workflow_id):
     """Enable webhook for a workflow"""
+    _, error = load_workflow(workflow_id)
+    if error:
+        return error
     from database.flow_db import enable_webhook, ensure_webhook_credentials, get_workflow
 
     # Ensure credentials exist before enabling
@@ -811,9 +1033,12 @@ def enable_webhook(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/webhook/disable", methods=["POST"])
-@check_session_validity
+@require_app_session
 def disable_webhook(workflow_id):
     """Disable webhook for a workflow"""
+    _, error = load_workflow(workflow_id)
+    if error:
+        return error
     from database.flow_db import disable_webhook
 
     result = disable_webhook(workflow_id)
@@ -823,9 +1048,12 @@ def disable_webhook(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/webhook/regenerate", methods=["POST"])
-@check_session_validity
+@require_app_session
 def regenerate_webhook(workflow_id):
     """Regenerate webhook token and secret"""
+    _, error = load_workflow(workflow_id)
+    if error:
+        return error
     from database.flow_db import get_workflow, regenerate_webhook_secret, regenerate_webhook_token
 
     new_token = regenerate_webhook_token(workflow_id)
@@ -856,10 +1084,13 @@ def regenerate_webhook(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/webhook/regenerate-secret", methods=["POST"])
-@check_session_validity
+@require_app_session
 def regenerate_webhook_secret_route(workflow_id):
     """Regenerate webhook secret only"""
-    from database.flow_db import get_workflow, regenerate_webhook_secret
+    _, error = load_workflow(workflow_id)
+    if error:
+        return error
+    from database.flow_db import regenerate_webhook_secret
 
     new_secret = regenerate_webhook_secret(workflow_id)
     if not new_secret:
@@ -871,9 +1102,12 @@ def regenerate_webhook_secret_route(workflow_id):
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/webhook/auth-type", methods=["POST"])
-@check_session_validity
+@require_app_session
 def set_webhook_auth(workflow_id):
     """Set webhook auth type"""
+    _, error = load_workflow(workflow_id)
+    if error:
+        return error
     from database.flow_db import get_workflow, set_webhook_auth_type
 
     data = request.get_json()
@@ -1057,9 +1291,11 @@ def _execute_webhook(token, webhook_data=None, url_secret=None):
     # The column is encrypted at rest; use the helper that decrypts it
     # (and falls back to plaintext for pre-migration rows).
     from database.flow_db import get_workflow_api_key
+
     api_key = get_workflow_api_key(workflow)  # Use API key stored when workflow was activated
-    if not api_key:
-        api_key = get_current_api_key()  # Fallback to session (if called from UI)
+    if not api_key and workflow.account_id:
+        # The workflow's own account (webhook calls carry no browser session).
+        api_key = get_api_key_for_tradingview(workflow.account_id)
     if not api_key:
         api_key = os.getenv("OPENALGO_API_KEY")  # Fallback to environment variable
 
@@ -1073,9 +1309,7 @@ def _execute_webhook(token, webhook_data=None, url_secret=None):
 
     blocked = _execution_blocked(workflow)
     if blocked:
-        logger.error(
-            f"Webhook for workflow {workflow.id} rejected: {blocked['message']}"
-        )
+        logger.error(f"Webhook for workflow {workflow.id} rejected: {blocked['message']}")
         return jsonify(blocked), 400
 
     try:
@@ -1137,7 +1371,7 @@ def trigger_webhook_with_symbol(token, symbol):
 
 
 @flow_bp.route("/api/monitor/status", methods=["GET"])
-@check_session_validity
+@require_app_session
 def get_monitor_status():
     """Get price monitor and order-update monitor status"""
     from services.flow_order_update_monitor_service import get_flow_order_update_monitor
@@ -1146,6 +1380,15 @@ def get_monitor_status():
     monitor = get_flow_price_monitor()
     status = monitor.get_status()
     status["order_updates"] = get_flow_order_update_monitor().get_status()
+    if not is_flow_admin():
+        from database.flow_db import get_workflows_for_account
+
+        visible = {wf.id for wf in get_workflows_for_account(current_account_id())}
+        status["alerts"] = [a for a in status.get("alerts", []) if a["workflow_id"] in visible]
+        status["alerts_count"] = len(status["alerts"])
+        updates = status["order_updates"]
+        updates["watches"] = [w for w in updates.get("watches", []) if w["workflow_id"] in visible]
+        updates["watches_count"] = len(updates["watches"])
     return jsonify(status)
 
 
@@ -1153,14 +1396,13 @@ def get_monitor_status():
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/export", methods=["GET"])
-@check_session_validity
+@require_app_session
 def export_workflow(workflow_id):
     """Export a workflow"""
-    from database.flow_db import get_workflow
 
-    workflow = get_workflow(workflow_id)
-    if not workflow:
-        return jsonify({"error": "Workflow not found"}), 404
+    workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
 
     return jsonify(
         {
@@ -1175,7 +1417,7 @@ def export_workflow(workflow_id):
 
 
 @flow_bp.route("/api/workflows/import", methods=["POST"])
-@check_session_validity
+@require_app_session
 def import_workflow():
     """Import a workflow.
 
@@ -1214,8 +1456,16 @@ def import_workflow():
     nodes = data.get("nodes", [])
     edges = data.get("edges", [])
 
+    from database.auth_db import get_owner_username
+
+    account_id = current_account_id()
     workflow = create_workflow(
-        name=f"{name} (imported)", description=description, nodes=nodes, edges=edges
+        name=f"{name} (imported)",
+        description=description,
+        nodes=nodes,
+        edges=edges,
+        account_id=account_id,
+        owner_username=get_owner_username(account_id) or session.get("user"),
     )
 
     if workflow:
@@ -1227,7 +1477,7 @@ def import_workflow():
 
 
 @flow_bp.route("/api/workflows/<int:workflow_id>/replace", methods=["POST"])
-@check_session_validity
+@require_app_session
 def replace_workflow(workflow_id):
     """Replace an existing workflow's graph from JSON, in place.
 
@@ -1239,16 +1489,16 @@ def replace_workflow(workflow_id):
     Held to import's rules, not save's: a JSON pasted here is presented as a
     finished workflow, so completeness is enforced.
     """
-    from database.flow_db import get_workflow, update_workflow
+    from database.flow_db import update_workflow
     from services.flow_workflow_validator import (
         migrate_legacy_node_data,
         trigger_config,
         validate_workflow,
     )
 
-    workflow = get_workflow(workflow_id)
-    if not workflow:
-        return jsonify({"error": "Workflow not found"}), 404
+    workflow, error = load_workflow(workflow_id)
+    if error:
+        return error
 
     data = request.get_json()
     if not data:
@@ -1349,7 +1599,7 @@ def replace_workflow(workflow_id):
 
 
 @flow_bp.route("/api/index-symbols", methods=["GET"])
-@check_session_validity
+@require_app_session
 def get_index_symbols_lot_sizes():
     """Lot sizes for every underlying the options nodes offer.
 

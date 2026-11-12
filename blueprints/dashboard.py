@@ -28,7 +28,7 @@ def dashboard():
         return "Broker not set in session", 400
 
     # Check if in analyze mode and route accordingly
-    if get_analyze_mode():
+    if get_analyze_mode(login_username):
         # Get API key for sandbox mode
         api_key = get_api_key_for_tradingview(login_username)
         if api_key:

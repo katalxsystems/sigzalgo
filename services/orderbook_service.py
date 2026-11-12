@@ -2,6 +2,7 @@ import importlib
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from database.auth_db import get_auth_token_broker
+from database.broker_context import scoped_to_broker_arg
 from utils.logging import get_logger
 
 # Initialize logger
@@ -75,6 +76,7 @@ def format_statistics(stats):
     return stats
 
 
+@scoped_to_broker_arg
 def import_broker_module(broker_name: str) -> dict[str, Any] | None:
     """
     Dynamically import the broker-specific order modules.
@@ -101,6 +103,7 @@ def import_broker_module(broker_name: str) -> dict[str, Any] | None:
         return None
 
 
+@scoped_to_broker_arg
 def get_orderbook_with_auth(
     auth_token: str, broker: str, original_data: dict[str, Any] = None
 ) -> tuple[bool, dict[str, Any], int]:
@@ -120,12 +123,13 @@ def get_orderbook_with_auth(
     """
     # If in analyze mode AND we have original_data (API call), route to sandbox
     # If original_data is None (internal call), use live broker
+    from database.auth_db import verify_api_key
     from database.settings_db import get_analyze_mode
 
-    if get_analyze_mode() and original_data:
+    api_key = original_data.get("apikey") if original_data else None
+    if original_data and get_analyze_mode(verify_api_key(api_key) if api_key else None):
         from services.sandbox_service import sandbox_get_orderbook
 
-        api_key = original_data.get("apikey")
         if not api_key:
             return (
                 False,
@@ -179,6 +183,7 @@ def get_orderbook_with_auth(
         return False, {"status": "error", "message": str(e)}, 500
 
 
+@scoped_to_broker_arg
 def get_orderbook(
     api_key: str | None = None, auth_token: str | None = None, broker: str | None = None
 ) -> tuple[bool, dict[str, Any], int]:

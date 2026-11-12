@@ -3,6 +3,9 @@ import hashlib
 import http.client
 import json
 import os
+import re
+import secrets
+from urllib.parse import quote
 
 import jwt
 from flask import Blueprint, jsonify, make_response, redirect, request, session, url_for
@@ -13,7 +16,9 @@ from utils.auth_utils import handle_auth_failure, handle_auth_success
 from utils.config import (
     build_external_url,
     get_broker_api_key,
+    get_broker_api_key_market,
     get_broker_api_secret,
+    get_broker_redirect_url,
     get_login_rate_limit_hour,
     get_login_rate_limit_min,
 )
@@ -22,7 +27,6 @@ from utils.logging import get_logger
 # Initialize logger
 logger = get_logger(__name__)
 
-BROKER_API_KEY = get_broker_api_key()
 LOGIN_RATE_LIMIT_MIN = get_login_rate_limit_min()
 LOGIN_RATE_LIMIT_HOUR = get_login_rate_limit_hour()
 
@@ -56,10 +60,80 @@ def broker_callback(broker, para=None):
             logger.warning(f"User not in session for {broker} callback, redirecting to login")
             return redirect(url_for("auth.login"))
 
-    if session.get("logged_in"):
-        # Store broker in session and g
+    # The broker account_id this login is connecting. "pending_account_id" is
+    # set by the account-management UI (POST /api/accounts, then redirect
+    # here) when adding a specific account. Without it — a plain password
+    # login or the CMS SSO hand-off, neither of which route through that UI
+    # — fall back to this platform user's default account for THIS broker
+    # (scoped, because their overall default account may be a different
+    # broker entirely, whose credentials would be wrong here). Only when
+    # the user has no account at all for this broker does this drop back to
+    # the platform username, reproducing pre-multi-account behavior (one
+    # implicit account per user, account_id == username).
+    account_id = session.get("pending_account_id")
+    if not account_id:
+        from database.auth_db import get_default_account_id_for_broker
+
+        account_id = get_default_account_id_for_broker(session.get("user"), broker)
+    if not account_id:
+        # Neither an explicit selection nor an existing account for this
+        # broker. The bare platform username is the pre-multi-account
+        # fallback identifier, but it may already name a REAL Auth row for
+        # a DIFFERENT broker -- a legacy single-account connection from
+        # before this user adopted multi-account. Reusing that row here
+        # would silently authenticate THIS broker with the OTHER broker's
+        # stored app-registration credentials (observed: a user's
+        # username-named Angel row made a fresh fivepaisa login fail with
+        # Angel's BROKER_API_KEY format, since get_broker_api_key looks up
+        # by name only and doesn't know which broker it's being asked for).
+        # Only take the bare-username fallback when that's actually safe --
+        # no such row exists yet, or it does and already belongs to this
+        # same broker; otherwise mint a proper multi-account id, the same
+        # scheme database.auth_db.create_broker_account uses, so this
+        # broker gets its own row instead of colliding with the other one.
+        username = session.get("user")
+        from database.auth_db import Auth
+
+        existing = Auth.query.filter_by(name=username).first() if username else None
+        if not existing or existing.broker == broker:
+            account_id = username
+        else:
+            import secrets as _secrets
+
+            account_id = f"{username}_{broker}_{_secrets.token_hex(4)}"
+    logger.info(f"Resolved account_id={account_id!r} for broker={broker}")
+
+    if session.get("logged_in") and not session.get("pending_account_id"):
+        # Single-account-era shortcut: already fully logged in and this
+        # isn't a multi-account "connect a specific account" flow (no
+        # pending_account_id), so there's nothing new to do here.
+        #
+        # Deliberately does NOT fire when pending_account_id is set: that
+        # means the account-management UI is targeting a specific account,
+        # which may well be a different one than whatever set logged_in=True
+        # (session["logged_in"] is intentionally kept True even after that
+        # OTHER account's broker token dies — see revoke_user_tokens /
+        # issue #1400 — so it does not mean "no other account needs
+        # connecting"). Redirecting to the dashboard here would silently
+        # bounce the user away before they ever see this broker's login
+        # form, with no error and nothing in the network tab to explain it.
         session["broker"] = broker
         return redirect(url_for("dashboard_bp.dashboard"))
+
+    # Every broker's login needs this account's own app credential (API key,
+    # secret, or market-feed key -- which one varies by broker). There is no
+    # instance-wide fallback (see utils.config.get_broker_api_key), so fail
+    # here with a clear message instead of letting the broker reject the
+    # login -- or, like Angel, accept it and then answer "Invalid API Key"
+    # on every funds/quotes call afterwards. Skipped for the session-less
+    # external-auth callbacks above, which have no account to check yet.
+    if "user" in session and not _account_has_broker_credentials(account_id, broker):
+        error_message = (
+            f"Broker API key not configured for this {broker} account. "
+            f"Set it in Profile > Accounts."
+        )
+        logger.error(f"{error_message} (account_id={account_id!r})")
+        return handle_auth_failure(error_message, forward_url="broker.html")
 
     broker_auth_functions = app.broker_auth_functions
     auth_function = broker_auth_functions.get(f"{broker}_auth")
@@ -81,7 +155,9 @@ def broker_callback(broker, para=None):
             broker_pin = request.form.get("pin")
             totp_code = request.form.get("totp")
 
-            auth_token, error_message = auth_function(clientcode, broker_pin, totp_code)
+            auth_token, error_message = auth_function(
+                clientcode, broker_pin, totp_code, account_id=account_id
+            )
             forward_url = "broker.html"
 
     elif broker == "angel":
@@ -95,7 +171,9 @@ def broker_callback(broker, para=None):
             totp_code = request.form.get("totp")
             # to store user_id in the DB
             user_id = clientcode
-            auth_token, feed_token, error_message = auth_function(clientcode, broker_pin, totp_code)
+            auth_token, feed_token, error_message = auth_function(
+                clientcode, broker_pin, totp_code, account_id=account_id
+            )
             forward_url = "broker.html"
 
     elif broker == "mstock":
@@ -127,7 +205,9 @@ def broker_callback(broker, para=None):
                 return jsonify({"status": "error", "message": "TOTP code is required."}), 400
 
             # Single-step authentication with password + TOTP
-            auth_token, feed_token, error_message = authenticate_with_totp(password, totp_code)
+            auth_token, feed_token, error_message = authenticate_with_totp(
+                password, totp_code, account_id=account_id
+            )
 
             if error_message:
                 return jsonify({"status": "error", "message": error_message}), 401
@@ -135,7 +215,8 @@ def broker_callback(broker, para=None):
             # Authentication successful
             logger.info("mStock TOTP authentication successful")
             return handle_auth_success(
-                auth_token, session["user"], broker, feed_token=feed_token, user_id=None
+                auth_token, account_id, broker, feed_token=feed_token, user_id=None,
+                owner_username=session["user"],
             )
 
     elif broker == "aliceblue":
@@ -152,14 +233,16 @@ def broker_callback(broker, para=None):
                 bool(authCode),
                 bool(userId),
             )
-            auth_token, client_id, error_message = auth_function(userId, authCode)
+            auth_token, client_id, error_message = auth_function(
+                userId, authCode, account_id=account_id
+            )
             user_id = client_id or userId  # clientId from API response, fallback to OAuth userId
             feed_token = None  # AliceBlue doesn't use a separate feed token
             forward_url = "broker.html"
         else:
             # Initial visit — redirect to AliceBlue login page
             logger.info("Redirecting to AliceBlue login page")
-            appcode = os.environ.get("BROKER_API_KEY")
+            appcode = get_broker_api_key(account_id, broker=broker)
             if not appcode:
                 return handle_auth_failure(
                     "BROKER_API_KEY (appCode) not configured in environment",
@@ -173,7 +256,9 @@ def broker_callback(broker, para=None):
         logger.debug("FivePaisaXTS broker - authentication initiated")
 
         # Fetch auth token, feed token and user ID
-        auth_token, feed_token, user_id, error_message = auth_function(code)
+        auth_token, feed_token, user_id, error_message = auth_function(
+            code, account_id=account_id
+        )
         forward_url = "broker.html"
 
     elif broker == "compositedge":
@@ -238,7 +323,9 @@ def broker_callback(broker, para=None):
                 return jsonify({"error": "No access token found"}), 400
 
             # Fetch auth token, feed token and user ID
-            auth_token, feed_token, user_id, error_message = auth_function(access_token)
+            auth_token, feed_token, user_id, error_message = auth_function(
+                access_token, account_id=account_id
+            )
 
             # print(f'Auth token is {auth_token}')
             # print(f'Feed token is {feed_token}')
@@ -254,7 +341,7 @@ def broker_callback(broker, para=None):
     elif broker == "fyers":
         code = request.args.get("auth_code")
         logger.debug("Fyers broker - auth_code present: %s", bool(code))
-        auth_token, error_message = auth_function(code)
+        auth_token, error_message = auth_function(code, account_id=account_id)
         forward_url = "broker.html"
 
     elif broker == "tradejini":
@@ -269,11 +356,13 @@ def broker_callback(broker, para=None):
 
             # Get auth token using individual token service
             auth_token, error_message = auth_function(
-                password=password, twofa=twofa, twofa_type=twofatype
+                password=password, twofa=twofa, twofa_type=twofatype, account_id=account_id
             )
 
             if auth_token:
-                return handle_auth_success(auth_token, session["user"], broker)
+                return handle_auth_success(
+                    auth_token, account_id, broker, owner_username=session["user"]
+                )
             else:
                 return jsonify({"status": "error", "message": error_message}), 401
 
@@ -294,7 +383,9 @@ def broker_callback(broker, para=None):
         logger.debug("Indiabulls broker - authentication initiated")
 
         # Fetch auth token, feed token and user ID
-        auth_token, feed_token, user_id, error_message = auth_function(code)
+        auth_token, feed_token, user_id, error_message = auth_function(
+            code, account_id=account_id
+        )
         forward_url = "broker.html"
 
     elif broker == "iifl":
@@ -302,7 +393,9 @@ def broker_callback(broker, para=None):
         logger.debug("IIFL broker - authentication initiated")
 
         # Fetch auth token, feed token and user ID
-        auth_token, feed_token, user_id, error_message = auth_function(code)
+        auth_token, feed_token, user_id, error_message = auth_function(
+            code, account_id=account_id
+        )
         forward_url = "broker.html"
 
     elif broker == "iiflcapital":
@@ -325,7 +418,7 @@ def broker_callback(broker, para=None):
         # Some callback variants may not include clientId explicitly.
         # Fall back to BROKER_API_KEY to avoid false failures.
         if not client_id:
-            broker_api_key = (os.getenv("BROKER_API_KEY") or "").strip()
+            broker_api_key = (get_broker_api_key(account_id, broker=broker) or "").strip()
             if ":::" in broker_api_key:
                 client_id = broker_api_key.split(":::", 1)[0].strip()
             elif broker_api_key:
@@ -349,7 +442,7 @@ def broker_callback(broker, para=None):
 
                 from broker.iiflcapital.api.auth_api import get_login_url
 
-                login_url = get_login_url()
+                login_url = get_login_url(account_id=account_id)
                 if not login_url:
                     return handle_auth_failure(
                         "IIFL Capital login URL could not be generated. "
@@ -370,7 +463,7 @@ def broker_callback(broker, para=None):
                     forward_url="broker.html",
                 )
 
-        auth_token, error_message = auth_function(auth_code, client_id)
+        auth_token, error_message = auth_function(auth_code, client_id, account_id=account_id)
         forward_url = "broker.html"
 
     elif broker == "jainamxts":
@@ -378,7 +471,9 @@ def broker_callback(broker, para=None):
         logger.debug("JainamXTS broker - authentication initiated")
 
         # Fetch auth token, feed token and user ID
-        auth_token, feed_token, user_id, error_message = auth_function(code)
+        auth_token, feed_token, user_id, error_message = auth_function(
+            code, account_id=account_id
+        )
         forward_url = "broker.html"
 
     elif broker == "dhan":
@@ -416,7 +511,7 @@ def broker_callback(broker, para=None):
                 # Step 3: Consume consent with tokenId
                 logger.debug("Dhan broker - tokenId present: %s", bool(token_id))
                 # auth_function now returns (auth_token, user_id, error_message)
-                auth_result = auth_function(token_id)
+                auth_result = auth_function(token_id, account_id=account_id)
 
                 # Handle both old format (2 values) and new format (3 values)
                 if len(auth_result) == 3:
@@ -461,7 +556,7 @@ def broker_callback(broker, para=None):
             if access_token:
                 # Direct token authentication
                 logger.info("Processing direct access token for Dhan")
-                auth_token, error_message = auth_function(access_token)
+                auth_token, error_message = auth_function(access_token, account_id=account_id)
 
                 if auth_token:
                     # Validate authentication by testing funds API
@@ -494,23 +589,24 @@ def broker_callback(broker, para=None):
                     }
                 ), 400
     elif broker == "indmoney":
-        # Two credential shapes are supported (docs 04-authentication-users):
-        #   BROKER_API_SECRET set -> a manually generated 24h access token; use
-        #     it directly. This keeps existing installations working unchanged.
-        #   BROKER_API_SECRET blank -> TOTP flow. BROKER_API_KEY holds the
-        #     static Client ID (sent as x-api-key); the user supplies MPIN and a
-        #     live TOTP code, and POST /generate/token mints a fresh token.
-        # Detected from the credentials themselves rather than a new env flag.
-        manual_token = (get_broker_api_secret() or "").strip()
-        indmoney_client_id = (get_broker_api_key() or "").strip()
+        # Two credential shapes are supported (docs 04-authentication-users),
+        # read from this account's own credentials (multi-account):
+        #   API secret set -> a manually generated 24h access token; use it
+        #     directly. This keeps existing accounts working unchanged.
+        #   API secret blank -> TOTP flow. The API key holds the static Client
+        #     ID (sent as x-api-key); the user supplies MPIN and a live TOTP
+        #     code, and POST /generate/token mints a fresh token.
+        # Detected from the credentials themselves rather than a new flag.
+        manual_token = (get_broker_api_secret(account_id, broker="indmoney") or "").strip()
+        indmoney_client_id = (get_broker_api_key(account_id, broker="indmoney") or "").strip()
 
         if request.method == "GET":
             if manual_token:
                 # auth_function validates the token against /user/profile first,
                 # so a placeholder or an expired paste cannot be stored as if it
                 # were a working session.
-                logger.debug("IndMoney broker - trying access token from BROKER_API_SECRET")
-                auth_token, error_message = auth_function("indmoney")
+                logger.debug("IndMoney broker - trying the account's stored access token")
+                auth_token, error_message = auth_function("indmoney", account_id=account_id)
                 forward_url = "broker.html"
 
                 if not auth_token and indmoney_client_id:
@@ -544,7 +640,9 @@ def broker_callback(broker, para=None):
                 ), 400
 
             logger.info("IndMoney TOTP authentication initiated")
-            auth_token, error_message = authenticate_broker_totp(mpin, totp_code)
+            auth_token, error_message = authenticate_broker_totp(
+                mpin, totp_code, account_id=account_id
+            )
             forward_url = "broker.html"
 
             if auth_token:
@@ -555,38 +653,46 @@ def broker_callback(broker, para=None):
     elif broker == "deltaexchange":
         code = "deltaexchange"
         logger.debug("DeltaExchange broker - authentication initiated")
-        auth_token, error_message = auth_function(code)
+        auth_token, error_message = auth_function(code, account_id=account_id)
         forward_url = "broker.html"
 
     elif broker == "dhan_sandbox":
         code = "dhan_sandbox"
         logger.debug("Dhan Sandbox broker - authentication initiated")
-        auth_token, error_message = auth_function(code)
+        auth_token, error_message = auth_function(code, account_id=account_id)
         forward_url = "broker.html"
 
     elif broker == "groww":
         code = "groww"
         logger.debug("Groww broker - authentication initiated")
-        auth_token, error_message = auth_function(code)
+        auth_token, error_message = auth_function(code, account_id=account_id)
+        forward_url = "broker.html"
+
+    elif broker == "sahi":
+        # Sahi mints the day's token from this account's stored API key and
+        # secret; there is nothing for the trader to enter.
+        auth_token, error_message = auth_function("sahi", account_id=account_id)
         forward_url = "broker.html"
 
     elif broker == "wisdom":
         code = "wisdom"
         logger.debug("Wisdom broker - authentication initiated")
-        auth_token, feed_token, user_id, error_message = auth_function(code)
+        auth_token, feed_token, user_id, error_message = auth_function(
+            code, account_id=account_id
+        )
         forward_url = "broker.html"
 
     elif broker == "zebu":
         code = request.args.get("code")
         if code:
             logger.debug("Zebu broker - OAuth code present: %s", bool(code))
-            auth_token, error_message = auth_function(code)
+            auth_token, error_message = auth_function(code, account_id=account_id)
             forward_url = "broker.html"
         else:
             # Initial visit — redirect to Zebu OAuth login page
             logger.info("Redirecting to Zebu OAuth login page")
             # BROKER_API_KEY format: userid:::client_id
-            full_api_key = os.getenv("BROKER_API_KEY")
+            full_api_key = get_broker_api_key(account_id, broker=broker)
             if not full_api_key:
                 return handle_auth_failure(
                     "BROKER_API_KEY not configured in environment",
@@ -600,13 +706,13 @@ def broker_callback(broker, para=None):
         code = request.args.get("code")
         if code:
             logger.debug("Shoonya broker - OAuth callback received")
-            auth_token, error_message = auth_function(code)
+            auth_token, error_message = auth_function(code, account_id=account_id)
             forward_url = "broker.html"
         else:
             # Initial visit — redirect to Shoonya OAuth login page
             logger.info("Redirecting to Shoonya OAuth login page")
             # BROKER_API_KEY format: userid:::client_id
-            full_api_key = os.getenv("BROKER_API_KEY")
+            full_api_key = get_broker_api_key(account_id, broker=broker)
             if not full_api_key:
                 return handle_auth_failure(
                     "BROKER_API_KEY not configured in environment",
@@ -632,7 +738,9 @@ def broker_callback(broker, para=None):
             password = request.form.get("password")
             totp_code = request.form.get("totp")
 
-            auth_token, error_message = auth_function(userid, password, totp_code)
+            auth_token, error_message = auth_function(
+                userid, password, totp_code, account_id=account_id
+            )
             forward_url = "broker.html"
 
     elif broker == "nubra":
@@ -644,7 +752,7 @@ def broker_callback(broker, para=None):
         if request.method == "GET":
             from broker.nubra.api.auth_api import request_login_otp
 
-            temp_token, masked_phone, error_message = request_login_otp()
+            temp_token, masked_phone, error_message = request_login_otp(account_id=account_id)
             if error_message:
                 return handle_auth_failure(error_message, forward_url="broker.html")
 
@@ -669,7 +777,19 @@ def broker_callback(broker, para=None):
             temp_token = session.pop("nubra_temp_token", None)
             session.pop("nubra_masked_phone", None)
 
-            auth_token, feed_token, error_message = auth_function(otp_code, temp_token)
+            if temp_token:
+                # Second half of the SMS-OTP login the GET above started.
+                auth_token, feed_token, error_message = auth_function(
+                    otp_code, temp_token, account_id=account_id
+                )
+            else:
+                # No OTP was requested: the code is the account's TOTP (the
+                # CMS broker login posts it straight here).
+                from broker.nubra.api.auth_api import authenticate_broker_totp
+
+                auth_token, feed_token, error_message = authenticate_broker_totp(
+                    otp_code, account_id=account_id
+                )
             forward_url = "broker.html"
 
     elif broker == "samco":
@@ -680,7 +800,7 @@ def broker_callback(broker, para=None):
 
         elif request.method == "POST":
             # Daily login: POST /session/token with the OAuth app's apiKey + apiSecret
-            auth_token, error_message = auth_function()
+            auth_token, error_message = auth_function(account_id=account_id)
             forward_url = "broker.html"
 
     elif broker == "motilal":
@@ -698,7 +818,7 @@ def broker_callback(broker, para=None):
             # feed authenticates with it and dealer calls send it as clientcode
             user_id = userid
             auth_token, feed_token, error_message = auth_function(
-                userid, password, totp_code, date_of_birth
+                userid, password, totp_code, date_of_birth, account_id=account_id
             )
             forward_url = "broker.html"
 
@@ -710,7 +830,9 @@ def broker_callback(broker, para=None):
             bool(code),
             bool(client),
         )
-        auth_token, error_message = auth_function(code)  # Only pass the code parameter
+        auth_token, error_message = auth_function(
+            code, account_id=account_id
+        )  # Only pass the code parameter (+account_id)
         forward_url = "broker.html"
 
     elif broker == "tradesmart":
@@ -736,12 +858,12 @@ def broker_callback(broker, para=None):
         elif code:
             # OAuth callback: exchange code (+checksum) for an access token.
             logger.debug("TradeSmart broker - OAuth callback received")
-            auth_token, error_message = auth_function(code)
+            auth_token, error_message = auth_function(code, account_id=account_id)
             forward_url = "broker.html"
         else:
             # Initial visit — redirect to the TradeSmart OAuth login page.
             logger.info("Redirecting to TradeSmart OAuth login page")
-            full_api_key = os.getenv("BROKER_API_KEY")
+            full_api_key = get_broker_api_key(account_id, broker=broker)
             if not full_api_key:
                 return handle_auth_failure(
                     "BROKER_API_KEY not configured in environment",
@@ -775,7 +897,9 @@ def broker_callback(broker, para=None):
             logger.info(f"Kotak TOTP authentication initiated for mobile: {mobile_number[:5]}***")
 
             # Call the new authenticate_broker function
-            auth_token, error_message = auth_function(mobile_number, totp, mpin)
+            auth_token, error_message = auth_function(
+                mobile_number, totp, mpin, account_id=account_id
+            )
             forward_url = "broker.html"
 
             if auth_token:
@@ -786,7 +910,9 @@ def broker_callback(broker, para=None):
     elif broker == "paytm":
         request_token = request.args.get("requestToken")
         logger.debug("Paytm broker - request token present: %s", bool(request_token))
-        auth_token, feed_token, error_message = auth_function(request_token)
+        auth_token, feed_token, error_message = auth_function(
+            request_token, account_id=account_id
+        )
         forward_url = "broker.html"
 
     elif broker == "pocketful":
@@ -814,20 +940,22 @@ def broker_callback(broker, para=None):
             bool(state),
         )
         # Exchange auth code for access token and fetch client_id
-        auth_token, feed_token, user_id, error_message = auth_function(auth_code, state)
+        auth_token, feed_token, user_id, error_message = auth_function(
+            auth_code, state, account_id=account_id
+        )
         forward_url = "broker.html"
 
     elif broker == "definedge":
         if request.method == "GET":
             # Trigger OTP generation and redirect to React page
-            api_token = get_broker_api_key()
-            api_secret = get_broker_api_secret()
+            api_token = get_broker_api_key(account_id, broker=broker)
+            api_secret = get_broker_api_secret(account_id, broker=broker)
 
             # Import the step1 function to trigger OTP
             from broker.definedge.api.auth_api import login_step1
 
             try:
-                step1_response = login_step1(api_token, api_secret)
+                step1_response = login_step1(api_token, api_secret, account_id=account_id)
                 if step1_response and "otp_token" in step1_response:
                     # Store OTP token in session for later use
                     session["definedge_otp_token"] = step1_response["otp_token"]
@@ -857,13 +985,13 @@ def broker_callback(broker, para=None):
 
             # Handle OTP resend request
             if action == "resend":
-                api_token = get_broker_api_key()
-                api_secret = get_broker_api_secret()
+                api_token = get_broker_api_key(account_id, broker=broker)
+                api_secret = get_broker_api_secret(account_id, broker=broker)
 
                 from broker.definedge.api.auth_api import login_step1
 
                 try:
-                    step1_response = login_step1(api_token, api_secret)
+                    step1_response = login_step1(api_token, api_secret, account_id=account_id)
                     if step1_response and "otp_token" in step1_response:
                         session["definedge_otp_token"] = step1_response["otp_token"]
                         otp_message = "OTP has been resent successfully"
@@ -890,7 +1018,7 @@ def broker_callback(broker, para=None):
                     ), 401
 
                 # Get api_secret for authentication
-                api_secret = get_broker_api_secret()
+                api_secret = get_broker_api_secret(account_id, broker=broker)
 
                 # Use authenticate_broker for OTP verification
                 from broker.definedge.api.auth_api import authenticate_broker
@@ -898,7 +1026,7 @@ def broker_callback(broker, para=None):
                 try:
                     # Call authenticate_broker with OTP token and code
                     auth_token, feed_token, user_id, error_message = authenticate_broker(
-                        otp_token, otp_code, api_secret
+                        otp_token, otp_code, api_secret, account_id=account_id
                     )
 
                     if auth_token:
@@ -954,7 +1082,7 @@ def broker_callback(broker, para=None):
                 # Get feed token for market data
                 from broker.rmoney.api.auth_api import get_feed_token
 
-                feed_token, feed_user_id, feed_error = get_feed_token()
+                feed_token, feed_user_id, feed_error = get_feed_token(account_id)
                 if feed_error:
                     logger.warning(f"RMoney feed token error: {feed_error}")
                     feed_token = None
@@ -967,7 +1095,7 @@ def broker_callback(broker, para=None):
                 # No session data - initial request, redirect to RMoney OAuth login
                 from broker.rmoney.baseurl import INTERACTIVE_URL as RMONEY_INTERACTIVE_URL
 
-                BROKER_API_KEY_LOCAL = os.getenv("BROKER_API_KEY")
+                BROKER_API_KEY_LOCAL = get_broker_api_key(account_id, broker=broker)
                 # Built from HOST_SERVER, not the request Host header: this URL
                 # is handed to the broker as the OAuth return address, so a
                 # poisoned Host would send the callback (and its credentials)
@@ -996,7 +1124,7 @@ def broker_callback(broker, para=None):
             or request.args.get("code")
         )
         logger.debug(f"Arrow broker - request token present: {bool(code)}")
-        auth_token, error_message = auth_function(code)
+        auth_token, error_message = auth_function(code, account_id=account_id)
         forward_url = "broker.html"
 
     elif broker == "hdfcsky":
@@ -1010,7 +1138,7 @@ def broker_callback(broker, para=None):
             or request.args.get("code")
         )
         logger.debug(f"HDFC Sky broker - request token present: {bool(code)}")
-        auth_token, error_message = auth_function(code)
+        auth_token, error_message = auth_function(code, account_id=account_id)
         forward_url = "broker.html"
 
     elif broker == "hdfcsecurities":
@@ -1030,7 +1158,7 @@ def broker_callback(broker, para=None):
     else:
         code = request.args.get("code") or request.args.get("request_token")
         logger.debug("Generic broker - callback code present: %s", bool(code))
-        auth_token, error_message = auth_function(code)
+        auth_token, error_message = auth_function(code, account_id=account_id)
         forward_url = "broker.html"
 
     if auth_token:
@@ -1038,41 +1166,80 @@ def broker_callback(broker, para=None):
         session["broker"] = broker
         logger.info(f"Successfully connected broker: {broker}")
         if broker == "zerodha":
-            auth_token = f"{BROKER_API_KEY}:{auth_token}"
+            auth_token = f"{get_broker_api_key(account_id, broker=broker)}:{auth_token}"
         if broker == "dhan":
             auth_token = f"{auth_token}"
 
         # For brokers that have user_id and feed_token from authenticate_broker
         if broker in ["angel", "compositedge", "pocketful", "definedge", "dhan", "motilal", "rmoney", "iiflcapital"]:
-            # For OAuth brokers, handle missing session user
+            # For OAuth brokers, these can lose the Flask session mid-redirect.
+            # There is no safe user to attribute the callback to in that case
+            # (multiple platform users may exist) — fail closed rather than
+            # guessing, matching the behavior every other broker already has
+            # below when "user" is missing from the session.
             if broker in ("compositedge", "rmoney", "iiflcapital") and "user" not in session:
-                # Get the admin user from the database
-                from database.user_db import find_user_by_username
-
-                admin_user = find_user_by_username()
-                if admin_user:
-                    # Use the admin user's username
-                    username = admin_user.username
-                    session["user"] = username
-                    logger.info(f"{broker} callback: Set session user to {username}")
-                else:
-                    logger.error(f"No admin user found in database for {broker} callback")
-                    return handle_auth_failure(
-                        "No user account found. Please login first.", forward_url="broker.html"
-                    )
+                logger.error(f"No session user found for {broker} callback")
+                return handle_auth_failure(
+                    "No user account found. Please login first.", forward_url="broker.html"
+                )
 
             # Pass the feed token and user_id to handle_auth_success
             return handle_auth_success(
-                auth_token, session["user"], broker, feed_token=feed_token, user_id=user_id
+                auth_token, account_id, broker, feed_token=feed_token, user_id=user_id,
+                owner_username=session["user"],
             )
         elif broker == "paytm":
             # Paytm has feed_token (public_access_token) but no user_id
-            return handle_auth_success(auth_token, session["user"], broker, feed_token=feed_token)
+            return handle_auth_success(
+                auth_token, account_id, broker, feed_token=feed_token,
+                owner_username=session["user"],
+            )
         else:
             # Pass just the feed token to handle_auth_success (other brokers don't have feed_token or user_id)
-            return handle_auth_success(auth_token, session["user"], broker, feed_token=feed_token)
+            return handle_auth_success(
+                auth_token, account_id, broker, feed_token=feed_token,
+                owner_username=session["user"],
+            )
     else:
         return handle_auth_failure(error_message, forward_url=forward_url)
+
+
+def _oauth_account_id():
+    """The broker account this initiate-oauth request is connecting.
+    Same resolution as broker_callback: "pending_account_id" is set by the
+    account-management UI (POST /api/accounts, or POST
+    /api/accounts/<id>/connect) right before redirecting here; without it,
+    this falls back to the platform username (one implicit account per
+    user, account_id == username)."""
+    return session.get("pending_account_id") or session.get("user")
+
+
+def _oauth_redirect_uri(broker: str) -> str:
+    """REDIRECT_URL is one fixed value in .env, historically written for
+    the instance's single configured broker (e.g. .../upstox/callback).
+    Rewrite its trailing /<broker>/callback segment so any broker gets its
+    own correct callback URL on this same server."""
+    base = re.sub(r"/[^/]+/callback/?$", "", get_broker_redirect_url() or "")
+    return f"{base}/{broker}/callback"
+
+
+def _js_redirect_response(url: str, broker_label: str = "broker") -> str:
+    """An HTML page that immediately navigates to an external URL via JS,
+    which reliably performs the redirect where a raw 302 to a
+    cross-origin URL can be finicky in some browser/proxy setups."""
+    return f'''
+    <html>
+    <head>
+        <title>Redirecting to {broker_label}...</title>
+    </head>
+    <body>
+        <p>Redirecting to {broker_label} login page...</p>
+        <script>
+            window.location.href = "{url}";
+        </script>
+    </body>
+    </html>
+    '''
 
 
 @brlogin_bp.route("/dhan/initiate-oauth", methods=["GET", "POST"])
@@ -1084,25 +1251,28 @@ def dhan_initiate_oauth():
     if "user" not in session:
         return redirect(url_for("auth.login"))
 
-    # Get client_id from .env BROKER_API_KEY (format: client_id:::api_key)
-    BROKER_API_KEY = os.getenv("BROKER_API_KEY")
+    account_id = _oauth_account_id()
+
+    # Get client_id from BROKER_API_KEY (format: client_id:::api_key), DB-first
+    # for the target account, falling back to .env
+    broker_api_key = get_broker_api_key(account_id, broker="dhan")
     client_id = None
 
-    if ":::" in BROKER_API_KEY:
-        client_id, _ = BROKER_API_KEY.split(":::")
+    if broker_api_key and ":::" in broker_api_key:
+        client_id, _ = broker_api_key.split(":::")
 
     if not client_id:
         error_message = "Client ID not found in BROKER_API_KEY. Please configure BROKER_API_KEY as 'client_id:::api_key' in .env"
         logger.error(error_message)
         return handle_auth_failure(error_message, forward_url="broker.html")
 
-    logger.info(f"Initiating Dhan OAuth flow with client ID from .env: {client_id}")
+    logger.info(f"Initiating Dhan OAuth flow with client ID: {client_id}")
 
     # Import the required functions
     from broker.dhan.api.auth_api import generate_consent, get_login_url
 
     # Generate consent with the client ID
-    consent_app_id, error = generate_consent(client_id)
+    consent_app_id, error = generate_consent(client_id, account_id=account_id)
 
     if consent_app_id:
         # Store consent_app_id in session
@@ -1114,21 +1284,7 @@ def dhan_initiate_oauth():
             # ``consentAppId`` in the URL is a single-use OAuth credential.
             # The browser needs the URL below, but application logs do not.
             logger.info("Redirecting to Dhan OAuth login URL (consent credential redacted)")
-            # Return a page that will redirect via JavaScript
-            # This ensures the browser properly redirects to the external URL
-            return f'''
-            <html>
-            <head>
-                <title>Redirecting to Dhan...</title>
-            </head>
-            <body>
-                <p>Redirecting to Dhan login page...</p>
-                <script>
-                    window.location.href = "{login_url}";
-                </script>
-            </body>
-            </html>
-            '''
+            return _js_redirect_response(login_url, "Dhan")
         else:
             error_message = "Failed to generate login URL"
             logger.error(error_message)
@@ -1139,6 +1295,200 @@ def dhan_initiate_oauth():
         )
         logger.error(error_message)
         return handle_auth_failure(error_message, forward_url="broker.html")
+
+
+def _account_has_broker_credentials(account_id, broker: str) -> bool:
+    """Whether this account has any app credential of its own for ``broker``."""
+    if not account_id:
+        return False
+    return bool(
+        get_broker_api_key(account_id, broker=broker)
+        or get_broker_api_secret(account_id, broker=broker)
+        or get_broker_api_key_market(account_id, broker=broker)
+    )
+
+
+def _require_account_api_key(broker: str):
+    """Common initiate-oauth prologue: require a logged-in session and a
+    resolved broker_api_key for the account being connected. Returns
+    (account_id, api_key, None) on success, or (None, None, error_response)
+    to return immediately."""
+    if "user" not in session:
+        return None, None, redirect(url_for("auth.login"))
+
+    account_id = _oauth_account_id()
+    api_key = get_broker_api_key(account_id, broker=broker)
+    if not api_key:
+        error_message = f"Broker API key not configured for this {broker} account."
+        logger.error(error_message)
+        return None, None, handle_auth_failure(error_message, forward_url="broker.html")
+
+    return account_id, api_key, None
+
+
+@brlogin_bp.route("/compositedge/initiate-oauth", methods=["GET", "POST"])
+@limiter.limit(LOGIN_RATE_LIMIT_MIN)
+@limiter.limit(LOGIN_RATE_LIMIT_HOUR)
+def compositedge_initiate_oauth():
+    _account_id, api_key, error_response = _require_account_api_key("compositedge")
+    if error_response:
+        return error_response
+
+    return_url = _oauth_redirect_uri("compositedge")
+    # Deliberately unencoded (matches the original client-side URL
+    # construction this replaced) -- Upstox's OAuth endpoint does a literal
+    # string comparison against its registered redirect_uri rather than
+    # URL-decoding first, so percent-encoding here breaks the match even
+    # though it's the more spec-compliant choice. Other brokers' endpoints
+    # aren't confirmed either way; keeping all of them unencoded for
+    # consistency with what's known to have worked before.
+    login_url = f"https://xts.compositedge.com/interactive/thirdparty?appKey={api_key}&returnURL={return_url}"
+    return _js_redirect_response(login_url, "CompositEdge")
+
+
+@brlogin_bp.route("/flattrade/initiate-oauth", methods=["GET", "POST"])
+@limiter.limit(LOGIN_RATE_LIMIT_MIN)
+@limiter.limit(LOGIN_RATE_LIMIT_HOUR)
+def flattrade_initiate_oauth():
+    _account_id, api_key, error_response = _require_account_api_key("flattrade")
+    if error_response:
+        return error_response
+
+    # BROKER_API_KEY for Flattrade is stored "client_id:::app_key" (same
+    # convention as Dhan) — only the app_key half is used in the login URL.
+    app_key = api_key.split(":::")[1] if ":::" in api_key else api_key
+    login_url = f"https://auth.flattrade.in/?app_key={app_key}"
+    return _js_redirect_response(login_url, "Flattrade")
+
+
+@brlogin_bp.route("/fyers/initiate-oauth", methods=["GET", "POST"])
+@limiter.limit(LOGIN_RATE_LIMIT_MIN)
+@limiter.limit(LOGIN_RATE_LIMIT_HOUR)
+def fyers_initiate_oauth():
+    _account_id, api_key, error_response = _require_account_api_key("fyers")
+    if error_response:
+        return error_response
+
+    redirect_uri = _oauth_redirect_uri("fyers")
+    login_url = (
+        "https://api-t1.fyers.in/api/v3/generate-authcode"
+        f"?client_id={api_key}&redirect_uri={redirect_uri}"
+        "&response_type=code&state=2e9b44629ebb28226224d09db3ffb47c"
+    )
+    return _js_redirect_response(login_url, "Fyers")
+
+
+@brlogin_bp.route("/upstox/initiate-oauth", methods=["GET", "POST"])
+@limiter.limit(LOGIN_RATE_LIMIT_MIN)
+@limiter.limit(LOGIN_RATE_LIMIT_HOUR)
+def upstox_initiate_oauth():
+    _account_id, api_key, error_response = _require_account_api_key("upstox")
+    if error_response:
+        return error_response
+
+    redirect_uri = _oauth_redirect_uri("upstox")
+    login_url = (
+        "https://api.upstox.com/v2/login/authorization/dialog"
+        f"?response_type=code&client_id={api_key}"
+        f"&redirect_uri={redirect_uri}"
+    )
+    return _js_redirect_response(login_url, "Upstox")
+
+
+@brlogin_bp.route("/zerodha/initiate-oauth", methods=["GET", "POST"])
+@limiter.limit(LOGIN_RATE_LIMIT_MIN)
+@limiter.limit(LOGIN_RATE_LIMIT_HOUR)
+def zerodha_initiate_oauth():
+    _account_id, api_key, error_response = _require_account_api_key("zerodha")
+    if error_response:
+        return error_response
+
+    # Kite Connect uses the redirect URL registered in the app's own Kite
+    # Connect console — no redirect_uri query param.
+    login_url = f"https://kite.trade/connect/login?api_key={api_key}"
+    return _js_redirect_response(login_url, "Zerodha")
+
+
+@brlogin_bp.route("/arrow/initiate-oauth", methods=["GET", "POST"])
+@limiter.limit(LOGIN_RATE_LIMIT_MIN)
+@limiter.limit(LOGIN_RATE_LIMIT_HOUR)
+def arrow_initiate_oauth():
+    _account_id, api_key, error_response = _require_account_api_key("arrow")
+    if error_response:
+        return error_response
+
+    login_url = f"https://app.arrow.trade/app/login?appID={api_key}"
+    return _js_redirect_response(login_url, "Arrow")
+
+
+@brlogin_bp.route("/hdfcsky/initiate-oauth", methods=["GET", "POST"])
+@limiter.limit(LOGIN_RATE_LIMIT_MIN)
+@limiter.limit(LOGIN_RATE_LIMIT_HOUR)
+def hdfcsky_initiate_oauth():
+    _account_id, api_key, error_response = _require_account_api_key("hdfcsky")
+    if error_response:
+        return error_response
+
+    login_url = f"https://developer.hdfcsky.com/oapi/v1/login?api_key={api_key}"
+    return _js_redirect_response(login_url, "HDFC Sky")
+
+
+@brlogin_bp.route("/hdfcsecurities/initiate-oauth", methods=["GET", "POST"])
+@limiter.limit(LOGIN_RATE_LIMIT_MIN)
+@limiter.limit(LOGIN_RATE_LIMIT_HOUR)
+def hdfcsecurities_initiate_oauth():
+    _account_id, api_key, error_response = _require_account_api_key("hdfcsecurities")
+    if error_response:
+        return error_response
+
+    # InvestRight hosted login (credentials + 2FA + consent); redirects back to
+    # the app's registered callback with a request token.
+    login_url = f"https://developer.hdfcsec.com/oapi/v1/login?api_key={api_key}"
+    return _js_redirect_response(login_url, "HDFC Securities")
+
+
+@brlogin_bp.route("/paytm/initiate-oauth", methods=["GET", "POST"])
+@limiter.limit(LOGIN_RATE_LIMIT_MIN)
+@limiter.limit(LOGIN_RATE_LIMIT_HOUR)
+def paytm_initiate_oauth():
+    _account_id, api_key, error_response = _require_account_api_key("paytm")
+    if error_response:
+        return error_response
+
+    # state is a literal placeholder value in the original client-side URL,
+    # preserved as-is rather than guessed at.
+    login_url = f"https://login.paytmmoney.com/merchant-login?apiKey={api_key}&state={{default}}"
+    return _js_redirect_response(login_url, "Paytm Money")
+
+
+@brlogin_bp.route("/pocketful/initiate-oauth", methods=["GET", "POST"])
+@limiter.limit(LOGIN_RATE_LIMIT_MIN)
+@limiter.limit(LOGIN_RATE_LIMIT_HOUR)
+def pocketful_initiate_oauth():
+    _account_id, api_key, error_response = _require_account_api_key("pocketful")
+    if error_response:
+        return error_response
+
+    redirect_uri = _oauth_redirect_uri("pocketful")
+    # Random per-request state, held server-side (tamper-resistant) instead
+    # of the previous client-side localStorage copy. Not currently
+    # cross-checked at the callback (broker/pocketful/api/auth_api.py just
+    # forwards it along), matching pre-existing behavior — this only makes
+    # the value itself harder to tamper with, it doesn't add verification.
+    state = secrets.token_urlsafe(16)
+    session["pocketful_oauth_state"] = state
+    scope = "orders holdings"
+    # client_id/redirect_uri unencoded (matches the original client-side
+    # code this replaced, and Upstox's OAuth endpoint is confirmed to
+    # reject a percent-encoded redirect_uri via literal string comparison —
+    # not confirmed for Pocketful either way, kept consistent). scope/state
+    # keep encodeURIComponent-equivalent encoding, matching the original.
+    login_url = (
+        "https://trade.pocketful.in/oauth2/auth"
+        f"?client_id={api_key}&redirect_uri={redirect_uri}"
+        f"&response_type=code&scope={quote(scope, safe='')}&state={quote(state, safe='')}"
+    )
+    return _js_redirect_response(login_url, "Pocketful")
 
 
 # Old Kotak SMS OTP flow - deprecated in favor of TOTP authentication

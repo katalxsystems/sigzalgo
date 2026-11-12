@@ -22,8 +22,7 @@ TOTP rather than handing back an unverified token as a successful login.
 """
 
 import hashlib
-import os
-
+from utils.config import get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -51,12 +50,16 @@ def _format_error(data_dict, fallback):
     return message
 
 
-def _get_access_token(auth_token, userid):
+def _get_access_token(auth_token, userid, account_id=None):
     """Run the optional getaccesstoken step (doc 09).
 
     Returns the access token, or ``None`` if it could not be obtained. Never
     raises: the caller falls back to the bare AuthToken.
     """
+    if account_id:
+        # Per-account logins carry no API secret key (the account's secret
+        # field holds the app API key), so this step does not apply.
+        return None
     if not get_api_secret_key():
         logger.warning(
             "Motilal: BROKER_API_SECRET not configured, skipping getaccesstoken; "
@@ -94,7 +97,7 @@ def _get_access_token(auth_token, userid):
         return None
 
 
-def authenticate_broker(userid, broker_pin, totp_code, date_of_birth):
+def authenticate_broker(userid, broker_pin, totp_code, date_of_birth, account_id=None):
     """
     Authenticate with Motilal Oswal broker and return the auth token.
 
@@ -110,14 +113,13 @@ def authenticate_broker(userid, broker_pin, totp_code, date_of_birth):
         ``baseurl.split_auth_token`` to unpack it. Motilal has no feed token, so
         the second element is always ``None``.
     """
-    # doc 08: SHA-256(Password + APIKey) uses the App API Key, which is the same
-    # value sent in the ApiKey header -- BROKER_API_KEY under the standard
-    # OpenAlgo naming. Using the secret here fails with MO2005 before the
-    # password is ever checked.
-    api_key = os.getenv("BROKER_API_KEY")
+    # doc 08: SHA-256(Password + APIKey) uses the App API Key, the same value
+    # sent in the ApiKey header. Per account, that is the account's API secret
+    # field (see baseurl.get_account_credentials).
+    api_key = get_broker_api_secret(account_id, broker="motilal")
 
-    # The client code is not an env variable; remember the one logging in now so
-    # header/vendorinfo and the market-data feed can use it in this process.
+    # Remember the client code logging in now, as the vendorinfo fallback for
+    # calls that are not scoped to an account.
     set_client_code(userid)
 
     try:
@@ -135,7 +137,7 @@ def authenticate_broker(userid, broker_pin, totp_code, date_of_birth):
             payload["totp"] = totp_code
 
         # Doc 05: Authorization is "Used in all API's excluding login API".
-        headers = get_common_headers(vendor_info=userid, include_auth=False)
+        headers = get_common_headers(vendor_info=userid, include_auth=False, account_id=account_id)
 
         response = client.post(get_url("authdirectapi"), headers=headers, json=payload)
 
@@ -191,7 +193,7 @@ def authenticate_broker(userid, broker_pin, totp_code, date_of_birth):
             )
 
         # Optional access-token step. Login must never fail because of it.
-        access_token = _get_access_token(auth_token, userid)
+        access_token = _get_access_token(auth_token, userid, account_id=account_id)
         if access_token:
             logger.info("Motilal login successful (AuthToken + access token).")
         else:

@@ -1,5 +1,5 @@
+import hashlib
 import json
-import os
 import time
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -8,17 +8,39 @@ import httpx
 import pandas as pd
 import pytz
 
+from broker.fivepaisa.api.order_api import _get_5paisa_credentials
 from broker.fivepaisa.mapping.transform_data import map_exchange, map_exchange_type
 from database.token_db import get_br_symbol, get_oa_symbol, get_token
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
+from utils.token_expiry import expired_at
 
 logger = get_logger(__name__)
 
+# Fingerprints of expired tokens already reported, so the warning is logged
+# once per token rather than on every poll. Bounded: one per account per day.
+_REPORTED_EXPIRED: set[str] = set()
+_REPORTED_EXPIRED_MAX = 256
 
-# Retrieve the BROKER_API_KEY environment variable
-broker_api_key = os.getenv("BROKER_API_KEY")
-api_key, user_id, client_id = broker_api_key.split(":::")
+
+def _expired_session(auth_token: str) -> str | None:
+    """A message if the 5paisa token has expired, else None.
+
+    The token's own expiry is read locally, so price polling stops calling
+    5paisa once the session has lapsed (each call only came back "Invalid
+    Session", logged as an error, for every symbol on every poll, all night).
+    """
+    when = expired_at(auth_token)
+    if when is None:
+        return None
+    message = f"5paisa session expired at {when}; log in to 5paisa again"
+    fingerprint = hashlib.sha256(auth_token.encode()).hexdigest()[:16]
+    if fingerprint not in _REPORTED_EXPIRED:
+        if len(_REPORTED_EXPIRED) >= _REPORTED_EXPIRED_MAX:
+            _REPORTED_EXPIRED.clear()
+        _REPORTED_EXPIRED.add(fingerprint)
+        logger.warning(f"{message}. Skipping 5paisa price requests until then.")
+    return message
 
 
 def normalize_exchange_for_query(symbol: str, exchange: str) -> str:
@@ -151,6 +173,7 @@ class BrokerData:
             br_symbol = get_br_symbol(symbol, normalized_exchange)
 
             # Prepare request payload
+            api_key, client_id = _get_5paisa_credentials(self.auth_token)
             json_data = {
                 "head": {"key": api_key},
                 "body": {
@@ -219,6 +242,9 @@ class BrokerData:
         Returns:
             dict: Market depth data with OHLC, volume and open interest
         """
+        expired = _expired_session(self.auth_token)
+        if expired:
+            raise Exception(expired)
         try:
             # Normalize exchange for index symbols
             normalized_exchange = normalize_exchange_for_query(symbol, exchange)
@@ -228,6 +254,7 @@ class BrokerData:
             br_symbol = get_br_symbol(symbol, normalized_exchange)
 
             # Get market snapshot for overall data
+            api_key, client_id = _get_5paisa_credentials(self.auth_token)
             snapshot_data = {
                 "head": {"key": api_key},
                 "body": {
@@ -362,6 +389,8 @@ class BrokerData:
         Returns:
             dict: Quote data with bid, ask, ltp, open, high, low, prev_close, volume
         """
+        if _expired_session(self.auth_token):
+            return None
         try:
             # Normalize exchange for index symbols
             normalized_exchange = normalize_exchange_for_query(symbol, exchange)
@@ -378,6 +407,7 @@ class BrokerData:
             )
 
             # Prepare request payload
+            api_key, client_id = _get_5paisa_credentials(self.auth_token)
             json_data = {
                 "head": {"key": api_key},
                 "body": {
@@ -467,6 +497,9 @@ class BrokerData:
             list: List of quote data for each symbol with format:
                   [{'symbol': 'SBIN', 'exchange': 'NSE', 'data': {...}}, ...]
         """
+        expired = _expired_session(self.auth_token)
+        if expired:
+            raise Exception(expired)
         try:
             # 5paisa MarketSnapshot supports multiple symbols per request
             # Note: API returns empty for large batches (100+), 50 works reliably
@@ -562,6 +595,7 @@ class BrokerData:
             return skipped_symbols
 
         # Build request payload
+        api_key, client_id = _get_5paisa_credentials(self.auth_token)
         json_data = {
             "head": {"key": api_key},
             "body": {"ClientCode": client_id, "Data": data_array},
@@ -989,9 +1023,7 @@ class BrokerData:
 
         except Exception as e:
             error_msg = str(e)
-            logger.exception(
-                f"Error in get_history: {error_msg}"
-            )  # Debug log
+            logger.exception(f"Error in get_history: {error_msg}")  # Debug log
 
             # Check if this is the timestamp conversion error with raw_data available
             if (

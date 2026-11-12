@@ -2,7 +2,8 @@ import copy
 import importlib
 from typing import Any
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from events import (
     AnalyzerErrorEvent,
@@ -45,6 +46,7 @@ def emit_analyzer_error(request_data: dict[str, Any], error_message: str) -> dic
     return error_response
 
 
+@scoped_to_broker_arg
 def import_broker_module(broker_name: str) -> Any | None:
     """
     Dynamically import the broker-specific order API module.
@@ -105,6 +107,7 @@ def validate_smart_order(order_data: dict[str, Any]) -> tuple[bool, str | None]:
     return True, None
 
 
+@scoped_to_broker_arg
 def place_smart_order_with_auth(
     order_data: dict[str, Any],
     auth_token: str,
@@ -131,11 +134,12 @@ def place_smart_order_with_auth(
         order_request_data.pop("apikey", None)
 
     api_key = original_data.get("apikey", "")
+    account_id = verify_api_key(api_key) if api_key else None
 
     # Validate order data
     is_valid, error_message = validate_smart_order(order_data)
     if not is_valid:
-        if get_analyze_mode():
+        if get_analyze_mode(account_id):
             return False, emit_analyzer_error(original_data, error_message), 400
         error_response = {"status": "error", "message": error_message}
         bus.publish(OrderFailedEvent(
@@ -146,7 +150,7 @@ def place_smart_order_with_auth(
         return False, error_response, 400
 
     # If in analyze mode, route to sandbox for sandbox trading
-    if get_analyze_mode():
+    if get_analyze_mode(account_id):
         from services.sandbox_service import sandbox_place_smart_order
 
         if not api_key:
@@ -278,6 +282,7 @@ def place_smart_order_with_auth(
         return False, error_response, status_code
 
 
+@scoped_to_broker_arg
 def place_smart_order(
     order_data: dict[str, Any],
     api_key: str | None = None,

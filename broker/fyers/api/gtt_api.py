@@ -18,7 +18,6 @@ including the 429 retry with Retry-After honouring.
 """
 
 import json
-import os
 import time
 
 import httpx
@@ -35,6 +34,7 @@ from broker.fyers.mapping.gtt_data import (
     transform_place_gtt,
 )
 from database.token_db_enhanced import get_symbol_info
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 from utils.mpp_slab import calculate_protected_price, get_instrument_type_from_symbol
@@ -66,7 +66,7 @@ def _headers(auth):
     Built the same way as ``order_api.place_order_api`` -- the app id comes
     from the ``BROKER_API_KEY`` env var, never from the request payload.
     """
-    api_key = os.getenv("BROKER_API_KEY")
+    api_key, _ = resolve_broker_api_key(auth, "fyers")
     return {
         "Authorization": f"{api_key}:{auth}",
         "Content-Type": "application/json",

@@ -32,7 +32,7 @@ from services.whatsapp_bot_service import (
     whatsapp_bot_service,
 )
 from utils.logging import get_logger
-from utils.session import check_session_validity
+from utils.session import admin_required
 
 logger = get_logger(__name__)
 
@@ -41,13 +41,20 @@ WHATSAPP_MESSAGE_RATE_LIMIT = os.getenv("WHATSAPP_MESSAGE_RATE_LIMIT", "10 per m
 whatsapp_bp = Blueprint("whatsapp_bp", __name__, url_prefix="/whatsapp")
 
 
+# Every route in this blueprint is admin-only: there is one WhatsApp bot
+# session for the whole instance (one paired device, one running bot
+# process), and the user list / broadcast / unlink routes act across every
+# platform user's linked account, not just the caller's own. None of that
+# is safe to expose to a non-admin tenant on a multi-user deployment.
+
+
 # -------------------------------------------------------------------------
 # Config
 # -------------------------------------------------------------------------
 
 
 @whatsapp_bp.route("/config", methods=["GET"])
-@check_session_validity
+@admin_required
 def get_config():
     """Read bot config + runtime + pairing state in a single call so the
     React /whatsapp page can render everything from one fetch."""
@@ -69,7 +76,7 @@ def get_config():
 
 
 @whatsapp_bp.route("/config", methods=["POST"])
-@check_session_validity
+@admin_required
 def update_config():
     """Update non-secret config fields. Session blob is updated only via /pair."""
     try:
@@ -96,7 +103,7 @@ def update_config():
 
 
 @whatsapp_bp.route("/pair", methods=["POST"])
-@check_session_validity
+@admin_required
 def start_pair():
     """Kick off pairing. The QR code (and any pair-code) stream back to the
     frontend over SocketIO ('whatsapp_qr', 'whatsapp_pair_code',
@@ -142,14 +149,14 @@ def start_pair():
 
 
 @whatsapp_bp.route("/pair/status", methods=["GET"])
-@check_session_validity
+@admin_required
 def pair_status():
     """Polling endpoint for clients that can't use SocketIO."""
     return jsonify({"status": "success", "data": whatsapp_bot_service.get_pair_state()})
 
 
 @whatsapp_bp.route("/unlink", methods=["POST"])
-@check_session_validity
+@admin_required
 def unlink_device():
     ok, message = whatsapp_bot_service.unlink()
     return jsonify({"status": "success" if ok else "error", "message": message}), (
@@ -163,7 +170,7 @@ def unlink_device():
 
 
 @whatsapp_bp.route("/bot/start", methods=["POST"])
-@check_session_validity
+@admin_required
 def start_bot():
     try:
         ok, message = whatsapp_bot_service.start_bot()
@@ -178,7 +185,7 @@ def start_bot():
 
 
 @whatsapp_bp.route("/bot/stop", methods=["POST"])
-@check_session_validity
+@admin_required
 def stop_bot():
     ok, message = whatsapp_bot_service.stop_bot()
     return jsonify({"status": "success" if ok else "error", "message": message}), (
@@ -187,7 +194,7 @@ def stop_bot():
 
 
 @whatsapp_bp.route("/bot/status", methods=["GET"])
-@check_session_validity
+@admin_required
 def bot_status():
     try:
         cfg = get_bot_config()
@@ -216,7 +223,7 @@ def bot_status():
 
 
 @whatsapp_bp.route("/users", methods=["GET"])
-@check_session_validity
+@admin_required
 def list_users():
     try:
         users = get_all_whatsapp_users()
@@ -227,7 +234,7 @@ def list_users():
 
 
 @whatsapp_bp.route("/user/<path:whatsapp_jid>/unlink", methods=["POST"])
-@check_session_validity
+@admin_required
 def unlink_user(whatsapp_jid):
     """Soft-delete a linked recipient. JID is in URL because it contains '@'."""
     try:
@@ -249,7 +256,7 @@ def unlink_user(whatsapp_jid):
 
 
 @whatsapp_bp.route("/broadcast", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(WHATSAPP_MESSAGE_RATE_LIMIT)
 def broadcast():
     try:
@@ -283,7 +290,7 @@ def broadcast():
 
 
 @whatsapp_bp.route("/test-message", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(WHATSAPP_MESSAGE_RATE_LIMIT)
 def test_message():
     """Send a test message — to the linked-user for the logged-in OpenAlgo
@@ -333,7 +340,7 @@ def test_message():
 
 
 @whatsapp_bp.route("/send", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(WHATSAPP_MESSAGE_RATE_LIMIT)
 def send_to_phone():
     """Send a one-off message to any phone number (E.164 digits). Used by
@@ -384,7 +391,7 @@ def send_to_phone():
 
 
 @whatsapp_bp.route("/stats", methods=["GET"])
-@check_session_validity
+@admin_required
 def stats():
     try:
         days = min(max(int(request.args.get("days", 7)), 1), 365)

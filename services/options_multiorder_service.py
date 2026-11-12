@@ -12,7 +12,8 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, MultiOrderCompletedEvent
 from services.option_symbol_service import (
@@ -137,6 +138,7 @@ def emit_analyzer_error(request_data: dict[str, Any], error_message: str) -> dic
     return error_response
 
 
+@scoped_to_broker_arg
 def place_single_split_order_for_leg(
     order_data: dict[str, Any],
     api_key: str,
@@ -329,6 +331,7 @@ def resolve_leg_symbol(
     )
 
 
+@scoped_to_broker_arg
 def resolve_and_place_leg(
     leg_data: dict[str, Any],
     common_data: dict[str, Any],
@@ -475,7 +478,7 @@ def resolve_and_place_leg(
                 "total_quantity": total_quantity,
                 "split_size": splitsize,
                 "split_results": split_results,
-                "mode": "analyze" if get_analyze_mode() else "live",
+                "mode": "analyze" if get_analyze_mode(verify_api_key(api_key) if api_key else None) else "live",
             }
 
         # Step 2 (non-split): Construct regular order data - include underlying_ltp for execution reference
@@ -554,6 +557,7 @@ def resolve_and_place_leg(
         }
 
 
+@scoped_to_broker_arg
 def process_multiorder_with_auth(
     multiorder_data: dict[str, Any],
     auth_token: str,
@@ -565,6 +569,8 @@ def process_multiorder_with_auth(
     Process options multi-order with provided authentication.
     BUY legs execute first, then SELL legs.
     """
+    account_id = verify_api_key(api_key) if api_key else None
+
     # Prepare common data
     common_data = {
         "underlying": multiorder_data.get("underlying"),
@@ -603,7 +609,7 @@ def process_multiorder_with_auth(
     # Each leg has a different option symbol — without this, each leg would make
     # its own REST API quote call (~300-500ms each).
     leg_quote_cache = {}
-    if get_analyze_mode():
+    if get_analyze_mode(account_id):
         try:
             # Resolve all option symbols first (DB lookups, fast)
             resolved_symbols = []
@@ -667,7 +673,7 @@ def process_multiorder_with_auth(
     failed_legs = len(results) - successful_legs
 
     # Build response
-    mode = "analyze" if get_analyze_mode() else "live"
+    mode = "analyze" if get_analyze_mode(account_id) else "live"
     response_data = {
         "status": "success",
         "underlying": common_data.get("underlying"),
@@ -676,7 +682,7 @@ def process_multiorder_with_auth(
     }
 
     # Add mode if in analyze mode
-    if get_analyze_mode():
+    if get_analyze_mode(account_id):
         response_data["mode"] = "analyze"
 
     # Prepare request data for logging (without apikey)
@@ -703,6 +709,7 @@ def process_multiorder_with_auth(
     return True, response_data, 200
 
 
+@scoped_to_broker_arg
 def place_options_multiorder(
     multiorder_data: dict[str, Any],
     api_key: str | None = None,
@@ -734,7 +741,7 @@ def place_options_multiorder(
     legs = multiorder_data.get("legs", [])
     if not legs:
         error_msg = "No legs provided in the request"
-        if get_analyze_mode():
+        if get_analyze_mode(verify_api_key(api_key) if api_key else None):
             return False, emit_analyzer_error(original_data, error_msg), 400
         return False, {"status": "error", "message": error_msg}, 400
 

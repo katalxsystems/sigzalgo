@@ -1221,7 +1221,12 @@ class WhatsAppBotService:
         try:
             from database.settings_db import get_analyze_mode
 
-            mode = "analyze" if get_analyze_mode() else "live"
+            # Same owner account _sdk_client_for_owner() resolves, so this
+            # never reports a different account's mode than the one the
+            # other commands in this bot actually act on.
+            cfg = get_bot_config()
+            account_id = cfg.get("owner_username")
+            mode = "analyze" if get_analyze_mode(account_id) else "live"
         except Exception:
             mode = "unknown"
         self.send_sync(chat, f"Trading mode: {mode}")

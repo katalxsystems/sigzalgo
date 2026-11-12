@@ -90,6 +90,12 @@ MIGRATIONS = [
     ("migrate_agent.py", "Agent Module (LLM chat and chart surfaces)"),
     ("migrate_agent_voice.py", "Agent Voice Surface Settings"),
     ("migrate_agent_voice_phrase_removal.py", "Agent Voice Approval Phrase Removal"),
+    ("migrate_multi_account.py", "Multi-Broker-Account Support"),
+    ("migrate_broker_settings.py", "Instance-Wide Broker Settings (DB-backed)"),
+    ("migrate_account_analyze_mode.py", "Per-Account Analyzer Mode"),
+    ("migrate_broker_credentials_market.py", "Per-Account Market-Data Credentials"),
+    ("migrate_menu_visibility.py", "Profile Menu Visibility Settings"),
+    ("migrate_symtoken_broker.py", "Per-Broker Master Contracts (symtoken.broker)"),
 ]
 
 # Legacy migrations historically used non-zero exits for best-effort warnings,

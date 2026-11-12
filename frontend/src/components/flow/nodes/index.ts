@@ -8,6 +8,7 @@ import { AndGateNode } from './AndGateNode'
 import { BarOffsetNode } from './BarOffsetNode'
 import { BasketOrderNode } from './BasketOrderNode'
 import { CalendarNode } from './CalendarNode'
+import { CandleScanNode } from './CandleScanNode'
 import { CancelAllOrdersNode } from './CancelAllOrdersNode'
 import { CancelOrderNode } from './CancelOrderNode'
 import { ClosePositionsNode } from './ClosePositionsNode'
@@ -115,6 +116,7 @@ export {
   PriorPeriodOhlcNode,
   StrategyPnlNode,
   BarOffsetNode,
+  CandleScanNode,
   OpenPositionNode,
   ExpiryNode,
   IntervalsNode,
@@ -195,6 +197,7 @@ export const nodeTypes = {
   priorPeriodOhlc: PriorPeriodOhlcNode,
   strategyPnl: StrategyPnlNode,
   barOffset: BarOffsetNode,
+  candleScan: CandleScanNode,
   openPosition: OpenPositionNode,
   expiry: ExpiryNode,
   intervals: IntervalsNode,

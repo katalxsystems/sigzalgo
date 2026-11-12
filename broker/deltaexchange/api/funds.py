@@ -11,6 +11,7 @@ import os
 
 from broker.deltaexchange.api.baseurl import BASE_URL, get_auth_headers
 from broker.deltaexchange.api.rate_limiter import PRIVATE, consume
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -107,7 +108,8 @@ def get_margin_data(auth_token):
         dict: OpenAlgo standard margin dict, or DEFAULT_MARGIN_RESPONSE on failure.
     """
     api_key = auth_token
-    api_secret = os.getenv("BROKER_API_SECRET", "")
+    _, api_secret = resolve_broker_api_key(auth_token, "deltaexchange")
+    api_secret = api_secret or ""
 
     if not api_key or not api_secret:
         logger.error("[DeltaExchange] BROKER_API_KEY / BROKER_API_SECRET not set")

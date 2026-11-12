@@ -30,14 +30,14 @@ def restore_symbol_cache() -> dict:
     """
     Restore symbol cache from database on startup.
 
-    Loads all symbols from the symtoken table into the in-memory
-    BrokerSymbolCache for fast O(1) lookups.
+    Loads the symtoken rows of every broker that has a connected
+    (non-revoked) account into that broker's in-memory BrokerSymbolCache.
 
     Returns:
         dict: Statistics about the restoration
-            - success: bool
-            - symbols_loaded: int
-            - broker: str or None
+            - success: bool (True if at least one broker loaded)
+            - symbols_loaded: int (across all brokers)
+            - broker: comma-separated broker names, or None
             - time_ms: float
             - error: str or None
     """
@@ -47,43 +47,40 @@ def restore_symbol_cache() -> dict:
 
     try:
         from database.auth_db import Auth
-        from database.token_db_enhanced import get_cache
+        from database.token_db_enhanced import get_cache, load_cache_for_broker
 
-        # Find the active broker from auth table (non-revoked)
-        auth_record = Auth.query.filter_by(is_revoked=False).first()
+        # Every broker with a connected (non-revoked) account
+        brokers = sorted(
+            {
+                row.broker
+                for row in Auth.query.filter_by(is_revoked=False).all()
+                if row.broker
+            }
+        )
 
-        if not auth_record:
+        if not brokers:
             result["error"] = "No active broker session found in database"
             logger.debug("Symbol cache restoration skipped: No active broker session")
             return result
 
-        broker = auth_record.broker
-        result["broker"] = broker
-
-        # Get the symbol cache instance
-        cache = get_cache()
-
-        # Check if already loaded
-        if cache.cache_loaded and cache.stats.total_symbols > 0:
-            result["success"] = True
-            result["symbols_loaded"] = cache.stats.total_symbols
-            result["time_ms"] = (time.time() - start_time) * 1000
-            logger.debug(f"Symbol cache already loaded: {cache.stats.total_symbols} symbols")
-            return result
-
-        # Load symbols from database
-        success = cache.load_all_symbols(broker)
-
-        if success:
-            result["success"] = True
-            result["symbols_loaded"] = cache.stats.total_symbols
+        result["broker"] = ", ".join(brokers)
+        failed = []
+        for broker in brokers:
+            cache = get_cache(broker)
+            if not (cache.cache_loaded and cache.stats.total_symbols > 0):
+                if not load_cache_for_broker(broker):
+                    failed.append(broker)
+                    continue
+                cache = get_cache(broker)
+            result["symbols_loaded"] += cache.stats.total_symbols
             logger.debug(
-                f"Symbol cache restored: {cache.stats.total_symbols} symbols "
-                f"for broker '{broker}' in {(time.time() - start_time) * 1000:.0f}ms"
+                f"Symbol cache ready: {cache.stats.total_symbols} symbols for broker '{broker}'"
             )
-        else:
-            result["error"] = "Failed to load symbols from database"
-            logger.warning("Symbol cache restoration failed: No symbols in database")
+
+        result["success"] = len(failed) < len(brokers)
+        if failed:
+            result["error"] = f"Failed to load symbols from database for: {', '.join(failed)}"
+            logger.warning(f"Symbol cache restoration failed for: {', '.join(failed)}")
 
     except Exception as e:
         result["error"] = str(e)
@@ -245,15 +242,15 @@ def get_cache_restoration_status() -> dict:
         logger.debug(f"Error getting auth cache status: {e}")
 
     try:
-        from database.token_db_enhanced import get_cache
+        from database.token_db_enhanced import get_cache, loaded_brokers
 
-        cache = get_cache()
-
+        brokers = loaded_brokers()
+        caches = [get_cache(b) for b in brokers]
         status["symbol_cache"] = {
-            "loaded": cache.cache_loaded,
-            "count": cache.stats.total_symbols,
-            "broker": cache.active_broker,
-            "memory_mb": cache.stats.memory_usage_mb,
+            "loaded": bool(brokers),
+            "count": sum(c.stats.total_symbols for c in caches),
+            "broker": ", ".join(brokers) or None,
+            "memory_mb": sum(c.stats.memory_usage_mb for c in caches),
         }
     except Exception as e:
         logger.debug(f"Error getting symbol cache status: {e}")

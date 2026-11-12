@@ -999,6 +999,12 @@ export const NODE_DEFINITIONS = {
       category: 'data' as const,
     },
     {
+      type: 'candleScan',
+      label: 'Candle Breach Scan',
+      description: 'First candle in a window past a level',
+      category: 'data' as const,
+    },
+    {
       type: 'openPosition',
       label: 'Open Position',
       description: 'Get position for symbol',
@@ -1448,6 +1454,19 @@ export const DEFAULT_NODE_DATA = {
     interval: 'D',
     source: 'api' as const,
     offsetBars: 0,
+    outputVariable: '',
+  },
+  candleScan: {
+    symbol: '',
+    exchange: 'NSE',
+    interval: '1m',
+    source: 'api' as const,
+    lookbackMinutes: 120,
+    above: '',
+    below: '',
+    sinceEpoch: '',
+    tiePrefer: 'below' as const,
+    alertOnNoData: false,
     outputVariable: '',
   },
   openPosition: {

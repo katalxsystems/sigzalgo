@@ -1,6 +1,5 @@
 import http.client
 import json
-import os
 import threading
 import time
 import urllib.parse
@@ -13,6 +12,7 @@ from broker.zerodha.mapping.transform_data import (
 )
 from database.auth_db import get_auth_token
 from database.token_db import get_br_symbol, get_oa_symbol
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -162,7 +162,7 @@ def get_open_position(tradingsymbol, exchange, product, auth):
 def place_order_api(data, auth):
     AUTH_TOKEN = auth
 
-    BROKER_API_KEY = os.getenv("BROKER_API_KEY")
+    BROKER_API_KEY, _ = resolve_broker_api_key(AUTH_TOKEN, "zerodha")
     data["apikey"] = BROKER_API_KEY
     # token = get_token(data['symbol'], data['exchange'])
     newdata = transform_data(data)

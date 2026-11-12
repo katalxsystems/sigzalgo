@@ -1,7 +1,6 @@
 # api/funds.py
 
-import os
-
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -10,7 +9,7 @@ logger = get_logger(__name__)
 
 def get_margin_data(auth_token):
     """Fetch margin data from Zerodha's API using the provided auth token."""
-    api_key = os.getenv("BROKER_API_KEY")
+    api_key, _ = resolve_broker_api_key(auth_token, "zerodha")
 
     # Get the shared httpx client with connection pooling
     client = get_httpx_client()

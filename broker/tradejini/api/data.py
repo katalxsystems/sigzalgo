@@ -50,7 +50,7 @@ class TradejiniWebSocket:
             self._closing = False
 
             # Get API key from environment if not provided in token
-            api_key = get_api_key()
+            api_key = get_api_key(auth_token)
 
             # Format the auth token exactly as per TradeJini requirements
             if ":" not in auth_token and api_key:
@@ -955,7 +955,7 @@ class BrokerData:
             url = f"{base_url}{endpoint}"
 
             # Get API key from environment
-            api_key = get_api_key()
+            api_key = get_api_key(self.auth_token)
             if not api_key:
                 logger.error(API_KEY_MISSING_ERROR)
                 return False, API_KEY_MISSING_ERROR

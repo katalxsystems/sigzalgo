@@ -4,8 +4,9 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 
+from database.auth_db import list_broker_accounts
 from database.market_calendar_db import (
     DEFAULT_MARKET_TIMINGS,
     SUPPORTED_EXCHANGES,
@@ -26,14 +27,16 @@ from database.qty_freeze_db import (
     load_freeze_qty_from_csv,
 )
 from database.qty_freeze_db import db_session as freeze_db_session
+from database.user_db import list_users
 from limiter import limiter
 from utils.logging import get_logger
-from utils.session import check_session_validity
+from utils.session import admin_required, require_app_session
 
 logger = get_logger(__name__)
 
 # Use existing rate limits from .env (same as API endpoints)
 API_RATE_LIMIT = os.getenv("API_RATE_LIMIT", "50 per second")
+PASSWORD_RESET_RATE_LIMIT = os.getenv("RESET_RATE_LIMIT", "15 per hour")
 
 admin_bp = Blueprint("admin_bp", __name__, url_prefix="/admin")
 
@@ -53,7 +56,7 @@ def ratelimit_handler(e):
 # React routes are defined in react_app.py
 
 # @admin_bp.route('/')
-# @check_session_validity
+# @admin_required
 # @limiter.limit(API_RATE_LIMIT)
 # def index():
 #     """Admin dashboard with links to all admin functions"""
@@ -64,7 +67,7 @@ def ratelimit_handler(e):
 #                           holiday_count=holiday_count)
 
 # @admin_bp.route('/freeze')
-# @check_session_validity
+# @admin_required
 # @limiter.limit(API_RATE_LIMIT)
 # def freeze_qty():
 #     """View freeze quantities"""
@@ -108,7 +111,7 @@ def ratelimit_handler(e):
 
 
 @admin_bp.route("/api/stats")
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_stats():
     """Get admin dashboard stats"""
@@ -123,13 +126,74 @@ def api_stats():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@admin_bp.route("/api/users")
+@admin_required
+@limiter.limit(API_RATE_LIMIT)
+def api_users():
+    """List every platform user (admin only). Never returns password_hash
+    or totp_secret -- database.user_db.list_users() already excludes them."""
+    try:
+        users = list_users()
+        for user in users:
+            user["broker_account_count"] = len(list_broker_accounts(user["username"]))
+        return jsonify({"status": "success", "data": users})
+    except Exception as e:
+        logger.exception(f"Error listing users: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@admin_bp.route("/api/users/<username>/password", methods=["POST"])
+@admin_required
+@limiter.limit(PASSWORD_RESET_RATE_LIMIT)
+def api_set_user_password(username):
+    """Set another user's password without the old one (admin only).
+
+    JSON or form body: ``new_password`` (and optional ``confirm_password``).
+    Logs the user out of every device. An administrator's own password goes
+    through /auth/change-password instead, which requires the current one,
+    so a hijacked admin session cannot lock the real admin out.
+    """
+    from database.auth_db import clear_user_sessions
+    from database.user_db import find_user_by_exact_username, set_user_password
+    from utils.auth_utils import validate_password_strength
+
+    if username == session.get("user"):
+        return jsonify(
+            {
+                "status": "error",
+                "message": "Use /auth/change-password to change your own password",
+            }
+        ), 400
+    if not find_user_by_exact_username(username):
+        return jsonify({"status": "error", "message": "User not found"}), 404
+
+    data = request.get_json(silent=True) or request.form
+    new_password = data.get("new_password") or ""
+    confirm_password = data.get("confirm_password")
+    if not new_password:
+        return jsonify({"status": "error", "message": "new_password is required"}), 400
+    if confirm_password is not None and confirm_password != new_password:
+        return jsonify({"status": "error", "message": "Passwords do not match"}), 400
+
+    is_valid, error_message = validate_password_strength(new_password)
+    if not is_valid:
+        return jsonify({"status": "error", "message": error_message}), 400
+
+    if not set_user_password(username, new_password):
+        return jsonify({"status": "error", "message": "Failed to set password"}), 500
+
+    clear_user_sessions(username)
+    logger.info(f"Admin {session.get('user')} reset the password of user {username}")
+    return jsonify({"status": "success", "message": f"Password updated for {username}"})
+
+
 # ============================================================================
 # Freeze Quantity API Endpoints
 # ============================================================================
 
 
 @admin_bp.route("/api/freeze")
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_freeze_list():
     """Get all freeze quantities"""
@@ -155,7 +219,7 @@ def api_freeze_list():
 
 
 @admin_bp.route("/api/freeze", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_freeze_add():
     """Add a new freeze quantity entry"""
@@ -201,7 +265,7 @@ def api_freeze_add():
 
 
 @admin_bp.route("/api/freeze/<int:id>", methods=["PUT"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_freeze_edit(id):
     """Edit a freeze quantity entry"""
@@ -239,7 +303,7 @@ def api_freeze_edit(id):
 
 
 @admin_bp.route("/api/freeze/<int:id>", methods=["DELETE"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_freeze_delete(id):
     """Delete a freeze quantity entry"""
@@ -261,7 +325,7 @@ def api_freeze_delete(id):
 
 
 @admin_bp.route("/api/freeze/upload", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit("10/minute")
 def api_freeze_upload():
     """Upload CSV file to update freeze quantities"""
@@ -310,10 +374,18 @@ def api_freeze_upload():
 
 
 @admin_bp.route("/api/holidays")
-@check_session_validity
+@require_app_session
 @limiter.limit(API_RATE_LIMIT)
 def api_holidays_list():
-    """Get holidays for a specific year"""
+    """Get holidays for a specific year.
+
+    Read-only, not admin-gated: frontend/src/hooks/useMarketStatus.ts calls
+    this directly for every logged-in user (any tenant, any page using the
+    hook) to know whether a given exchange is open today -- it is not an
+    admin-only feature. Only the mutating routes below (add/delete a
+    holiday) stay @admin_required, since those change the instance-wide
+    calendar every tenant relies on.
+    """
     try:
         current_year = datetime.now().year
         year = request.args.get("year", current_year, type=int)
@@ -367,7 +439,7 @@ def api_holidays_list():
 
 
 @admin_bp.route("/api/holidays", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_holiday_add():
     """Add a new holiday"""
@@ -446,7 +518,7 @@ def api_holiday_add():
 
 
 @admin_bp.route("/api/holidays/<int:id>", methods=["DELETE"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_holiday_delete(id):
     """Delete a holiday"""
@@ -474,10 +546,18 @@ def api_holiday_delete(id):
 
 
 @admin_bp.route("/api/timings")
-@check_session_validity
+@require_app_session
 @limiter.limit(API_RATE_LIMIT)
 def api_timings_list():
-    """Get all market timings"""
+    """Get all market timings.
+
+    Read-only, not admin-gated: frontend/src/hooks/useMarketStatus.ts calls
+    this directly for every logged-in user (any tenant, any page using the
+    hook -- e.g. the Options Trading Suite) to know whether a given
+    exchange is open right now via the market_status field below. Only the
+    mutating PUT route stays @admin_required, since it changes the
+    instance-wide timing every tenant relies on.
+    """
     try:
         timings_data = get_all_market_timings()
 
@@ -515,7 +595,7 @@ def api_timings_list():
 
 
 @admin_bp.route("/api/timings/<exchange>", methods=["PUT"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_timings_edit(exchange):
     """Edit market timing for an exchange"""
@@ -554,7 +634,7 @@ def api_timings_edit(exchange):
 
 
 @admin_bp.route("/api/timings/check", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_timings_check():
     """Check market timings for a specific date"""
@@ -592,7 +672,7 @@ def api_timings_check():
 # ============================================================================
 #
 # Security model for this section:
-#   - All endpoints require a valid admin session (@check_session_validity).
+#   - All endpoints require a valid admin session (@admin_required).
 #   - All endpoints are rate-limited.
 #   - Inputs from the client are validated against allowlists; ints are clamped.
 #   - File reads are restricted to a fixed log directory resolved at call time
@@ -785,7 +865,7 @@ def _parse_jsonl_lines(raw_lines):
 
 
 @admin_bp.route("/api/errors")
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_errors_list():
     """Return recent entries from log/errors.jsonl (read-only, sandboxed)."""
@@ -926,7 +1006,7 @@ def _sanitize_client_error_url(url):
 
 
 @admin_bp.route("/api/errors/client", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(_CLIENT_REPORT_RATE)
 def api_errors_client_report():
     """Receive a browser-side error report and route it into errors.jsonl.
@@ -987,7 +1067,7 @@ def api_errors_client_report():
 
 
 @admin_bp.route("/api/errors/stats")
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_errors_stats():
     """Return error counts by level and recent (1h, 24h) windows."""
@@ -1084,7 +1164,7 @@ def _fingerprint_entry(entry):
 
 
 @admin_bp.route("/api/errors/groups")
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_errors_groups():
     """Aggregate errors.jsonl entries by fingerprint. Returns top groups by count."""
@@ -1492,7 +1572,7 @@ def _build_system_payload():
 
 
 @admin_bp.route("/api/system")
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_system_info():
     """Return a snapshot of host, runtime, hardware, build, brokers, mode."""
@@ -1629,6 +1709,7 @@ _BROKER_PROBE_HOSTS = {
     "definedge": "trading.definedgesecurities.com",
     "wisdom": "api.wisdomcapital.in",
     "groww": "api.groww.in",
+    "sahi": "direct.sahi.com",
 }
 
 
@@ -1675,7 +1756,7 @@ def _check_active_broker_tcp():
 
 
 @admin_bp.route("/api/system/diagnostics", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(_DIAG_RATE)
 def api_system_diagnostics():
     """Run a fixed set of latency/connectivity probes. No client-supplied targets."""
@@ -1862,7 +1943,7 @@ def _render_report(payload, errors_summary, errors_recent, fmt):
 
 
 @admin_bp.route("/api/system/report")
-@check_session_validity
+@admin_required
 @limiter.limit(_REPORT_RATE)
 def api_system_report():
     """Download a sanitized system report as .md or .txt for community support posts."""
@@ -1934,7 +2015,7 @@ def api_system_report():
 # render an "MCP is disabled" hint without lighting up errors.
 #
 # Security:
-#   - All endpoints @check_session_validity (admin session required)
+#   - All endpoints @admin_required (admin session required)
 #   - Rate-limited the same as other admin/api/* endpoints
 #   - Kill switch and revoke require explicit ``confirm`` parameter so an
 #     accidental form submit can't disconnect every active token
@@ -1979,7 +2060,7 @@ def _serialize_oauth_client(c) -> dict:
 
 
 @admin_bp.route("/api/oauth/clients", methods=["GET"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_oauth_clients_list():
     """List every DCR-registered OAuth client.
@@ -2023,7 +2104,7 @@ def api_oauth_clients_list():
 
 
 @admin_bp.route("/api/oauth/clients/<client_id>/approve", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_oauth_client_approve(client_id):
     """Approve a pending DCR client so it can complete the OAuth flow."""
@@ -2063,7 +2144,7 @@ def api_oauth_client_approve(client_id):
 
 
 @admin_bp.route("/api/oauth/clients/<client_id>/revoke", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_oauth_client_revoke(client_id):
     """Revoke a client and every refresh token it owns.
@@ -2118,7 +2199,7 @@ _MCP_AUDIT_MAX_LIMIT = 500
 
 
 @admin_bp.route("/api/mcp/audit", methods=["GET"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_mcp_audit():
     """Tail log/mcp.jsonl. Mirrors the /admin/api/errors design.
@@ -2218,7 +2299,7 @@ def api_mcp_audit():
 
 
 @admin_bp.route("/api/mcp/kill-switch", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit("10/minute")
 def api_mcp_kill_switch():
     """Atomic revoke of every refresh token. Requires explicit confirmation.
@@ -2347,7 +2428,7 @@ def _mcp_settings_payload() -> dict:
 
 
 @admin_bp.route("/api/mcp/settings", methods=["GET"])
-@check_session_validity
+@admin_required
 @limiter.limit(API_RATE_LIMIT)
 def api_mcp_settings_get():
     """Return the current MCP settings (master switch + posture toggles).
@@ -2359,7 +2440,7 @@ def api_mcp_settings_get():
 
 
 @admin_bp.route("/api/mcp/settings", methods=["PUT"])
-@check_session_validity
+@admin_required
 @limiter.limit("30/minute")
 def api_mcp_settings_put():
     """Update MCP settings in .env. Returns restart_required=True.

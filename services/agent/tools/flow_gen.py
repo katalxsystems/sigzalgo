@@ -196,7 +196,9 @@ class FlowGenToolkit(OpenAlgoToolkit):
         }
 
         with self.audited("save_flow", audit_args) as audit:
-            workflow_id = self._create_workflow(stored_name, description, nodes, edges)
+            workflow_id = self._create_workflow(
+                stored_name, description, nodes, edges, api_key=self.context.api_key
+            )
 
             if workflow_id is None:
                 audit.record(ok=False, response={"status": "error", "message": "create failed"})
@@ -397,7 +399,11 @@ class FlowGenToolkit(OpenAlgoToolkit):
 
     @staticmethod
     def _create_workflow(
-        name: str, description: str | None, nodes: list[Any], edges: list[Any]
+        name: str,
+        description: str | None,
+        nodes: list[Any],
+        edges: list[Any],
+        api_key: str | None = None,
     ) -> int | None:
         """Create the workflow row and return its id.
 
@@ -415,14 +421,24 @@ class FlowGenToolkit(OpenAlgoToolkit):
             description: Optional description from the JSON.
             nodes: The workflow's nodes.
             edges: The workflow's edges.
+            api_key: The run's OpenAlgo API key; its account owns the workflow.
 
         Returns:
             The new workflow id, or None when the row could not be created.
         """
-        from database.flow_db import create_workflow, db_session
+        from database.flow_db import create_workflow, db_session, owner_for_api_key
 
         try:
-            workflow = create_workflow(name=name, description=description, nodes=nodes, edges=edges)
+            # Owned by the account whose API key the agent run acts with.
+            account_id, owner_username = owner_for_api_key(api_key)
+            workflow = create_workflow(
+                name=name,
+                description=description,
+                nodes=nodes,
+                edges=edges,
+                account_id=account_id,
+                owner_username=owner_username,
+            )
             if workflow is None:
                 return None
             return int(workflow.id)

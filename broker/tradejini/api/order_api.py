@@ -72,7 +72,7 @@ def get_api_response(endpoint, auth, method="GET", data=None, params=None):
     """
     try:
         # Get API key from environment
-        api_key = get_api_key()
+        api_key = get_api_key(auth)
         if not api_key:
             raise ValueError(API_KEY_MISSING_ERROR)
 
@@ -141,7 +141,7 @@ def get_order_book(auth):
     """
     try:
         # Get API key from environment
-        api_key = get_api_key()
+        api_key = get_api_key(auth)
         if not api_key:
             raise ValueError(API_KEY_MISSING_ERROR)
 
@@ -250,7 +250,7 @@ def get_trade_book(auth):
     """
     try:
         # Get API key from environment
-        api_key = get_api_key()
+        api_key = get_api_key(auth)
         if not api_key:
             raise ValueError(API_KEY_MISSING_ERROR)
 
@@ -376,7 +376,7 @@ def get_positions(auth):
     """
     try:
         # Get API key from environment
-        api_key = get_api_key()
+        api_key = get_api_key(auth)
         if not api_key:
             raise ValueError(API_KEY_MISSING_ERROR)
 
@@ -912,7 +912,7 @@ def place_order_api(data, auth):
         logger.debug(f"place_order_api - Payload: {payload}")
 
         # Get API key from environment
-        api_key = get_api_key()
+        api_key = get_api_key(AUTH_TOKEN)
         if not api_key:
             logger.error(API_KEY_MISSING_ERROR)
             return None, {"status": "error", "message": API_KEY_MISSING_ERROR}, None

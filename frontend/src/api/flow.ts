@@ -22,6 +22,9 @@ export interface Workflow {
   webhook_auth_type: 'payload' | 'url'
   created_at: string
   updated_at: string
+  /** Broker account the workflow belongs to and trades on; null = unassigned */
+  account_id?: string | null
+  owner_username?: string | null
 }
 
 export interface WorkflowListItem {
@@ -32,6 +35,15 @@ export interface WorkflowListItem {
   created_at: string
   updated_at: string
   last_execution_status: string | null
+  account_id?: string | null
+  owner_username?: string | null
+  /** External ids found in the workflow's graph (price-breach and strategy monitors) */
+  call_ids?: string[]
+  mentor_ids?: string[]
+  /** Set for price-breach calls and strategy monitors, which get a breach status */
+  monitor?: 'price_breach' | 'strategy_monitor' | null
+  /** When the monitor was deactivated by a detected breach (UTC); null otherwise */
+  breached_at?: string | null
 }
 
 export interface WorkflowExecution {

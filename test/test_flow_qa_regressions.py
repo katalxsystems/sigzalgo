@@ -2089,3 +2089,86 @@ def test_startup_runs_the_reconciliation():
     source = open("app.py", encoding="utf-8").read()
 
     assert "reconcile_scheduler_jobs" in source
+
+
+def test_a_list_reference_inside_text_renders_as_json():
+    """`"legs": {{pnl.legs}}` in an HTTP body must parse, whatever the leg count."""
+    import json
+
+    ctx = fes.WorkflowContext()
+    ctx.set_variable(
+        "pnl",
+        {
+            "legs": [
+                {"symbol": "A", "quantity": -75.0, "ltp": None},
+                {"symbol": "B", "quantity": 0.0},
+            ]
+        },
+    )
+
+    body = json.loads(ctx.interpolate('{"legs": {{pnl.legs}}, "first": "{{pnl.legs[0].symbol}}"}'))
+
+    assert body == {
+        "legs": [{"symbol": "A", "quantity": -75.0, "ltp": None}, {"symbol": "B", "quantity": 0.0}],
+        "first": "A",
+    }
+
+
+def test_scalar_references_still_render_as_before():
+    ctx = fes.WorkflowContext()
+    ctx.set_variable("pnl", {"total": 3150.5, "symbol": "NIFTY", "ok": True})
+
+    assert ctx.interpolate("{{pnl.total}} {{pnl.symbol}} {{pnl.ok}}") == "3150.5 NIFTY True"
+
+
+# --- The data a run was started with is in its Execution Log -----------------
+#
+# A run started from the Flow editor's Run button and one started by a webhook
+# that omitted trigger_price failed identically ("did not resolve to a
+# number"), and the saved log could not tell them apart.
+
+
+def test_a_webhook_runs_received_body_is_in_its_execution_log(order_env, monkeypatch):
+    _, messages = _run_graph(
+        monkeypatch, "log", {"message": "x"}, {"trigger_price": 312.5, "symbol": "SBIN"}
+    )
+
+    assert 'Received data: {"trigger_price": 312.5, "symbol": "SBIN"}' in messages
+
+
+def test_a_price_alert_run_logs_its_price_but_not_the_breach_dict_twice(order_env, monkeypatch):
+    webhook = {
+        "trigger_type": "price_alert",
+        "trigger_price": 176.1,
+        "breach": {"description": "crossed BELOW", "symbol": "TATASTEEL", "exchange": "NSE"},
+    }
+
+    _, messages = _run_graph(monkeypatch, "log", {"message": "x"}, webhook)
+
+    received = [m for m in messages if m.startswith("Received data: ")]
+    assert received == ['Received data: {"trigger_type": "price_alert", "trigger_price": 176.1}']
+
+
+def test_a_run_started_without_data_logs_none(order_env, monkeypatch):
+    _, messages = _run_graph(monkeypatch, "log", {"message": "x"}, None)
+
+    assert not any(m.startswith("Received data: ") for m in messages)
+
+
+def test_an_oversized_body_is_truncated_in_the_execution_log(order_env, monkeypatch):
+    _, messages = _run_graph(monkeypatch, "log", {"message": "x"}, {"blob": "a" * 10_000})
+
+    (received,) = [m for m in messages if m.startswith("Received data: ")]
+    assert received.endswith("... (truncated)")
+    assert len(received) < fes._RECEIVED_DATA_LOG_LIMIT + 50
+
+
+def test_the_server_log_names_the_workflow_its_data_was_injected_into(
+    order_env, monkeypatch, caplog
+):
+    with caplog.at_level("INFO", logger=fes.logger.name):
+        _run_graph(monkeypatch, "log", {"message": "x"}, {"trigger_price": 1})
+
+    assert any(
+        r.getMessage().startswith("Webhook data injected for workflow 1: ") for r in caplog.records
+    )

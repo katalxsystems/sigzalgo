@@ -1,5 +1,4 @@
 import json
-import os
 import threading
 import time
 
@@ -13,6 +12,7 @@ from broker.fyers.mapping.transform_data import (
     transform_modify_order_data,
 )
 from database.token_db import get_br_symbol, get_oa_symbol
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -43,7 +43,7 @@ def get_api_response(endpoint, auth, method="GET", payload="", _retry_count=0):
         client = get_httpx_client()
 
         AUTH_TOKEN = auth
-        api_key = os.getenv("BROKER_API_KEY")
+        api_key, _ = resolve_broker_api_key(auth, "fyers")
 
         url = f"https://api-t1.fyers.in{endpoint}"
         headers = {"Authorization": f"{api_key}:{AUTH_TOKEN}", "Content-Type": "application/json"}
@@ -197,7 +197,7 @@ def place_order_api(data, auth):
         client = get_httpx_client()
 
         AUTH_TOKEN = auth
-        BROKER_API_KEY = os.getenv("BROKER_API_KEY")
+        BROKER_API_KEY, _ = resolve_broker_api_key(auth, "fyers")
         data["apikey"] = BROKER_API_KEY
 
         url = "https://api-t1.fyers.in/api/v3/orders/sync"
@@ -349,7 +349,7 @@ def close_all_positions(current_api_key, auth):
         client = get_httpx_client()
 
         AUTH_TOKEN = auth
-        api_key = os.getenv("BROKER_API_KEY")
+        api_key, _ = resolve_broker_api_key(auth, "fyers")
 
         url = "https://api-t1.fyers.in/api/v3/positions"
         headers = {"Authorization": f"{api_key}:{AUTH_TOKEN}", "Content-Type": "application/json"}
@@ -399,7 +399,7 @@ def cancel_order(orderid, auth):
         client = get_httpx_client()
 
         AUTH_TOKEN = auth
-        api_key = os.getenv("BROKER_API_KEY")
+        api_key, _ = resolve_broker_api_key(auth, "fyers")
 
         url = "https://api-t1.fyers.in/api/v3/orders/sync"
         headers = {"Authorization": f"{api_key}:{AUTH_TOKEN}", "Content-Type": "application/json"}
@@ -449,7 +449,7 @@ def modify_order(data, auth):
         client = get_httpx_client()
 
         AUTH_TOKEN = auth
-        api_key = os.getenv("BROKER_API_KEY")
+        api_key, _ = resolve_broker_api_key(auth, "fyers")
 
         url = "https://api-t1.fyers.in/api/v3/orders/sync"
         headers = {"Authorization": f"{api_key}:{AUTH_TOKEN}", "Content-Type": "application/json"}

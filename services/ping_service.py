@@ -1,12 +1,14 @@
 from typing import Any, Dict, Optional, Tuple
 
 from database.auth_db import get_auth_token_broker
+from database.broker_context import scoped_to_broker_arg
 from utils.logging import get_logger
 
 # Initialize logger
 logger = get_logger(__name__)
 
 
+@scoped_to_broker_arg
 def ping_with_auth(auth_token: str, broker: str) -> tuple[bool, dict[str, Any], int]:
     """
     Validate auth token and return pong response.
@@ -26,6 +28,7 @@ def ping_with_auth(auth_token: str, broker: str) -> tuple[bool, dict[str, Any], 
     return True, {"status": "success", "data": {"message": "pong", "broker": broker}}, 200
 
 
+@scoped_to_broker_arg
 def get_ping(
     api_key: str | None = None, auth_token: str | None = None, broker: str | None = None
 ) -> tuple[bool, dict[str, Any], int]:

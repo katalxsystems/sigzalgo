@@ -12,7 +12,7 @@ import stat
 from flask import Blueprint, jsonify
 
 from utils.logging import get_logger
-from utils.session import check_session_validity
+from utils.session import admin_required
 
 logger = get_logger(__name__)
 
@@ -236,9 +236,12 @@ def check_permission(path: str, expected_mode: int, is_sensitive: bool) -> dict:
 
 
 @system_permissions_bp.route("/permissions", methods=["GET"])
-@check_session_validity
+@admin_required
 def get_permissions():
-    """Get permission status for all monitored paths."""
+    """Get permission status for all monitored paths.
+
+    Admin-only: exposes server filesystem paths and their modes.
+    """
     try:
         is_windows = platform.system() == "Windows"
         base_path = get_base_path()
@@ -272,11 +275,13 @@ def get_permissions():
 
 
 @system_permissions_bp.route("/permissions/fix", methods=["POST"])
-@check_session_validity
+@admin_required
 def fix_permissions():
     """
     Attempt to fix permission issues.
     Only fixes paths within the application directory.
+
+    Admin-only: mutates permissions on shared server files.
     Does NOT use elevated permissions - only fixes what current user can fix.
     """
     try:

@@ -6,17 +6,14 @@ import { MobileBottomNav } from './MobileBottomNav'
 import { Navbar } from './Navbar'
 
 export function Layout() {
-  const { isAuthenticated, user } = useAuthStore()
+  const { user } = useAuthStore()
 
-  // AuthSync has already synced Flask session with Zustand store
-  // So we just need to check the Zustand store state
-  if (!isAuthenticated) {
+  // AuthSync has already synced Flask session with Zustand store. `user` is
+  // non-null for any valid app session (password-authenticated), whether or
+  // not a broker is connected yet — connecting a broker is optional and
+  // surfaced as a CTA on the dashboard instead of a hard gate here.
+  if (!user) {
     return <Navigate to="/login" replace />
-  }
-
-  // If logged in but no broker selected, redirect to broker selection
-  if (!user?.broker) {
-    return <Navigate to="/broker" replace />
   }
 
   return (

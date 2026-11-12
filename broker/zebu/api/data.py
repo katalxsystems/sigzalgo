@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
@@ -10,6 +9,7 @@ import httpx
 import pandas as pd
 
 from database.token_db import get_br_symbol, get_oa_symbol, get_token
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -33,7 +33,7 @@ def get_api_response(endpoint, auth, method="POST", payload=None):
     """
     AUTH_TOKEN = auth
     # BROKER_API_KEY format: userid:::client_id (e.g., Z56004:::Z56004_U)
-    full_api_key = os.getenv("BROKER_API_KEY")
+    full_api_key, _ = resolve_broker_api_key(AUTH_TOKEN, "zebu")
     api_key = full_api_key.split(":::")[0]  # Trading user ID
 
     if payload is None:
@@ -325,7 +325,7 @@ class BrokerData:
         prepared_symbols = []
 
         # Pre-fetch API key (userid part)
-        full_api_key = os.getenv("BROKER_API_KEY")
+        full_api_key, _ = resolve_broker_api_key(self.auth_token, "zebu")
         api_key = full_api_key.split(":::")[0]  # Trading user ID
 
         # Step 1: Pre-resolve all tokens sequentially (database access)

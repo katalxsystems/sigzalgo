@@ -140,7 +140,14 @@ webClient.interceptors.response.use(
   (response) => response,
   (error) => {
     const status = error.response?.status
-    if (status === 401) {
+    const code = error.response?.data?.code
+    // BROKER_SESSION_EXPIRED means the app session is perfectly valid --
+    // there's just no broker connected (optional now). Only a genuinely
+    // invalid/expired app session should bounce the user to /login;
+    // redirecting here too would silently kick a validly-logged-in,
+    // broker-less user off whatever page they were on (e.g. mid-action on
+    // the Broker Accounts tab) with no visible explanation.
+    if (status === 401 && code !== 'BROKER_SESSION_EXPIRED') {
       // Unauthorized - redirect to login
       window.location.href = '/login'
     } else if (status === 403) {

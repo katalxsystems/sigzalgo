@@ -2,6 +2,7 @@ import importlib
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from database.auth_db import Auth, db_session, get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.token_db import get_token
 from utils.constants import VALID_EXCHANGES
 from utils.logging import get_logger
@@ -37,6 +38,7 @@ def validate_symbol_exchange(symbol: str, exchange: str) -> tuple[bool, str | No
     return True, None
 
 
+@scoped_to_broker_arg
 def import_broker_module(broker_name: str) -> Any | None:
     """
     Dynamically import the broker-specific data module.
@@ -56,6 +58,7 @@ def import_broker_module(broker_name: str) -> Any | None:
         return None
 
 
+@scoped_to_broker_arg
 def get_depth_with_auth(
     auth_token: str,
     feed_token: str | None,
@@ -116,6 +119,7 @@ def get_depth_with_auth(
         return False, {"status": "error", "message": str(e)}, 500
 
 
+@scoped_to_broker_arg
 def get_depth(
     symbol: str,
     exchange: str,

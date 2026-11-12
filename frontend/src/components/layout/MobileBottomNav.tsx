@@ -1,9 +1,11 @@
 import { Link, useLocation } from 'react-router'
-import { bottomNavItems, isActiveRoute } from '@/config/navigation'
+import { isActiveRoute } from '@/config/navigation'
+import { useNavItems } from '@/hooks/useNavItems'
 import { cn } from '@/lib/utils'
 
 export function MobileBottomNav() {
   const location = useLocation()
+  const { bottomNavItems } = useNavItems()
 
   return (
     <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 safe-area-bottom">

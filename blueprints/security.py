@@ -8,7 +8,7 @@ from flask import Blueprint, flash, jsonify, redirect, render_template, request,
 from database.settings_db import get_security_settings, set_security_settings
 from database.traffic_db import Error404Tracker, InvalidAPIKeyTracker, IPBan, logs_session
 from limiter import limiter
-from utils.session import check_session_validity
+from utils.session import admin_required, check_session_validity
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ security_bp = Blueprint("security_bp", __name__, url_prefix="/security")
 
 
 @security_bp.route("/", methods=["GET"])
-@check_session_validity
+@admin_required
 @limiter.limit("60/minute")
 def security_dashboard():
     """Display security dashboard with banned IPs and 404 tracking"""
@@ -117,7 +117,7 @@ def security_dashboard():
 
 
 @security_bp.route("/ban", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit("30/minute")
 def ban_ip():
     """Manually ban an IP address"""
@@ -159,7 +159,7 @@ def ban_ip():
 
 
 @security_bp.route("/unban", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit("30/minute")
 def unban_ip():
     """Unban an IP address"""
@@ -184,7 +184,7 @@ def unban_ip():
 
 
 @security_bp.route("/ban-host", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit("30/minute")
 def ban_host():
     """Ban by host/domain"""
@@ -260,7 +260,7 @@ def ban_host():
 
 
 @security_bp.route("/clear-404", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit("10/minute")
 def clear_404_tracker():
     """Clear 404 tracker for a specific IP"""
@@ -287,7 +287,7 @@ def clear_404_tracker():
 
 
 @security_bp.route("/api/data", methods=["GET"])
-@check_session_validity
+@admin_required
 @limiter.limit("60/minute")
 def security_data():
     """API endpoint to get all security dashboard data as JSON"""
@@ -373,7 +373,7 @@ def security_data():
 
 
 @security_bp.route("/stats", methods=["GET"])
-@check_session_validity
+@admin_required
 @limiter.limit("60/minute")
 def security_stats():
     """Get security statistics"""
@@ -407,7 +407,7 @@ def security_stats():
 
 
 @security_bp.route("/settings", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit("10/minute")
 def update_security_settings():
     """Update security threshold settings"""
@@ -473,7 +473,7 @@ def update_security_settings():
 
 
 @security_bp.route("/api/login-activity", methods=["GET"])
-@check_session_validity
+@admin_required
 @limiter.limit("60/minute")
 def login_activity():
     """Get login attempt history for the security dashboard."""
@@ -490,7 +490,7 @@ def login_activity():
 
 
 @security_bp.route("/api/login-activity/clear", methods=["POST"])
-@check_session_validity
+@admin_required
 @limiter.limit("10/minute")
 def clear_login_activity():
     """Clear all login attempt records."""
@@ -511,6 +511,7 @@ def active_sessions_list():
     """Get all active sessions for the security dashboard."""
     try:
         from flask import session
+
         from database.auth_db import get_active_sessions
 
         username = session.get("user")

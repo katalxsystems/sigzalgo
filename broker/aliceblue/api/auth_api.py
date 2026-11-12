@@ -1,16 +1,16 @@
 import hashlib
 import json
-import os
 
 import httpx
 
+from utils.config import get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def authenticate_broker(userid, authCode):
+def authenticate_broker(userid, authCode, account_id=None):
     """
     Authenticate with AliceBlue using the new V2 vendor API.
 
@@ -30,7 +30,7 @@ def authenticate_broker(userid, authCode):
         # Fetching the necessary credentials from environment variables
         # BROKER_API_KEY   = appCode  (used for the login redirect, not needed here)
         # BROKER_API_SECRET = apiSecret (used to build the checksum)
-        BROKER_API_SECRET = os.environ.get("BROKER_API_SECRET")
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="aliceblue")
 
         if not BROKER_API_SECRET:
             logger.error("BROKER_API_SECRET not found in environment variables")

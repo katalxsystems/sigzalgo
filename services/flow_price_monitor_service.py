@@ -1,8 +1,18 @@
 # services/flow_price_monitor_service.py
 """
 Flow Price Monitor Service
-Real-time price monitoring for Price Alert triggers (Flask/sync version)
-Uses polling instead of WebSocket for simplicity in Flask context
+Real-time price monitoring for Price Alert triggers.
+
+Primary trigger path is WebSocket ticks from the broker's live feed (the
+same unified proxy scalping_risk_monitor_service.py subscribes to), so a
+breach fires within one tick instead of waiting out a poll interval. REST
+quote polling (services/flow_openalgo_client.py's get_quotes) remains as a
+slower backstop -- it catches an alert whose WS subscribe silently failed
+(feed not connected yet, broker down) or whose feed drops without the
+client noticing, at the cost of the old 5s-latency ceiling for that alert
+only. Both paths converge on the same _apply_price() so a breach is
+evaluated and a workflow triggered identically regardless of which path
+supplied the price.
 """
 
 import atexit
@@ -15,10 +25,108 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from services.flow_openalgo_client import FlowOpenAlgoClient, get_flow_client
+from utils import real_threading
 from utils.env_config import env_int
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _fmt_price(value: float | None) -> str:
+    """Price for logs: 2 decimals with thousands separators; more precision
+    for sub-1 prices (crypto)."""
+    if value is None:
+        return "n/a"
+    return f"{value:,.2f}" if abs(value) >= 1 else f"{value:.6g}"
+
+
+def _signed(value: float, base: float | None = None) -> str:
+    """'+12.35 (+0.05%)' -- a move, optionally with its % of ``base``."""
+    text = f"{value:+,.2f}" if abs(value) >= 1 or value == 0 else f"{value:+.4g}"
+    if base:
+        text += f" ({value / base * 100:+.2f}%)"
+    return text
+
+
+def describe_watch(alert: "PriceAlert") -> str:
+    """What an alert is watching for, in plain words."""
+    condition = FlowPriceMonitor.normalize_condition(alert.condition)
+    level = _fmt_price(alert.target_price)
+    lower = _fmt_price(alert.price_lower or alert.target_price)
+    upper = _fmt_price(alert.price_upper or alert.target_price)
+    pct = alert.percentage or 0
+    return {
+        "greater_than": f"price above {level}",
+        "less_than": f"price below {level}",
+        "crossing": f"price at {level} (within 0.1%)",
+        "crossing_up": f"price crossing above {level}",
+        "crossing_down": f"price crossing below {level}",
+        "entering_channel": f"price inside channel {lower} - {upper}",
+        "inside_channel": f"price inside channel {lower} - {upper}",
+        "exiting_channel": f"price outside channel {lower} - {upper}",
+        "outside_channel": f"price outside channel {lower} - {upper}",
+        "moving_up": "price moving up from the previous tick",
+        "moving_down": "price moving down from the previous tick",
+        "moving_up_percent": f"price moving up {pct}% or more from the previous price",
+        "moving_down_percent": f"price moving down {pct}% or more from the previous price",
+    }.get(condition, f"condition {alert.condition!r} at {level}")
+
+
+def describe_breach(
+    alert: "PriceAlert", price: float, previous: float | None
+) -> tuple[str, float | None]:
+    """How ``price`` met the alert: the level that was breached and by how
+    much. Returns (description, breached level)."""
+    condition = FlowPriceMonitor.normalize_condition(alert.condition)
+    target = alert.target_price
+    lower = alert.price_lower or target
+    upper = alert.price_upper or target
+    now = _fmt_price(price)
+    was = _fmt_price(previous)
+
+    if condition == "greater_than":
+        return f"LTP {now} is above level {_fmt_price(target)} by {_signed(price - target, target)}", target
+    if condition == "less_than":
+        return f"LTP {now} is below level {_fmt_price(target)} by {_signed(price - target, target)}", target
+    if condition == "crossing":
+        return (
+            f"LTP {now} reached level {_fmt_price(target)} "
+            f"(off by {_signed(price - target)}, tolerance 0.1% = {_fmt_price(price * 0.001)})"
+        ), target
+    if condition == "crossing_up":
+        path = f"{was} -> {now}" if previous is not None else f"first price {now} already above"
+        return (
+            f"crossed ABOVE level {_fmt_price(target)} ({path}), "
+            f"now {_signed(price - target, target)} beyond the level"
+        ), target
+    if condition == "crossing_down":
+        path = f"{was} -> {now}" if previous is not None else f"first price {now} already below"
+        return (
+            f"crossed BELOW level {_fmt_price(target)} ({path}), "
+            f"now {_signed(price - target, target)} beyond the level"
+        ), target
+    if condition in ("entering_channel", "inside_channel"):
+        return (
+            f"LTP {now} is inside channel {_fmt_price(lower)} - {_fmt_price(upper)} "
+            f"({_signed(price - lower)} from lower, {_signed(price - upper)} from upper)"
+        ), None
+    if condition in ("exiting_channel", "outside_channel"):
+        if price > upper:
+            return (
+                f"LTP {now} broke ABOVE channel upper {_fmt_price(upper)} "
+                f"by {_signed(price - upper, upper)} (channel {_fmt_price(lower)} - {_fmt_price(upper)})"
+            ), upper
+        return (
+            f"LTP {now} broke BELOW channel lower {_fmt_price(lower)} "
+            f"by {_signed(price - lower, lower)} (channel {_fmt_price(lower)} - {_fmt_price(upper)})"
+        ), lower
+    if condition in ("moving_up", "moving_down", "moving_up_percent", "moving_down_percent"):
+        move = price - (previous or 0)
+        threshold = (
+            f", threshold {alert.percentage or 0}%" if condition.endswith("_percent") else ""
+        )
+        return f"moved {was} -> {now} ({_signed(move, previous)}{threshold})", previous
+    return f"LTP {now} met condition {alert.condition!r} at {_fmt_price(target)}", target
 
 # Shared and bounded, never one thread per fire: an every_time alert on a fast
 # poll interval would otherwise spawn a thread per tick, each running a whole
@@ -27,6 +135,19 @@ _WORKFLOW_POOL = ThreadPoolExecutor(
     max_workers=env_int("FLOW_PRICE_ALERT_WORKERS", 4, minimum=1),
     thread_name_prefix="flow-price-alert",
 )
+
+# WS subscribe mode: only LTP is needed to evaluate any of the supported
+# conditions (all of them compare against last-traded price).
+_WS_SUBSCRIBE_MODE = "LTP"
+
+# WS events are handed from the websocket client's real OS thread to the hub
+# through a real queue (see _on_tick). Bounded so a stalled drain cannot grow
+# without limit; an event that does not fit is dropped and counted.
+_TICK_QUEUE_MAX = 10_000
+# Drain interval while anything is subscribed, and when nothing is (no tick
+# can arrive then, so there is no reason to wake 20 times a second).
+_DRAIN_POLL_SEC = 0.05
+_DRAIN_IDLE_SEC = 1.0
 
 
 @dataclass
@@ -53,7 +174,7 @@ class PriceAlert:
 
 class FlowPriceMonitor:
     """
-    Singleton service that monitors prices using polling
+    Singleton service that monitors prices (WS-primary, poll backstop)
     and triggers workflows when price conditions are met.
     """
 
@@ -88,7 +209,9 @@ class FlowPriceMonitor:
         self._alerts: dict[int, PriceAlert] = {}
         self._running = False
         self._monitor_thread: threading.Thread | None = None
-        self._poll_interval = 5  # seconds
+        # Backstop only -- the WS tick path (_on_tick) is what normally fires
+        # an alert. See env_int() below for the override var.
+        self._poll_interval = env_int("FLOW_PRICE_ALERT_POLL_INTERVAL", 30, minimum=5)
         self._stop_event = threading.Event()
         # Workflows with a queued or running price-alert execution, so a tick
         # cannot stack another one behind it. Class-level defaults above cover
@@ -96,7 +219,27 @@ class FlowPriceMonitor:
         self._pending = set()
         self._pending_lock = threading.Lock()
         self._alerts_lock = threading.RLock()
-        logger.debug("FlowPriceMonitor initialized")
+
+        # WS plumbing. One WebSocketClient per api_key (get_websocket_client is
+        # itself a keyed singleton, so this dict just tracks which ones this
+        # monitor has already wired a callback into and what it has subscribed
+        # on each -- mirrors scalping_risk_monitor_service.py's _ws/_subscribed.
+        self._ws_clients: dict[str, Any] = {}
+        self._ws_subscribed: dict[str, set[str]] = {}
+        self._ws_lock = threading.Lock()
+
+        # Real (not green) queue: written by the websocket client's OS thread,
+        # drained on the hub by _drain_loop.
+        self._tick_queue = real_threading.Queue(maxsize=_TICK_QUEUE_MAX)
+        self._ticks_dropped = 0
+        self._drain_thread: threading.Thread | None = None
+
+        self._shutdown_done = False
+
+        logger.debug(
+            f"FlowPriceMonitor initialized (WS-primary, "
+            f"{self._poll_interval}s poll backstop)"
+        )
 
     # The editor and this monitor grew separate vocabularies for the same four
     # conditions, so every alert the UI could produce fell through to the final
@@ -153,12 +296,24 @@ class FlowPriceMonitor:
         with self._alerts_lock:
             self._alerts[workflow_id] = alert
             logger.info(
-                f"Added price alert for workflow {workflow_id}: "
-                f"{symbol}@{exchange} {condition} {target_price}"
+                f"Added price alert for workflow {workflow_id}: watching "
+                f"{symbol}@{exchange} for {describe_watch(alert)} "
+                f"(trigger: {alert.trigger}, expires: {alert.expiration})"
             )
 
             if not self._running:
                 self._start_monitoring()
+
+        # Blocking WS call: kept outside _alerts_lock so a slow subscribe
+        # (broker capacity, proxy round trip) never blocks other alert
+        # registrations/removals.
+        if api_key:
+            self._ws_subscribe(api_key, symbol, exchange)
+        else:
+            logger.warning(
+                f"Price alert for workflow {workflow_id} has no api_key; cannot "
+                "subscribe to live ticks, relying entirely on the poll backstop."
+            )
 
         return True
 
@@ -168,13 +323,39 @@ class FlowPriceMonitor:
             if workflow_id not in self._alerts:
                 return False
 
+            alert = self._alerts[workflow_id]
             del self._alerts[workflow_id]
             logger.info(f"Removed price alert for workflow {workflow_id}")
 
             if not self._alerts and self._running:
                 self._stop_monitoring()
 
+        if alert.api_key:
+            self._ws_unsubscribe_if_unused(alert.api_key, alert.symbol, alert.exchange)
+
         return True
+
+    def replace_api_key(self, old_key: str, new_key: str) -> int:
+        """Move every alert on ``old_key`` to ``new_key`` after the account's
+        key was regenerated, and resubscribe their symbols on the new key's
+        feed. The old key no longer authenticates, so its feed and quote calls
+        would fail until a restart. Returns how many alerts moved."""
+        with self._alerts_lock:
+            moved = [a for a in self._alerts.values() if a.api_key == old_key]
+            for alert in moved:
+                alert.api_key = new_key
+        if not moved:
+            return 0
+
+        with self._ws_lock:
+            self._ws_clients.pop(old_key, None)
+            self._ws_subscribed.pop(old_key, None)
+        for alert in moved:
+            if not alert.triggered:
+                self._ws_subscribe(new_key, alert.symbol, alert.exchange)
+
+        logger.info(f"Moved {len(moved)} price alert(s) to the account's regenerated API key")
+        return len(moved)
 
     def get_alert(self, workflow_id: int) -> PriceAlert | None:
         """Get alert for a workflow"""
@@ -183,6 +364,186 @@ class FlowPriceMonitor:
     def get_active_alerts_count(self) -> int:
         """Get count of active alerts"""
         return len(self._alerts)
+
+    # ------------------------------------------------------------------ ws plumbing
+    @staticmethod
+    def _symkey(symbol: str, exchange: str) -> str:
+        return f"{exchange}:{symbol}"
+
+    def _ensure_ws(self, api_key: str):
+        """Get (or create) the shared WebSocketClient for this api_key and make
+        sure this monitor's callbacks are wired into it. Returns None if the
+        feed isn't available yet (broker not connected, proxy down) -- the
+        caller falls back to the poll backstop, exactly like
+        scalping_risk_monitor_service.py's _ensure_ws()."""
+        with self._ws_lock:
+            client = self._ws_clients.get(api_key)
+        if client is not None and getattr(client, "connected", False):
+            return client
+
+        try:
+            from services.websocket_client import get_websocket_client
+
+            client = get_websocket_client(api_key)
+        except Exception as e:
+            logger.debug(f"Flow price monitor: feed not available yet for this account: {e}")
+            return None
+
+        with self._ws_lock:
+            is_new = api_key not in self._ws_clients
+            self._ws_clients[api_key] = client
+            self._ws_subscribed.setdefault(api_key, set())
+        if is_new:
+            client.register_callback("market_data", lambda data: self._on_tick(api_key, data))
+            client.register_callback("auth", lambda data: self._on_ws_auth(api_key, data))
+        return client
+
+    def _ws_subscribe(self, api_key: str, symbol: str, exchange: str) -> None:
+        """Subscribe to live LTP ticks for one symbol on this account's feed.
+        Safe to call redundantly -- e.g. a call's sl_target and entry_recross
+        watches share the same symbol; the underlying WS client de-dupes, and
+        _ws_subscribed just needs to know at least one alert wants it."""
+        key = self._symkey(symbol, exchange)
+        with self._ws_lock:
+            already = key in self._ws_subscribed.get(api_key, set())
+        if already:
+            return
+
+        client = self._ensure_ws(api_key)
+        if client is None:
+            return  # poll backstop covers this alert until the feed comes up
+
+        try:
+            client.subscribe([{"exchange": exchange, "symbol": symbol}], mode=_WS_SUBSCRIBE_MODE)
+            with self._ws_lock:
+                self._ws_subscribed.setdefault(api_key, set()).add(key)
+            logger.debug(f"Flow price monitor subscribed to {key} for live ticks")
+        except Exception as e:
+            logger.warning(f"Flow price monitor: WS subscribe failed for {key}: {e}")
+
+    def _ws_unsubscribe_if_unused(self, api_key: str, symbol: str, exchange: str) -> None:
+        """Unsubscribe only if no other live (non-triggered) alert on this
+        account still wants this symbol -- a call's two sibling watches share
+        one subscription, and removing the first must not blind the second."""
+        key = self._symkey(symbol, exchange)
+        with self._alerts_lock:
+            still_wanted = any(
+                a.api_key == api_key and self._symkey(a.symbol, a.exchange) == key
+                for a in self._alerts.values()
+            )
+        if still_wanted:
+            return
+
+        with self._ws_lock:
+            client = self._ws_clients.get(api_key)
+            subscribed = self._ws_subscribed.get(api_key, set())
+            if key not in subscribed:
+                return
+            subscribed.discard(key)
+        if client is None:
+            return
+        try:
+            client.unsubscribe([{"exchange": exchange, "symbol": symbol}], mode=_WS_SUBSCRIBE_MODE)
+        except Exception as e:
+            logger.debug(f"Flow price monitor: WS unsubscribe failed for {key}: {e}")
+
+    # -- websocket callbacks ------------------------------------------------
+    #
+    # Both run on the websocket client's real OS thread (its asyncio loop),
+    # not on the eventlet hub. Under gunicorn+eventlet every lock this monitor
+    # uses is green, and taking a green lock from a real thread fails with
+    # "greenlet.error: Cannot switch to a different thread" (or deadlocks).
+    # So the callbacks only enqueue onto a real queue; _drain_loop does the
+    # work on the hub. Same pattern as services/strategy_module/tick_feed.py.
+
+    def _on_ws_auth(self, api_key: str, data: dict) -> None:
+        self._enqueue("auth", api_key, data)
+
+    def _on_tick(self, api_key: str, data: dict) -> None:
+        self._enqueue("tick", api_key, data)
+
+    def _enqueue(self, kind: str, api_key: str, data: dict) -> None:
+        try:
+            self._tick_queue.put_nowait((kind, api_key, data))
+        except Exception:  # queue.Full -- never block the websocket thread
+            self._ticks_dropped += 1
+            if self._ticks_dropped % 1000 == 1:
+                logger.warning(
+                    f"Flow price monitor tick queue full; {self._ticks_dropped} event(s) dropped"
+                )
+
+    def _drain_once(self, limit: int = 500) -> int:
+        """Process up to ``limit`` queued websocket events on the hub."""
+        drained = 0
+        while drained < limit:
+            try:
+                kind, api_key, data = self._tick_queue.get_nowait()
+            except real_threading.Empty:
+                break
+            drained += 1
+            try:
+                if kind == "tick":
+                    self._process_tick(api_key, data)
+                else:
+                    self._process_ws_auth(api_key, data)
+            except Exception:
+                logger.exception(f"Error processing websocket {kind} event")
+        return drained
+
+    def _drain_loop(self, stop_event: threading.Event) -> None:
+        """Hub-side consumer of the websocket event queue. Never a blocking
+        get() on the real queue -- that would freeze the hub."""
+        while not stop_event.is_set():
+            if self._drain_once():
+                continue
+            with self._ws_lock:
+                subscribed = any(self._ws_subscribed.values())
+            time.sleep(_DRAIN_POLL_SEC if subscribed else _DRAIN_IDLE_SEC)
+
+    def _process_ws_auth(self, api_key: str, data: dict) -> None:
+        """Re-subscribe this account's symbols after a (re)connect -- the
+        client re-auths automatically but does not restore subscriptions."""
+        if data.get("status") != "success":
+            return
+        with self._ws_lock:
+            keys = set(self._ws_subscribed.get(api_key, set()))
+            self._ws_subscribed[api_key] = set()
+        for key in keys:
+            exchange, symbol = key.split(":", 1)
+            self._ws_subscribe(api_key, symbol, exchange)
+
+    def _process_tick(self, api_key: str, data: dict) -> None:
+        """Primary trigger path: evaluate every matching alert against a live
+        tick as soon as it is drained, instead of waiting for the poll loop."""
+        try:
+            symbol = data.get("symbol")
+            exchange = data.get("exchange")
+            inner = data.get("data") or {}
+            ltp = inner.get("ltp")
+            if ltp is None:
+                ltp = inner.get("last_price")
+            if symbol is None or exchange is None or ltp is None:
+                return
+            ltp = float(ltp)
+            if ltp <= 0:
+                return
+        except (TypeError, ValueError):
+            return
+
+        key = self._symkey(symbol, exchange)
+        with self._alerts_lock:
+            matches = [
+                a
+                for a in self._alerts.values()
+                if a.api_key == api_key
+                and self._symkey(a.symbol, a.exchange) == key
+                and not a.triggered
+            ]
+        for alert in matches:
+            try:
+                self._apply_price(alert, ltp, source="websocket tick")
+            except Exception as e:
+                logger.exception(f"Error applying tick to workflow {alert.workflow_id}: {e}")
 
     def _start_monitoring(self):
         """Start the price monitoring thread"""
@@ -199,6 +560,10 @@ class FlowPriceMonitor:
             target=self._monitoring_loop, args=(self._stop_event,), daemon=True
         )
         self._monitor_thread.start()
+        self._drain_thread = threading.Thread(
+            target=self._drain_loop, args=(self._stop_event,), daemon=True
+        )
+        self._drain_thread.start()
         logger.info(f"Price monitoring started with {len(self._alerts)} alerts")
 
     def _stop_monitoring(self):
@@ -217,6 +582,10 @@ class FlowPriceMonitor:
         thread = self._monitor_thread
         if thread is not None:
             self._monitor_thread = None
+        drain = self._drain_thread
+        self._drain_thread = None
+        if drain is not None and drain is not threading.current_thread():
+            drain.join(timeout=5)
 
         # remove_alert() is called from inside the monitoring loop when a
         # one-shot alert expires, and joining the current thread raises
@@ -227,7 +596,9 @@ class FlowPriceMonitor:
         logger.info("Price monitoring stopped")
 
     def _monitoring_loop(self, stop_event: threading.Event | None = None):
-        """Main monitoring loop that polls prices.
+        """Poll-backstop loop. _on_tick handles the normal case; this thread
+        only matters for an alert whose WS subscribe hasn't delivered a tick
+        yet, which is why its interval is much coarser than a tick stream.
 
         Watches the event it was started with, not whatever the instance
         currently holds, so a restart cannot resurrect it.
@@ -278,7 +649,9 @@ class FlowPriceMonitor:
         return datetime.now() - alert.created_at >= window
 
     def _check_alert(self, alert: PriceAlert):
-        """Check a single alert against current price"""
+        """Poll backstop: fetch one REST quote and apply it. Only reached for
+        an alert whose WS subscribe hasn't (yet) delivered a tick -- normally
+        _on_tick beats this to the trigger every time."""
         if not alert.api_key:
             logger.warning(f"No API key for alert workflow {alert.workflow_id}")
             return
@@ -305,36 +678,69 @@ class FlowPriceMonitor:
             if current_price <= 0:
                 return
 
-            condition_met = self._evaluate_condition(alert, current_price)
-
-            if condition_met and not alert.triggered:
-                # `triggered` is the one-shot latch, and _check_all_alerts skips
-                # any alert carrying it. Setting it for an every_time alert left
-                # the watch registered but permanently ignored.
-                if alert.trigger != "every_time":
-                    alert.triggered = True
-                logger.info(
-                    f"Price alert triggered for workflow {alert.workflow_id}: "
-                    f"{alert.symbol}@{alert.exchange} {alert.condition} "
-                    f"(price: {current_price}, target: {alert.target_price})"
-                )
-
-                if alert.trigger == "every_time":
-                    # Keep watching; record the price so an edge-triggered
-                    # crossing needs a fresh cross rather than re-firing.
-                    alert.last_price = current_price
-
-                # De-registration of a one-shot alert belongs to the run it
-                # launched, not to this thread. Removing it here raced the
-                # worker and lost: submit() usually keeps the GIL, so the alert
-                # was gone before the pool thread read it and the run was
-                # dropped as "no longer registered".
-                self._trigger_workflow(alert, current_price)
-            else:
-                alert.last_price = current_price
+            self._apply_price(alert, current_price, source="REST quote poll")
 
         except Exception as e:
             logger.exception(f"Error checking price for {alert.symbol}: {e}")
+
+    def _apply_price(
+        self, alert: PriceAlert, current_price: float, source: str = "price update"
+    ) -> None:
+        """Evaluate one alert against one price and trigger its workflow if the
+        condition is met. Shared by the WS tick path (_on_tick, the normal
+        case) and the REST poll backstop (_check_alert) so a breach is handled
+        identically no matter which path supplied the price.
+
+        De-registration of a one-shot alert belongs to the run it launches
+        (_trigger_workflow / _retire_one_shot), not to this method: removing
+        it here would race the pool worker (submit() usually keeps the GIL,
+        so the alert would be gone before the worker thread ever read it, and
+        the run dropped as "no longer registered" -- the webhook would then
+        never fire even though the breach was correctly detected).
+        """
+        if alert.triggered:
+            return
+
+        previous_price = alert.last_price
+        condition_met = self._evaluate_condition(alert, current_price)
+
+        if condition_met:
+            # `triggered` is the one-shot latch, and both _check_all_alerts and
+            # _on_tick skip any alert carrying it. Setting it for an
+            # every_time alert left the watch registered but permanently
+            # ignored.
+            if alert.trigger != "every_time":
+                alert.triggered = True
+            breach, breach_level = describe_breach(alert, current_price, previous_price)
+            logger.info(
+                f"PRICE BREACH workflow {alert.workflow_id} {alert.symbol}@{alert.exchange}: "
+                f"{breach} | watching for {describe_watch(alert)} | LTP {_fmt_price(current_price)}, "
+                f"previous {_fmt_price(previous_price)} | via {source} | trigger {alert.trigger}"
+            )
+
+            if alert.trigger == "every_time":
+                # Keep watching; record the price so an edge-triggered
+                # crossing needs a fresh cross rather than re-firing.
+                alert.last_price = current_price
+
+            self._trigger_workflow(
+                alert,
+                current_price,
+                breach={
+                    "description": breach,
+                    "breach_level": breach_level,
+                    "previous_price": previous_price,
+                    "condition": alert.condition,
+                    "target_price": alert.target_price,
+                    "price_lower": alert.price_lower,
+                    "price_upper": alert.price_upper,
+                    "symbol": alert.symbol,
+                    "exchange": alert.exchange,
+                    "source": source,
+                },
+            )
+        else:
+            alert.last_price = current_price
 
     def _evaluate_condition(self, alert: PriceAlert, current_price: float) -> bool:
         """Evaluate if the price condition is met"""
@@ -403,7 +809,9 @@ class FlowPriceMonitor:
         )
         return False
 
-    def _trigger_workflow(self, alert: PriceAlert, trigger_price: float):
+    def _trigger_workflow(
+        self, alert: PriceAlert, trigger_price: float, breach: dict | None = None
+    ):
         """Queue one execution for this alert, at most one at a time.
 
         Coalesced deliberately. The pool's queue is unbounded, so an every_time
@@ -460,6 +868,10 @@ class FlowPriceMonitor:
                     "trigger_type": "price_alert",
                     "trigger_price": trigger_price,
                     "triggered_at": datetime.now().isoformat(),
+                    # The breached level, previous price and plain-text
+                    # description; the executor writes the description into
+                    # the run's Execution Log.
+                    **({"breach": breach} if breach else {}),
                 }
 
                 result = execute_workflow(workflow_id, webhook_data=webhook_data, api_key=api_key)
@@ -522,6 +934,8 @@ class FlowPriceMonitor:
 
         Removal is by identity, so a run that finishes after the user has
         deactivated and reactivated cannot delete the newer registration.
+        remove_alert() also unsubscribes the WS feed if no other alert still
+        wants this symbol.
         """
         workflow_id = alert.workflow_id
         with self._alerts_lock:
@@ -565,10 +979,14 @@ class FlowPriceMonitor:
 
     def get_status(self) -> dict[str, Any]:
         """Get current monitor status"""
+        with self._ws_lock:
+            ws_subscribed_count = sum(len(s) for s in self._ws_subscribed.values())
         return {
             "running": self._running,
             "alerts_count": len(self._alerts),
             "poll_interval": self._poll_interval,
+            "poll_interval_is_backstop": True,
+            "ws_subscribed_count": ws_subscribed_count,
             "alerts": [
                 {
                     "workflow_id": alert.workflow_id,
@@ -578,13 +996,17 @@ class FlowPriceMonitor:
                     "target_price": alert.target_price,
                     "last_price": alert.last_price,
                     "triggered": alert.triggered,
+                    "ws_subscribed": (
+                        self._symkey(alert.symbol, alert.exchange)
+                        in self._ws_subscribed.get(alert.api_key or "", set())
+                    ),
                 }
                 for alert in self._alerts.values()
             ],
         }
 
     def shutdown(self):
-        """Stop polling and release the worker pool.
+        """Stop polling, unsubscribe every WS symbol and release the worker pool.
 
         Registered with atexit below, mirroring the scalping risk monitor. It
         previously had no caller anywhere, so the poll thread and the executor
@@ -599,6 +1021,27 @@ class FlowPriceMonitor:
         self._shutdown_done = True
 
         self._stop_monitoring()
+
+        with self._ws_lock:
+            subs_by_key = {k: set(v) for k, v in self._ws_subscribed.items()}
+            clients = dict(self._ws_clients)
+            self._ws_subscribed.clear()
+        # Unsubscribe this monitor's symbols only -- the WebSocketClient itself
+        # is a shared per-account singleton (other services may hold the same
+        # instance), so it is never disconnected here.
+        for api_key, keys in subs_by_key.items():
+            client = clients.get(api_key)
+            if client is None:
+                continue
+            for key in keys:
+                exchange, symbol = key.split(":", 1)
+                try:
+                    client.unsubscribe(
+                        [{"exchange": exchange, "symbol": symbol}], mode=_WS_SUBSCRIBE_MODE
+                    )
+                except Exception as e:
+                    logger.debug(f"Flow price monitor shutdown: unsubscribe failed for {key}: {e}")
+
         with self._alerts_lock:
             self._alerts.clear()
         # Let an in-flight workflow finish rather than killing it mid-order; the
@@ -671,8 +1114,10 @@ def restore_price_alerts() -> int:
 # Singleton instance
 flow_price_monitor = FlowPriceMonitor()
 
-# Release the poll thread and the worker pool on the way out. Without this the
-# monitor's file descriptors were held until the process was killed.
+
+# Release the poll thread, WS subscriptions and the worker pool on the way
+# out. Without this the monitor's file descriptors were held until the
+# process was killed.
 def _shutdown_at_exit() -> None:
     """atexit entry point.
 

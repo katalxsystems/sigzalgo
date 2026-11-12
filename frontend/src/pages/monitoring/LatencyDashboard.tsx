@@ -579,7 +579,7 @@ export default function LatencyDashboard() {
                     <div>
                       <span className="font-semibold text-sm">Platform Processing</span>
                       <Badge variant="outline" className="ml-2 text-xs">
-                        OpenAlgo
+                        AlgoZ
                       </Badge>
                       <p className="text-xs text-muted-foreground mt-1">
                         Authentication, validation & logging

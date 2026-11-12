@@ -3,6 +3,7 @@ import os
 import httpx
 
 from broker.mstock.database import master_contract_db
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -12,7 +13,7 @@ logger = get_logger(__name__)
 def get_margin_data(auth_token):
     """Fetch margin (fund) data from MStock API using Type B authentication."""
     # Use BROKER_API_SECRET which contains the mStock API key
-    api_key = os.getenv("BROKER_API_SECRET")
+    _, api_key = resolve_broker_api_key(auth_token, "mstock")
 
     if not api_key:
         logger.error("Missing environment variable: BROKER_API_SECRET")

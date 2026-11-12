@@ -46,6 +46,9 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Job item message for a download the broker answered with no bars.
+NO_DATA_MESSAGE = "Broker returned no data for the requested range"
+
 
 def validate_symbol(symbol: str, exchange: str) -> tuple[bool, str]:
     """
@@ -333,12 +336,22 @@ def download_data(
 
         data = response.get("data", [])
         if not data:
+            # Not an error (holidays, pre-listing, an empty window), but never
+            # silent: an empty answer for a range that should have bars usually
+            # means the broker was sent the wrong token -- e.g. an index looked
+            # up in another broker's master contract.
+            logger.warning(
+                f"No data from broker for {symbol}:{exchange}:{interval} "
+                f"{start_date} to {end_date}; nothing stored. If this range should "
+                "have bars, check the symbol and this broker's master contract."
+            )
             return (
                 True,
                 {
                     "status": "success",
                     "message": "No data available for the specified period",
                     "records": 0,
+                    "no_data": True,
                 },
                 200,
             )
@@ -1491,6 +1504,12 @@ def _process_download_job(job_id: str, api_key: str):
         already_failed = sum(1 for item in items if item["status"] == "error")
         completed = already_completed
         failed = already_failed
+        # Items the broker answered with no bars (resumed jobs keep their count)
+        no_data = sum(
+            1
+            for item in items
+            if item["status"] == "skipped" and item.get("error_message") == NO_DATA_MESSAGE
+        )
 
         total_items = len(items)
         processed_count = already_completed + already_failed
@@ -1639,6 +1658,9 @@ def _process_download_job(job_id: str, api_key: str):
                                 item["id"], "error", total_records, download_error
                             )
                             failed += 1
+                        elif total_records == 0:
+                            update_job_item_status(item["id"], "skipped", 0, NO_DATA_MESSAGE)
+                            no_data += 1
                         else:
                             update_job_item_status(item["id"], "success", total_records)
                             completed += 1
@@ -1654,7 +1676,10 @@ def _process_download_job(job_id: str, api_key: str):
                     api_key=api_key,
                 )
 
-                if success:
+                if success and response.get("no_data"):
+                    update_job_item_status(item["id"], "skipped", 0, NO_DATA_MESSAGE)
+                    no_data += 1
+                elif success:
                     records = response.get("records", 0)
                     update_job_item_status(item["id"], "success", records)
                     completed += 1
@@ -1694,7 +1719,9 @@ def _process_download_job(job_id: str, api_key: str):
         # Emit completion event
         _emit_job_complete(job_id, completed, failed, total_items)
 
-        logger.info(f"Job {job_id} completed: {completed} success, {failed} failed")
+        logger.info(
+            f"Job {job_id} completed: {completed} success, {no_data} no data, {failed} failed"
+        )
 
         # Cleanup
         _cleanup_job(job_id)

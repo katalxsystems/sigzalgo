@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAuthStore } from '@/stores/authStore'
 import { useBrokerStore } from '@/stores/brokerStore'
+import { useMenuVisibilityStore } from '@/stores/menuVisibilityStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useThemeStore } from '@/stores/themeStore'
 
@@ -17,6 +18,7 @@ export function AuthSync({ children }: AuthSyncProps) {
   const [isChecking, setIsChecking] = useState(true)
   const { setUser, setApiKey, logout } = useAuthStore()
   const { fetchCapabilities, clearCapabilities } = useBrokerStore()
+  const { fetchHiddenItems, clearHiddenItems } = useMenuVisibilityStore()
   const { setActiveSessionCount } = useSessionStore()
   const { syncAppMode } = useThemeStore()
 
@@ -37,13 +39,18 @@ export function AuthSync({ children }: AuthSyncProps) {
               broker: data.broker,
               isLoggedIn: true,
               loginTime: new Date().toISOString(),
+              isAdmin: Boolean(data.is_admin),
             })
-            // Store the API key for trading API calls
-            if (data.api_key) {
-              setApiKey(data.api_key)
-            }
+            // Store the API key for trading API calls. Always set it (even
+            // when absent) so switching to an account with no key generated
+            // yet clears a stale key left over from a previous account/
+            // session rather than silently reusing it (localStorage-persisted
+            // via zustand/persist under "openalgo-auth").
+            setApiKey(data.api_key ?? null)
             // Fetch broker capabilities (exchanges, type, features)
             await fetchCapabilities()
+            // Fetch this role's admin-configured hidden profile-menu items
+            await fetchHiddenItems()
             // Also sync app mode from backend
             await syncAppMode()
             // Sync active session count
@@ -57,17 +64,24 @@ export function AuthSync({ children }: AuthSyncProps) {
               broker: null,
               isLoggedIn: false,
               loginTime: null,
+              isAdmin: Boolean(data.is_admin),
             })
             clearCapabilities()
+            // Hidden items depend on role, not broker connection, so still
+            // fetch here (unlike capabilities, which genuinely need a
+            // connected broker to mean anything).
+            await fetchHiddenItems()
           } else {
             // Not authenticated or status is not success - clear Zustand store
             logout()
             clearCapabilities()
+            clearHiddenItems()
           }
         } else {
           // Any non-OK response (401, 500, etc.) - clear Zustand store
           logout()
           clearCapabilities()
+          clearHiddenItems()
         }
       } catch (_error) {
         // On error, don't change auth state - let existing state persist
@@ -77,7 +91,17 @@ export function AuthSync({ children }: AuthSyncProps) {
     }
 
     syncSession()
-  }, [setUser, setApiKey, logout, fetchCapabilities, clearCapabilities, syncAppMode, setActiveSessionCount])
+  }, [
+    setUser,
+    setApiKey,
+    logout,
+    fetchCapabilities,
+    clearCapabilities,
+    fetchHiddenItems,
+    clearHiddenItems,
+    syncAppMode,
+    setActiveSessionCount,
+  ])
 
   // Show nothing while checking - prevents flash of wrong content
   if (isChecking) {

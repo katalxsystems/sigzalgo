@@ -16,6 +16,8 @@ const PortfolioBacktesterResults = lazy(() => import('@/pages/PortfolioBackteste
 const SipBacktester = lazy(() => import('@/pages/SipBacktester'))
 const SipBacktesterResults = lazy(() => import('@/pages/SipBacktesterResults'))
 const PortfolioAnalyzer = lazy(() => import('@/pages/PortfolioAnalyzer'))
+const Baskets = lazy(() => import('@/pages/Baskets'))
+const BasketDetail = lazy(() => import('@/pages/BasketDetail'))
 const Faq = lazy(() => import('@/pages/Faq'))
 const Setup = lazy(() => import('@/pages/Setup'))
 const Login = lazy(() => import('@/pages/Login'))
@@ -212,6 +214,8 @@ function App() {
                 <Route path="/sip-backtester" element={<SipBacktester />} />
                 <Route path="/sip-backtester/results" element={<SipBacktesterResults />} />
                 <Route path="/portfolio-analyzer" element={<PortfolioAnalyzer />} />
+                <Route path="/baskets" element={<Baskets />} />
+                <Route path="/baskets/:basketId" element={<BasketDetail />} />
                 <Route path="/gocharting" element={<GoCharting />} />
                 <Route path="/pnl-tracker" element={<PnLTracker />} />
                 {/* Phase 4: Sandbox & Analyzer */}

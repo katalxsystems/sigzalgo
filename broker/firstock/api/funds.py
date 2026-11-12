@@ -1,6 +1,6 @@
 import json
-import os
 
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -18,8 +18,8 @@ def get_margin_data(auth_token):
         dict: Processed margin data in standardized format
     """
     try:
-        # Get user ID from environment variable and trim the last 4 characters
-        userid = os.getenv("BROKER_API_KEY")
+        # Get user ID from the resolved broker API key and trim the last 4 characters
+        userid, _ = resolve_broker_api_key(auth_token, "firstock")
         if not userid:
             logger.error("BROKER_API_KEY not found in environment variables")
             return {}

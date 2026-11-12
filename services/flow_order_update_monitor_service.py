@@ -257,7 +257,13 @@ class FlowOrderUpdateMonitor:
                     )
                     return
 
+                from database.flow_db import get_workflow, get_workflow_api_key
                 from services.flow_executor_service import execute_workflow
+
+                # The account's current key, not the one captured when the
+                # watch was registered: that one stops working the moment the
+                # account's key is regenerated.
+                api_key = get_workflow_api_key(get_workflow(watch.workflow_id)) or watch.api_key
 
                 webhook_data = {
                     "trigger_type": "order_update",
@@ -271,7 +277,7 @@ class FlowOrderUpdateMonitor:
                     "triggered_at": datetime.now().isoformat(),
                 }
                 result = execute_workflow(
-                    watch.workflow_id, webhook_data=webhook_data, api_key=watch.api_key
+                    watch.workflow_id, webhook_data=webhook_data, api_key=api_key
                 )
                 logger.info(
                     f"Workflow {watch.workflow_id} execution result: {result.get('status')}"

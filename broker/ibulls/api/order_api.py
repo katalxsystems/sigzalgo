@@ -1,5 +1,4 @@
 import json
-import os
 from tokenize import Token
 import threading
 import time
@@ -23,7 +22,6 @@ logger = get_logger(__name__)
 
 def get_api_response(endpoint, auth, method="GET", payload=""):
     AUTH_TOKEN = auth
-    api_key = os.getenv("BROKER_API_KEY")
 
     # Get the shared httpx client with connection pooling
     client = get_httpx_client()

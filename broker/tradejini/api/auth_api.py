@@ -4,6 +4,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from utils.config import get_broker_api_key, get_broker_api_secret, resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -19,8 +20,14 @@ VALID_TWOFA_TYPES = ("otp", "totp")
 _PLACEHOLDER_PREFIXES = ("YOUR_",)
 
 
-def get_api_key():
+def get_api_key(auth=None, account_id=None):
     """Return the Tradejini app API key used in the Authorization header.
+
+    Multi-account: when the call is scoped to an account (``account_id``, or a
+    stored ``auth`` token to look it up from), the key is that account's own.
+    Accounts carry it in the API secret field (the convention they were set up
+    with), with the API key field as the fallback. Unscoped calls read .env as
+    described below.
 
     Docs 02 (API Basics): every authenticated call sends
     ``Bearer <api_key>:<access_token>``, and the individual-token endpoint sends
@@ -38,6 +45,13 @@ def get_api_key():
     Returns:
         str: The API key, or an empty string when neither variable is set.
     """
+    if auth or account_id:
+        key, secret = resolve_broker_api_key(auth, "tradejini", account_id=account_id)
+        for value in (secret, key):
+            value = (value or "").strip()
+            if value and not value.upper().startswith(_PLACEHOLDER_PREFIXES):
+                return value
+        return ""
     for name in ("BROKER_API_KEY", "BROKER_API_SECRET"):
         value = (os.getenv(name) or "").strip()
         if value and not value.upper().startswith(_PLACEHOLDER_PREFIXES):
@@ -65,7 +79,7 @@ UNAUTHORIZED_HINT = (
 )
 
 
-def authenticate_broker(password=None, twofa=None, twofa_type=None):
+def authenticate_broker(password=None, twofa=None, twofa_type=None, account_id=None):
     """
     Authenticate with Tradejini using individual token service
     Args:
@@ -85,15 +99,10 @@ def authenticate_broker(password=None, twofa=None, twofa_type=None):
         if twofa_type not in VALID_TWOFA_TYPES:
             twofa_type = "totp"
 
-        api_key = get_api_key()
+        api_key = get_api_key(account_id=account_id)
         if not api_key:
             return None, API_KEY_MISSING_ERROR
-        source = (
-            "BROKER_API_KEY"
-            if api_key == (os.getenv("BROKER_API_KEY") or "").strip()
-            else "BROKER_API_SECRET"
-        )
-        logger.info(f"Tradejini login: api_key from {source}, twoFaTyp={twofa_type}")
+        logger.info(f"Tradejini login: account={account_id!r}, twoFaTyp={twofa_type}")
 
         url = f"{BASE_URL}/api-gw/oauth/individual-token-v2"
 
@@ -145,7 +154,7 @@ def authenticate_broker(password=None, twofa=None, twofa_type=None):
         return None, str(e)
 
 
-def get_auth_url():
+def get_auth_url(account_id=None):
     """
     Generate the authorization URL for Tradejini OAuth flow
     """
@@ -153,7 +162,7 @@ def get_auth_url():
     REDIRECT_URI = os.getenv("REDIRECT_URI")
 
     params = {
-        "client_id": get_api_key(),
+        "client_id": get_api_key(account_id=account_id),
         "redirect_uri": REDIRECT_URI,
         "response_type": "code",
         "scope": "general",
@@ -163,15 +172,15 @@ def get_auth_url():
     return f"{BASE_URL}/api-gw/oauth/authorize?{urlencode(params)}"
 
 
-def authenticate_broker_oauth(code):
+def authenticate_broker_oauth(code, account_id=None):
     try:
         # Public-app flow only (docs 05, step 2): the API secret is required here
         # and nowhere else - individual apps never send it.
         url = f"{BASE_URL}/api-gw/oauth/token"
         data = {
             "code": code,
-            "client_id": get_api_key(),
-            "client_secret": os.getenv("BROKER_API_SECRET"),
+            "client_id": get_broker_api_key(account_id, broker="tradejini"),
+            "client_secret": get_broker_api_secret(account_id, broker="tradejini"),
             "redirect_uri": os.getenv("REDIRECT_URI"),
             "grant_type": "authorization_code",
         }

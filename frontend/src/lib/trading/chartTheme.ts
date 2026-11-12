@@ -50,6 +50,24 @@ export function isLightTheme(mode: ThemeMode, appMode: AppMode): boolean {
   return appMode === 'live' && mode === 'light'
 }
 
+/**
+ * The AlgoZ corner mark, passed as a chart's `branding` option in place of the
+ * engine's default OpenAlgo one: the mark alone at rest, the name unrolling
+ * on hover, and no link out.
+ */
+export function algozBranding(mode: ThemeMode, appMode: AppMode, height = 32) {
+  return {
+    src: '/images/openalgo-glyph.svg',
+    position: 'bottom-left' as const,
+    height,
+    padding: 3,
+    margin: 10,
+    opacity: 0.85,
+    label: 'AlgoZ Charts',
+    labelColor: isLightTheme(mode, appMode) ? '#3c4354' : '#e4e8f4',
+  }
+}
+
 /** Build the canvas theme from the base palette + the app's live token colors. */
 export function buildChartTheme(mode: ThemeMode, appMode: AppMode): ChartTheme {
   const base = isLightTheme(mode, appMode) ? lightTheme : darkTheme

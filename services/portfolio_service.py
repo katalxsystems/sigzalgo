@@ -16,6 +16,7 @@ from typing import Any
 
 import pandas as pd
 
+from database.broker_context import scoped_to_broker_arg
 from portfolio.analytics import (
     average_pairwise_correlation,
     concentration,
@@ -133,6 +134,7 @@ def _build_costs(
     return dataclasses.replace(schedule, **patch)
 
 
+@scoped_to_broker_arg
 def generate_tearsheet(
     holdings: list[dict[str, Any]],
     start_date: str,
@@ -522,6 +524,7 @@ def _series_analytics(
     return out
 
 
+@scoped_to_broker_arg
 def run_portfolio_backtest(
     holdings: list[dict[str, Any]],
     start_date: str,
@@ -773,6 +776,7 @@ def run_portfolio_backtest(
     return True, payload, 200
 
 
+@scoped_to_broker_arg
 def analyse_live_holdings(
     *,
     lookback_days: int = 365,

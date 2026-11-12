@@ -1,6 +1,7 @@
 # database/settings_db.py
 
 import base64
+import json
 import os
 
 from cachetools import TTLCache
@@ -12,14 +13,17 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import scoped_session, sessionmaker
 from sqlalchemy.pool import NullPool
 
-from database.auth_db import PEPPER
+from database.auth_db import PEPPER, decrypt_token, encrypt_token
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 # Settings cache - 1 hour TTL (settings rarely change)
-# This cache significantly reduces DB queries since get_analyze_mode() is called on every request
-_settings_cache = TTLCache(maxsize=10, ttl=3600)  # 1 hour TTL
+# This cache significantly reduces DB queries since get_analyze_mode() is called on every request.
+# Sized well past the handful of scalar setting keys (security_settings, broker_settings, the
+# instance-wide "analyze_mode") to comfortably hold one "analyze_mode:<account_id>" entry per
+# connected broker account without premature LRU eviction on a multi-account instance.
+_settings_cache = TTLCache(maxsize=500, ttl=3600)  # 1 hour TTL
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -60,6 +64,26 @@ class Settings(Base):
     security_api_ban_duration = Column(Integer, default=0)  # 0 = permanent ban
     security_repeat_offender_limit = Column(Integer, default=2)  # Bans before permanent ban
 
+    # Instance-wide default broker credentials. This is the fallback layer
+    # utils.config.get_broker_api_key/get_broker_api_secret use when a
+    # broker account has no per-account override (database.auth_db.Auth.
+    # broker_api_key) — DB-stored so changing it takes effect immediately,
+    # unlike the .env values this replaces (see blueprints/broker_credentials.py).
+    broker_api_key_encrypted = Column(Text, nullable=True)
+    broker_api_secret_encrypted = Column(Text, nullable=True)
+    broker_api_key_market_encrypted = Column(Text, nullable=True)
+    broker_api_secret_market_encrypted = Column(Text, nullable=True)
+    broker_redirect_url = Column(String(500), nullable=True)
+
+    # Profile-menu visibility, per role. JSON-encoded list of hidden item
+    # keys (config/navigation.ts's profileMenuItems[].href, e.g. "/leverage")
+    # -- NULL/empty means "nothing hidden". Separate lists for admin and
+    # non-admin sessions so, e.g., an admin can hide "/admin" itself from
+    # non-admins without also losing it from their own menu. See
+    # get_hidden_menu_items/set_hidden_menu_items below.
+    hidden_menu_items_admin = Column(Text, nullable=True)
+    hidden_menu_items_nonadmin = Column(Text, nullable=True)
+
 
 def init_db():
     """Initialize the settings database"""
@@ -79,8 +103,12 @@ def init_db():
         logger.debug(f"Settings DB: Default config may already exist (race condition): {e}")
 
 
-def get_analyze_mode():
-    """Get current analyze mode setting (cached for 1 hour)"""
+def _get_instance_analyze_mode():
+    """The instance-wide Analyzer/Sandbox default (cached for 1 hour).
+
+    Used directly for internal/no-account calls, and as the fallback for any
+    account that hasn't set its own override yet — see get_analyze_mode().
+    """
     cache_key = "analyze_mode"
 
     # Check cache first
@@ -99,8 +127,50 @@ def get_analyze_mode():
     return settings.analyze_mode
 
 
-def set_analyze_mode(mode: bool):
-    """Set analyze mode setting"""
+def get_analyze_mode(account_id: str | None = None):
+    """Get the effective analyze mode for a broker account.
+
+    Per-account first (database.auth_db.Auth.analyze_mode — see that
+    column's docstring), falling back to the instance-wide default when the
+    account has never set its own toggle, or when ``account_id`` is omitted
+    (internal calls with no request-scoped account, e.g. background
+    services). This mirrors get_broker_api_key()'s per-account-then-instance
+    resolution so multiple accounts on one instance can run live and
+    analyze mode independently instead of one flag flipping order routing
+    for every tenant at once.
+
+    Cached per account_id for 1 hour (this is called on every request).
+    """
+    cache_key = f"analyze_mode:{account_id}" if account_id else "analyze_mode"
+
+    if cache_key in _settings_cache:
+        return _settings_cache[cache_key]
+
+    if account_id:
+        from database.auth_db import get_account_analyze_mode
+
+        account_mode = get_account_analyze_mode(account_id)
+        if account_mode is not None:
+            _settings_cache[cache_key] = account_mode
+            return account_mode
+
+    result = _get_instance_analyze_mode()
+    _settings_cache[cache_key] = result
+    return result
+
+
+def set_analyze_mode(mode: bool, account_id: str | None = None):
+    """Set analyze mode: per-account when account_id is given, else the
+    instance-wide default (e.g. legacy /settings/analyze-mode route, or an
+    install that hasn't connected any per-account broker yet)."""
+    if account_id:
+        from database.auth_db import set_account_analyze_mode
+
+        set_account_analyze_mode(account_id, mode)
+        if f"analyze_mode:{account_id}" in _settings_cache:
+            del _settings_cache[f"analyze_mode:{account_id}"]
+        return
+
     settings = Settings.query.first()
     if not settings:
         settings = Settings(analyze_mode=mode)
@@ -109,7 +179,9 @@ def set_analyze_mode(mode: bool):
         settings.analyze_mode = mode
     db_session.commit()
 
-    # Invalidate cache after update
+    # Invalidate cache after update. Only the instance-wide key and
+    # no-override accounts are affected; accounts with their own explicit
+    # override are unaffected and keep their separate cache entry.
     if "analyze_mode" in _settings_cache:
         del _settings_cache["analyze_mode"]
 
@@ -292,6 +364,125 @@ def set_security_settings(
     # Invalidate cache after update
     if "security_settings" in _settings_cache:
         del _settings_cache["security_settings"]
+
+
+def get_broker_settings():
+    """Get instance-wide default broker credentials (cached for 1 hour).
+
+    Returns None for any field never set, so callers (utils.config) can
+    tell "not configured here" apart from "configured as empty string" and
+    fall through to the next layer (.env) correctly.
+    """
+    cache_key = "broker_settings"
+
+    if cache_key in _settings_cache:
+        return _settings_cache[cache_key]
+
+    settings = Settings.query.first()
+    if not settings:
+        return None
+
+    result = {
+        "broker_api_key": decrypt_token(settings.broker_api_key_encrypted)
+        if settings.broker_api_key_encrypted
+        else None,
+        "broker_api_secret": decrypt_token(settings.broker_api_secret_encrypted)
+        if settings.broker_api_secret_encrypted
+        else None,
+        "broker_api_key_market": decrypt_token(settings.broker_api_key_market_encrypted)
+        if settings.broker_api_key_market_encrypted
+        else None,
+        "broker_api_secret_market": decrypt_token(settings.broker_api_secret_market_encrypted)
+        if settings.broker_api_secret_market_encrypted
+        else None,
+        "redirect_url": settings.broker_redirect_url,
+    }
+
+    _settings_cache[cache_key] = result
+    return result
+
+
+def set_broker_settings(
+    broker_api_key=None,
+    broker_api_secret=None,
+    broker_api_key_market=None,
+    broker_api_secret_market=None,
+    redirect_url=None,
+):
+    """Set instance-wide default broker credentials. Only fields that are
+    not None are updated (mirrors set_smtp_settings's semantics)."""
+    settings = Settings.query.first()
+    if not settings:
+        settings = Settings(analyze_mode=False)
+        db_session.add(settings)
+
+    if broker_api_key is not None:
+        settings.broker_api_key_encrypted = encrypt_token(broker_api_key) or None
+    if broker_api_secret is not None:
+        settings.broker_api_secret_encrypted = encrypt_token(broker_api_secret) or None
+    if broker_api_key_market is not None:
+        settings.broker_api_key_market_encrypted = encrypt_token(broker_api_key_market) or None
+    if broker_api_secret_market is not None:
+        settings.broker_api_secret_market_encrypted = (
+            encrypt_token(broker_api_secret_market) or None
+        )
+    if redirect_url is not None:
+        settings.broker_redirect_url = redirect_url or None
+
+    db_session.commit()
+    logger.info("Broker settings updated successfully")
+
+    if "broker_settings" in _settings_cache:
+        del _settings_cache["broker_settings"]
+
+
+def get_hidden_menu_items(is_admin: bool) -> list[str]:
+    """Profile-menu item keys (config/navigation.ts href values) hidden for
+    this role, admin-configured. Empty list if none are hidden or nothing
+    has been set yet. Cached for 1 hour like the rest of Settings; cleared
+    on set_hidden_menu_items() so a change is visible immediately.
+    """
+    cache_key = f"hidden_menu_items_{'admin' if is_admin else 'nonadmin'}"
+    if cache_key in _settings_cache:
+        return _settings_cache[cache_key]
+
+    settings = Settings.query.first()
+    raw = (
+        (settings.hidden_menu_items_admin if is_admin else settings.hidden_menu_items_nonadmin)
+        if settings
+        else None
+    )
+    try:
+        items = json.loads(raw) if raw else []
+    except (ValueError, TypeError):
+        logger.exception(f"Corrupt {cache_key} JSON in Settings; treating as empty")
+        items = []
+
+    _settings_cache[cache_key] = items
+    return items
+
+
+def set_hidden_menu_items(admin_items: list[str] | None, nonadmin_items: list[str] | None) -> None:
+    """Set which profile-menu items are hidden per role. Only the list(s)
+    actually passed (not None) are updated -- mirrors set_broker_settings's
+    "only touch what's given" semantics, so an admin editing one role's list
+    in the UI doesn't need to resend the other.
+    """
+    settings = Settings.query.first()
+    if not settings:
+        settings = Settings(analyze_mode=False)
+        db_session.add(settings)
+
+    if admin_items is not None:
+        settings.hidden_menu_items_admin = json.dumps(admin_items)
+    if nonadmin_items is not None:
+        settings.hidden_menu_items_nonadmin = json.dumps(nonadmin_items)
+
+    db_session.commit()
+    logger.info("Profile menu visibility settings updated")
+
+    _settings_cache.pop("hidden_menu_items_admin", None)
+    _settings_cache.pop("hidden_menu_items_nonadmin", None)
 
 
 def clear_settings_cache():

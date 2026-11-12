@@ -4,7 +4,8 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, OrderFailedEvent, SplitCompletedEvent
 from utils.constants import (
@@ -66,6 +67,7 @@ def emit_analyzer_error(request_data: dict[str, Any], error_message: str) -> dic
     return error_response
 
 
+@scoped_to_broker_arg
 def import_broker_module(broker_name: str) -> Any | None:
     """
     Dynamically import the broker-specific order API module.
@@ -140,6 +142,7 @@ def place_single_order(
         }
 
 
+@scoped_to_broker_arg
 def split_order_with_auth(
     split_data: dict[str, Any], auth_token: str, broker: str, original_data: dict[str, Any]
 ) -> tuple[bool, dict[str, Any], int]:
@@ -162,13 +165,15 @@ def split_order_with_auth(
     if "apikey" in split_request_data:
         split_request_data.pop("apikey", None)
 
+    account_id = verify_api_key(original_data.get("apikey")) if original_data.get("apikey") else None
+
     # Validate quantities
     try:
         split_size = int(split_data["splitsize"])
         total_quantity = int(split_data["quantity"])
         if split_size <= 0:
             error_message = "Split size must be greater than 0"
-            if get_analyze_mode():
+            if get_analyze_mode(account_id):
                 return False, emit_analyzer_error(original_data, error_message), 400
             error_response = {"status": "error", "message": error_message}
             bus.publish(OrderFailedEvent(
@@ -189,7 +194,7 @@ def split_order_with_auth(
         total_orders = num_full_orders + (1 if remaining_qty > 0 else 0)
         if total_orders > MAX_ORDERS:
             error_message = f"Total number of orders would exceed maximum limit of {MAX_ORDERS}"
-            if get_analyze_mode():
+            if get_analyze_mode(account_id):
                 return False, emit_analyzer_error(original_data, error_message), 400
             error_response = {"status": "error", "message": error_message}
             bus.publish(OrderFailedEvent(
@@ -204,7 +209,7 @@ def split_order_with_auth(
 
     except ValueError:
         error_message = "Invalid quantity or split size"
-        if get_analyze_mode():
+        if get_analyze_mode(account_id):
             return False, emit_analyzer_error(original_data, error_message), 400
         error_response = {"status": "error", "message": error_message}
         bus.publish(OrderFailedEvent(
@@ -218,7 +223,7 @@ def split_order_with_auth(
         return False, error_response, 400
 
     # If in analyze mode, route to sandbox for sandbox trading
-    if get_analyze_mode():
+    if get_analyze_mode(account_id):
         from services.sandbox_service import sandbox_place_order
 
         api_key = original_data.get("apikey")
@@ -414,6 +419,7 @@ def split_order_with_auth(
     return True, response_data, 200
 
 
+@scoped_to_broker_arg
 def split_order(
     split_data: dict[str, Any],
     api_key: str | None = None,

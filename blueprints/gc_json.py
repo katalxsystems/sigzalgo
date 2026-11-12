@@ -36,8 +36,10 @@ def gocharting_json():
                 f"Processing GoCharting request - Symbol: {symbol_input}, Exchange: {exchange}, Product: {product}, Action: {action}, Quantity: {quantity}"
             )
 
-            # Get actual API key for GoCharting
-            api_key = get_api_key_for_tradingview(session.get("user"))
+            # Get actual API key for GoCharting (active broker account)
+            api_key = get_api_key_for_tradingview(
+                session.get("user_session_key") or session.get("user")
+            )
             broker = session.get("broker")
 
             if not api_key:

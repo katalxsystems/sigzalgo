@@ -1,7 +1,8 @@
 import importlib
 from typing import Any, Dict, List, Optional, Tuple
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from utils.logging import get_logger
 
@@ -10,6 +11,7 @@ logger = get_logger(__name__)
 API_TYPE = "gttorderbook"
 
 
+@scoped_to_broker_arg
 def import_broker_gtt_module(broker_name: str) -> Any | None:
     try:
         return importlib.import_module(f"broker.{broker_name}.api.gtt_api")
@@ -33,6 +35,7 @@ def _active_first(response: dict[str, Any]) -> dict[str, Any]:
     return response
 
 
+@scoped_to_broker_arg
 def get_gtt_orderbook_with_auth(
     auth_token: str,
     broker: str,
@@ -41,11 +44,13 @@ def get_gtt_orderbook_with_auth(
 ) -> tuple[bool, dict[str, Any], int]:
     # Analyze (sandbox) mode reads the sandbox GTT book. Gated on original_data
     # because that is where the API key lives, and the sandbox book is per-user.
-    if get_analyze_mode() and original_data:
+    # Analyze mode is per account (multi-account), resolved from the API key.
+    api_key = original_data.get("apikey") if original_data else None
+    if original_data and get_analyze_mode(verify_api_key(api_key) if api_key else None):
         from services.sandbox_service import sandbox_gtt_orderbook
 
         success, response, status_code = sandbox_gtt_orderbook(
-            original_data.get("apikey", ""),
+            api_key or "",
             status_filter=None if include_history else "active",
         )
         return success, (_active_first(response) if success else response), status_code
@@ -75,6 +80,7 @@ def get_gtt_orderbook_with_auth(
     return True, _active_first(response_data), 200
 
 
+@scoped_to_broker_arg
 def get_gtt_orderbook(
     api_key: str | None = None,
     auth_token: str | None = None,

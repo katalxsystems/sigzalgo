@@ -2,7 +2,8 @@ import copy
 import importlib
 from typing import Any, Dict, Optional, Tuple
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, GTTModifiedEvent, GTTModifyFailedEvent
 from utils.event_bus import bus
@@ -29,6 +30,7 @@ def emit_analyzer_error(request_data: dict[str, Any], error_message: str) -> dic
     return error_response
 
 
+@scoped_to_broker_arg
 def import_broker_gtt_module(broker_name: str) -> Any | None:
     try:
         return importlib.import_module(f"broker.{broker_name}.api.gtt_api")
@@ -37,6 +39,7 @@ def import_broker_gtt_module(broker_name: str) -> Any | None:
         return None
 
 
+@scoped_to_broker_arg
 def modify_gtt_order_with_auth(
     order_data: dict[str, Any],
     auth_token: str,
@@ -48,7 +51,7 @@ def modify_gtt_order_with_auth(
     api_key = original_data.get("apikey", "")
     trigger_id = order_data.get("trigger_id", "")
 
-    if get_analyze_mode():
+    if get_analyze_mode(verify_api_key(api_key) if api_key else None):
         from services.sandbox_service import sandbox_modify_gtt_order
 
         success, response, status_code = sandbox_modify_gtt_order(
@@ -126,6 +129,7 @@ def modify_gtt_order_with_auth(
     return False, error_response, status_code
 
 
+@scoped_to_broker_arg
 def modify_gtt_order(
     order_data: dict[str, Any],
     api_key: str | None = None,
@@ -141,10 +145,11 @@ def modify_gtt_order(
         # Semi-auto mode blocks GTT modify (parity with modify_order — stale queued
         # actions against a triggered GTT are unsafe). Analyze mode would be handled
         # here if sandbox was wired.
-        from database.auth_db import get_order_mode, verify_api_key
+        from database.auth_db import get_order_mode
 
-        if not get_analyze_mode():
-            user_id = verify_api_key(api_key)
+        user_id = verify_api_key(api_key)
+
+        if not get_analyze_mode(user_id):
             if user_id:
                 order_mode = get_order_mode(user_id)
                 if order_mode == "semi_auto":

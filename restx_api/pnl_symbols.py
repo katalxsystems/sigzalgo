@@ -4,6 +4,7 @@ from flask import jsonify, make_response, request
 from flask_restx import Namespace, Resource
 from marshmallow import ValidationError
 
+from database.auth_db import verify_api_key
 from limiter import limiter
 from services.sandbox_service import is_sandbox_mode, sandbox_get_pnl_symbols
 from utils.logging import get_logger
@@ -26,8 +27,10 @@ class PnLSymbols(Resource):
     def post(self):
         """Get day P&L breakdown by symbol (Sandbox mode only)"""
         try:
-            # Check if sandbox mode is enabled
-            if not is_sandbox_mode():
+            # Check if sandbox mode is enabled for this account
+            request_api_key = (request.json or {}).get("apikey")
+            account_id = verify_api_key(request_api_key) if request_api_key else None
+            if not is_sandbox_mode(account_id):
                 return make_response(
                     jsonify(
                         {

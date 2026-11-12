@@ -22,9 +22,10 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-def is_sandbox_mode() -> bool:
-    """Check if sandbox/analyzer mode is enabled"""
-    return get_analyze_mode()
+def is_sandbox_mode(account_id: str | None = None) -> bool:
+    """Check if sandbox/analyzer mode is enabled for this account (or the
+    instance-wide default when account_id is omitted)."""
+    return get_analyze_mode(account_id)
 
 
 def get_user_id_from_apikey(api_key: str) -> str | None:

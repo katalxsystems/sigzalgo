@@ -9,7 +9,7 @@ from database.token_db import get_br_symbol, get_token
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
-from .baseurl import get_base_url, get_common_headers, get_url
+from .baseurl import get_account_credentials, get_base_url, get_common_headers, get_url
 from .baseurl import get_client_code as baseurl_client_code
 
 logger = get_logger(__name__)
@@ -359,11 +359,11 @@ class BrokerData:
             except Exception as e:
                 logger.warning(f"Error closing existing WebSocket: {e}")
 
-        # App API key from the environment; the client code comes from the login
-        # (BROKER_API_KEY/BROKER_API_SECRET are the app key/secret, as for every
-        # other OpenAlgo broker).
-        client_id = get_client_code() or ""
-        api_key = os.getenv("BROKER_API_KEY", "")
+        # This account's client code and app API key (multi-account); the
+        # logged-in client code is the fallback for the client code.
+        client_id, api_key = get_account_credentials(self.auth_token)
+        client_id = client_id or get_client_code() or ""
+        api_key = api_key or ""
 
         from .motilal_websocket import MotilalWebSocket
 

@@ -1,9 +1,11 @@
 import json
 import os
+import logging
 
 import httpx
 
 from broker.dhan.api.baseurl import BASE_URL, get_url
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -13,11 +15,11 @@ logger = get_logger(__name__)
 AUTH_BASE_URL = "https://auth.dhan.co"
 
 
-def generate_consent(dhan_client_id):
+def generate_consent(dhan_client_id, account_id=None):
     """Step 1: Generate consent to initiate login session - requires valid Dhan Client ID"""
     try:
-        BROKER_API_KEY = os.getenv("BROKER_API_KEY")
-        BROKER_API_SECRET = os.getenv("BROKER_API_SECRET")
+        BROKER_API_KEY = get_broker_api_key(account_id, broker="dhan")
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="dhan")
 
         # Extract client_id from API key if format is client_id:::api_key
         if ":::" in BROKER_API_KEY:
@@ -83,11 +85,11 @@ def get_login_url(consent_app_id):
     return f"{AUTH_BASE_URL}/login/consentApp-login?consentAppId={consent_app_id}"
 
 
-def consume_consent(token_id):
+def consume_consent(token_id, account_id=None):
     """Step 3: Consume consent to get access token"""
     try:
-        BROKER_API_KEY = os.getenv("BROKER_API_KEY")
-        BROKER_API_SECRET = os.getenv("BROKER_API_SECRET")
+        BROKER_API_KEY = get_broker_api_key(account_id, broker="dhan")
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="dhan")
 
         # Extract client_id from API key if format is client_id:::api_key
         if ":::" in BROKER_API_KEY:
@@ -149,7 +151,7 @@ def get_direct_access_token(access_token):
         return None, f"An exception occurred: {str(e)}"
 
 
-def authenticate_broker(code):
+def authenticate_broker(code, account_id=None):
     """Main authentication function - handles direct token or OAuth flow"""
     try:
         # Check if code is actually a direct access token (for manual entry)
@@ -160,7 +162,10 @@ def authenticate_broker(code):
             return get_direct_access_token(code)
         # Otherwise, handle OAuth flow with tokenId
         elif code:
-            access_token, additional_data = consume_consent(code)
+            # Must use the SAME account's credentials consume_consent used in
+            # generate_consent (step 1, dhan_initiate_oauth) — Dhan validates
+            # app_id/app_secret consistency across the consent flow.
+            access_token, additional_data = consume_consent(code, account_id=account_id)
             if access_token and isinstance(additional_data, dict):
                 # Extract the dhanClientId to return as user_id
                 dhan_client_id = additional_data.get("dhan_client_id")

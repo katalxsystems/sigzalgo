@@ -248,7 +248,7 @@ describe('CandleViz', () => {
     expect(harness.createChart).not.toHaveBeenCalled()
   })
 
-  it('carries exactly one OpenAlgo mark, the one the engine draws', async () => {
+  it('carries exactly one AlgoZ mark, the one the engine draws', async () => {
     // The engine draws a corner mark by default. A host that adds its own as a
     // primitive on top of it gets two, stacked in the same corner, which is
     // what this card did. Configuring the one that is already there is the fix
@@ -261,7 +261,7 @@ describe('CandleViz', () => {
     const branding = chart.options.branding as Record<string, unknown>
     expect(branding.src).toBe('/images/openalgo-glyph.svg')
     expect(branding.position).toBe('bottom-left')
-    expect(branding.label).toBe('OpenAlgo Charts')
+    expect(branding.label).toBe('AlgoZ Charts')
     // No second mark, which is the whole point.
     expect(chart.primitives).toHaveLength(0)
   })

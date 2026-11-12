@@ -1,9 +1,9 @@
 import hashlib
 import json
-import os
 
 import httpx
 
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -15,17 +15,17 @@ def sha256_hash(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def authenticate_broker(code, password=None, totp_code=None):
+def authenticate_broker(code, password=None, totp_code=None, account_id=None):
     """
     Authenticate with Flattrade using OAuth flow
     """
     try:
-        full_api_key = os.getenv("BROKER_API_KEY")
+        full_api_key = get_broker_api_key(account_id, broker="flattrade")
         logger.debug("Broker API key loaded")
 
         # Split the API key to get the actual key part
         BROKER_API_KEY = full_api_key.split(":::")[1]
-        BROKER_API_SECRET = os.getenv("BROKER_API_SECRET")
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="flattrade")
 
         logger.debug("Using configured broker API key")
         logger.debug("Request code received")  # Debug print
@@ -72,10 +72,10 @@ def authenticate_broker(code, password=None, totp_code=None):
         return None, f"An exception occurred: {str(e)}"
 
 
-def authenticate_broker_oauth(code):
+def authenticate_broker_oauth(code, account_id=None):
     try:
-        BROKER_API_KEY = os.getenv("BROKER_API_KEY").split(":::")[1]  # Get only the API key part
-        BROKER_API_SECRET = os.getenv("BROKER_API_SECRET")
+        BROKER_API_KEY = get_broker_api_key(account_id, broker="flattrade").split(":::")[1]  # Get only the API key part
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="flattrade")
 
         # Create the security hash as per Flattrade docs
         # api_secret:SHA-256 hash of (api_key + request_token + api_secret)

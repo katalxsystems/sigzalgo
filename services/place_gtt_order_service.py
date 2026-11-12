@@ -2,7 +2,8 @@ import copy
 import importlib
 from typing import Any
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, GTTFailedEvent, GTTPlacedEvent
 from utils.event_bus import bus
@@ -31,6 +32,7 @@ def emit_analyzer_error(request_data: dict[str, Any], error_message: str) -> dic
     return error_response
 
 
+@scoped_to_broker_arg
 def import_broker_gtt_module(broker_name: str) -> Any | None:
     """Dynamically import the broker-specific GTT API module."""
     try:
@@ -76,6 +78,7 @@ def _fetch_last_price_for_sandbox(symbol: str, exchange: str, api_key: str) -> f
     return 0.0
 
 
+@scoped_to_broker_arg
 def place_gtt_order_with_auth(
     order_data: dict[str, Any],
     auth_token: str,
@@ -89,7 +92,7 @@ def place_gtt_order_with_auth(
 
     # Analyze (sandbox) mode: the sandbox GTT engine owns the whole lifecycle,
     # so nothing below this point (broker module, broker call) applies.
-    if get_analyze_mode():
+    if get_analyze_mode(verify_api_key(api_key) if api_key else None):
         from services.sandbox_service import sandbox_place_gtt_order
 
         last_price = _fetch_last_price_for_sandbox(
@@ -183,6 +186,7 @@ def place_gtt_order_with_auth(
     return False, error_response, res.status if res.status != 200 else 500
 
 
+@scoped_to_broker_arg
 def place_gtt_order(
     order_data: dict[str, Any],
     api_key: str | None = None,

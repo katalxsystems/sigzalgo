@@ -12,6 +12,7 @@ api = Api(
 
 # Import namespaces
 from .analyzer import api as analyzer_ns
+from .basket import api as basket_ns
 from .basket_order import api as basket_order_ns
 from .cancel_all_order import api as cancel_all_order_ns
 from .cancel_gtt_order import api as cancel_gtt_order_ns
@@ -49,15 +50,19 @@ from .pnl_symbols import api as pnl_symbols_ns
 from .portfolio import api as portfolio_ns
 from .sip import api as sip_ns
 from .positionbook import api as positionbook_ns
+from .price_alert_monitor import api as price_alert_monitor_ns
+from .price_breach_monitor import api as price_breach_monitor_ns
 from .quotes import api as quotes_ns
 from .search import api as search_ns
 from .split_order import api as split_order_ns
 from .strategy import api as strategy_ns
+from .strategy_monitor import api as strategy_monitor_ns
 from .symbol import api as symbol_ns
 from .synthetic_future import api as synthetic_future_ns
 from .telegram_bot import api as telegram_ns
 from .ticker import api as ticker_ns
 from .tradebook import api as tradebook_ns
+from .websocket_subscribe import api as websocket_subscribe_ns
 from .whatsapp_bot import api as whatsapp_ns
 
 # Add namespaces
@@ -72,6 +77,7 @@ api.add_namespace(multiquotes_ns, path="/multiquotes")
 api.add_namespace(history_ns, path="/history")
 api.add_namespace(portfolio_ns, path="/portfolio")
 api.add_namespace(sip_ns, path="/sip")
+api.add_namespace(basket_ns, path="/basket")
 api.add_namespace(depth_ns, path="/depth")
 api.add_namespace(option_chain_ns, path="/optionchain")
 api.add_namespace(intervals_ns, path="/intervals")
@@ -109,3 +115,7 @@ api.add_namespace(modify_gtt_order_ns, path="/modifygttorder")
 api.add_namespace(cancel_gtt_order_ns, path="/cancelgttorder")
 api.add_namespace(gtt_orderbook_ns, path="/gttorderbook")
 api.add_namespace(strategy_ns, path="/strategy")
+api.add_namespace(websocket_subscribe_ns, path="/ws")
+api.add_namespace(price_breach_monitor_ns, path="/pricebreach")
+api.add_namespace(price_alert_monitor_ns, path="/pricealert")
+api.add_namespace(strategy_monitor_ns, path="/strategymonitor")

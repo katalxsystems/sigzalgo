@@ -18,12 +18,14 @@ from database.auth_db import (
     get_api_key,
     get_api_key_for_tradingview,
     get_order_mode,
+    get_owner_username,
     update_order_mode,
     upsert_api_key,
     verify_api_key,
 )
+from utils.account_context import current_account_id, is_admin_session
 from utils.logging import get_logger
-from utils.session import check_session_validity
+from utils.session import require_app_session
 
 # Path to React frontend
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
@@ -36,6 +38,23 @@ api_key_bp = Blueprint("api_key_bp", __name__, url_prefix="/")
 ph = PasswordHasher()
 
 
+def _owns_account(account_id):
+    """Ownership check: account_id must belong to session["user"].
+
+    Before any broker account (Auth row) exists for a platform user,
+    account_id defaults to the platform username itself (the legacy,
+    pre-multi-account convention — see database.auth_db.upsert_auth).
+    get_owner_username() returns None in that case, so fall back to a
+    direct username comparison rather than denying a user their own
+    not-yet-created default account.
+    """
+    owner = get_owner_username(account_id)
+    if owner is not None:
+        # Administrators may manage any user's account (logged by the caller).
+        return owner == session.get("user") or is_admin_session()
+    return account_id == session.get("user")
+
+
 def generate_api_key():
     """Generate a secure random API key"""
     # Generate 32 bytes of random data and encode as hex
@@ -43,15 +62,27 @@ def generate_api_key():
 
 
 @api_key_bp.route("/apikey", methods=["GET", "POST"])
-@check_session_validity
+@require_app_session
 def manage_api_key():
+    """View or (re)generate the caller's own API key.
+
+    Deliberately @require_app_session, not @check_session_validity: neither
+    viewing nor generating a key touches the broker session at all (both
+    operate on session["user"] and account ownership only), and connecting
+    a broker is optional now. @check_session_validity requires
+    session["logged_in"], which only becomes True once a broker is
+    connected -- gating this route behind it made an existing, untouched
+    API key look "lost" to anyone who logged back in without immediately
+    reconnecting their broker, when it was never touched by logout at all.
+    """
     if request.method == "GET":
         login_username = session["user"]
-        # Get the decrypted API key if it exists
-        api_key = get_api_key_for_tradingview(login_username)
+        # Keys are per broker account: show the active account's key.
+        account_id = current_account_id()
+        api_key = get_api_key_for_tradingview(account_id)
         has_api_key = api_key is not None
         # Get order mode (default to 'auto' if not set)
-        order_mode = get_order_mode(login_username) or "auto"
+        order_mode = get_order_mode(account_id) or "auto"
         logger.info(f"Checking API key status for user: {login_username}, order_mode: {order_mode}")
 
         # Return JSON if Accept header requests it (for React frontend)
@@ -59,6 +90,7 @@ def manage_api_key():
             return jsonify(
                 {
                     "login_username": login_username,
+                    "account_id": account_id,
                     "has_api_key": has_api_key,
                     "api_key": api_key,
                     "order_mode": order_mode,
@@ -83,12 +115,30 @@ def manage_api_key():
         if not user_id:
             logger.error("API key update attempted without user ID")
             return jsonify({"error": "User ID is required"}), 400
+        # The page sends the platform username; keys belong to the active
+        # broker account, so generate/rotate that account's key.
+        if user_id == session.get("user"):
+            user_id = current_account_id() or user_id
+
+        if not _owns_account(user_id):
+            logger.warning(
+                f"API key update denied: {session.get('user')} does not own account {user_id}"
+            )
+            return jsonify({"error": "Account not found"}), 404
 
         # Generate new API key
         api_key = generate_api_key()
 
-        # Store the API key (auth_db will handle both hashing and encryption)
-        key_id = upsert_api_key(user_id, api_key)
+        # Store the API key (auth_db will handle both hashing and encryption),
+        # filed under the account's owner -- without it the owner column got
+        # the account id, and the key was missing from its owner's key list.
+        owner = get_owner_username(user_id) or session.get("user")
+        if owner != session.get("user"):
+            logger.info(
+                f"Admin {session.get('user')} generated an API key for account {user_id} "
+                f"(owner {owner})"
+            )
+        key_id = upsert_api_key(user_id, api_key, owner_username=owner)
 
         if key_id is not None:
             logger.info(f"API key updated successfully for user: {user_id}")
@@ -101,7 +151,7 @@ def manage_api_key():
 
 
 @api_key_bp.route("/apikey/mode", methods=["POST"])
-@check_session_validity
+@require_app_session
 def update_api_key_mode():
     """Update order mode (auto/semi_auto) for a user"""
     try:
@@ -111,6 +161,14 @@ def update_api_key_mode():
         if not user_id:
             logger.error("Order mode update attempted without user ID")
             return jsonify({"error": "User ID is required"}), 400
+        if user_id == session.get("user"):
+            user_id = current_account_id() or user_id
+
+        if not _owns_account(user_id):
+            logger.warning(
+                f"Order mode update denied: {session.get('user')} does not own account {user_id}"
+            )
+            return jsonify({"error": "Account not found"}), 404
 
         if not mode or mode not in ["auto", "semi_auto"]:
             logger.error(f"Invalid order mode: {mode}")

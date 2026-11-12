@@ -1,5 +1,4 @@
 import json
-import os
 
 from broker.dhan_sandbox.api.baseurl import get_url
 from broker.dhan_sandbox.mapping.margin_data import (
@@ -9,23 +8,27 @@ from broker.dhan_sandbox.mapping.margin_data import (
     transform_margin_position,
 )
 from database.auth_db import get_user_id, verify_api_key
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def get_client_id(api_key=None):
+def get_client_id(api_key=None, auth_token=None):
     """
-    Get Dhan Sandbox client ID from BROKER_API_KEY or database.
+    Get Dhan Sandbox client ID from the resolved per-account (or instance-wide)
+    broker_api_key, or database.
 
     Args:
         api_key: OpenAlgo API key (optional)
+        auth_token: Broker auth/session token, used to resolve the per-account
+            broker_api_key when the caller has one in scope (optional)
 
     Returns:
         Client ID string or None
     """
-    broker_api_key = os.getenv("BROKER_API_KEY")
+    broker_api_key, _ = resolve_broker_api_key(auth_token, "dhan_sandbox")
 
     # Extract client_id from BROKER_API_KEY if format is client_id:::api_key
     client_id = None
@@ -209,7 +212,7 @@ def calculate_margin_api(positions, auth, api_key=None):
         Tuple of (response, response_data)
     """
     # Get client ID
-    client_id = get_client_id(api_key)
+    client_id = get_client_id(api_key, auth)
 
     if not client_id:
         logger.error("Could not determine Dhan Sandbox client ID")

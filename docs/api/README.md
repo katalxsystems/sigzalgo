@@ -25,7 +25,7 @@ Never put broker credentials or broker access tokens in these requests. The Open
 
 ## Registered REST Inventory
 
-The current v1 surface contains **66 method/path pairs**. A resource with both GET and POST counts as two endpoints.
+The current v1 surface contains **71 method/path pairs**. A resource with both GET and POST counts as two endpoints.
 
 ### Order Management
 
@@ -73,6 +73,15 @@ The current v1 surface contains **66 method/path pairs**. A resource with both G
 | POST | `/search` | [Symbol search](./symbol-services/search.md) |
 | POST | `/expiry` | [Expiry dates](./symbol-services/expiry.md) |
 | GET | `/instruments` | [Instrument master](./symbol-services/instruments.md) |
+| POST | `/ws/subscribe` | [WebSocket subscribe/unsubscribe](./market-data/websocket-control.md) |
+| POST | `/ws/unsubscribe` | [WebSocket subscribe/unsubscribe](./market-data/websocket-control.md) |
+| POST | `/ws/unsubscribe-all` | [WebSocket subscribe/unsubscribe](./market-data/websocket-control.md) |
+| POST | `/pricebreach/create` | [Price breach monitor](./market-data/pricebreach.md) |
+| POST | `/pricebreach/<int:workflow_id>/deactivate` | [Price breach monitor](./market-data/pricebreach.md) |
+| POST | `/pricealert/create` | [Price alert monitor](./market-data/pricealert.md) |
+| POST | `/pricealert/<int:workflow_id>/deactivate` | [Price alert monitor](./market-data/pricealert.md) |
+| POST | `/strategymonitor/upsert` | [Strategy monitor](./market-data/strategymonitor.md) |
+| POST | `/strategymonitor/deactivate` | [Strategy monitor](./market-data/strategymonitor.md) |
 
 ### Options Analytics
 

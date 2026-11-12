@@ -2,7 +2,8 @@ import copy
 import importlib
 from typing import Any, Dict, Optional, Tuple
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, GTTCancelFailedEvent, GTTCancelledEvent
 from utils.event_bus import bus
@@ -29,6 +30,7 @@ def emit_analyzer_error(request_data: dict[str, Any], error_message: str) -> dic
     return error_response
 
 
+@scoped_to_broker_arg
 def import_broker_gtt_module(broker_name: str) -> Any | None:
     try:
         return importlib.import_module(f"broker.{broker_name}.api.gtt_api")
@@ -37,6 +39,7 @@ def import_broker_gtt_module(broker_name: str) -> Any | None:
         return None
 
 
+@scoped_to_broker_arg
 def cancel_gtt_order_with_auth(
     trigger_id: str,
     auth_token: str,
@@ -47,7 +50,7 @@ def cancel_gtt_order_with_auth(
     order_request_data.pop("apikey", None)
     api_key = original_data.get("apikey", "")
 
-    if get_analyze_mode():
+    if get_analyze_mode(verify_api_key(api_key) if api_key else None):
         from services.sandbox_service import sandbox_cancel_gtt_order
 
         success, response, status_code = sandbox_cancel_gtt_order(trigger_id, api_key)
@@ -118,6 +121,7 @@ def cancel_gtt_order_with_auth(
     return False, error_response, status_code
 
 
+@scoped_to_broker_arg
 def cancel_gtt_order(
     trigger_id: str,
     api_key: str | None = None,
@@ -142,10 +146,11 @@ def cancel_gtt_order(
 
     # API-based auth
     if api_key and not (auth_token and broker):
-        from database.auth_db import get_order_mode, verify_api_key
+        from database.auth_db import get_order_mode
 
-        if not get_analyze_mode():
-            user_id = verify_api_key(api_key)
+        user_id = verify_api_key(api_key)
+
+        if not get_analyze_mode(user_id):
             if user_id:
                 order_mode = get_order_mode(user_id)
                 if order_mode == "semi_auto":

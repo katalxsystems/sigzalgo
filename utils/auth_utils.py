@@ -2,26 +2,26 @@ import importlib
 import os
 import re
 import time
-from datetime import datetime, date
-from threading import Thread
+from datetime import date, datetime
+from threading import Lock, Thread
 
 import pytz
 from flask import current_app as app
 from flask import jsonify, redirect, request, session, url_for
 
 from database.auth_db import get_feed_token as db_get_feed_token
-from utils.ip_helper import get_real_ip
 from database.auth_db import upsert_auth
+from database.broker_context import broker_scope, invalidate_present_brokers
 from database.master_contract_status_db import (
     get_exchange_stats_from_db,
     get_last_download_time,
-    get_last_downloaded_broker,
     init_broker_status,
     mark_status_ready_without_download,
     update_download_stats,
     update_status,
 )
 from utils.constants import CRYPTO_BROKERS
+from utils.ip_helper import get_real_ip
 from utils.logging import get_logger
 from utils.session import get_session_expiry_time, set_session_login_time
 
@@ -98,10 +98,20 @@ def should_download_master_contract(broker):
     if last_download is None:
         return True, "No previous download found"
 
-    # Check if a different broker downloaded more recently (symtoken has stale data)
-    last_broker = get_last_downloaded_broker()
-    if last_broker and last_broker != broker:
-        return True, f"Broker changed from {last_broker} to {broker}, symtoken needs refresh"
+    # No "a different broker downloaded since" rule: symtoken keeps each
+    # broker's rows separately (SymToken.broker), so another broker's
+    # download never invalidates this one's.
+
+    # A recorded download is only useful if its rows are actually there. When
+    # symtoken moved to per-broker rows, the existing rows were assigned to the
+    # broker that last downloaded; another broker that also downloaded that
+    # same day still has a "downloaded today" status but no rows, and would
+    # otherwise skip downloading until the next day. The same applies after a
+    # failed or partial insert.
+    from database.symbol import broker_symbol_count
+
+    if broker_symbol_count(broker) == 0:
+        return True, f"No symbols stored for {broker}, downloading"
 
     # Get cutoff time and reference timezone for this broker
     cutoff_hour, cutoff_minute, tz = get_master_contract_cutoff(broker)
@@ -137,6 +147,12 @@ def should_download_master_contract(broker):
 
 
 def load_existing_master_contract(broker):
+    """Load ``broker``'s existing master contract; see _load_existing_master_contract."""
+    with broker_scope(broker):
+        return _load_existing_master_contract(broker)
+
+
+def _load_existing_master_contract(broker):
     """
     Load existing master contract data without re-downloading.
 
@@ -268,13 +284,41 @@ def mask_api_credential(credential, show_chars=4):
     return credential[:show_chars] + "*" * 8
 
 
+# One lock per broker: two users of the same broker logging in together must
+# not both delete and re-insert that broker's rows. Bounded by the number of
+# broker plugins.
+_download_locks: dict[str, Lock] = {}
+_download_locks_guard = Lock()
+
+
+def _download_lock(broker):
+    with _download_locks_guard:
+        return _download_locks.setdefault(broker, Lock())
+
+
 def async_master_contract_download(broker):
     """
     Asynchronously download the master contract and emit a WebSocket event upon completion,
     with the 'broker' parameter specifying the broker for which to download the contract.
 
-    Tracks download duration and exchange-wise statistics for smart download feature.
+    Runs inside broker_scope(broker), so the plugin's delete/insert and every
+    lookup below touch only this broker's symtoken rows. Skips (returns None)
+    when the same broker's download is already running.
     """
+    lock = _download_lock(broker)
+    if not lock.acquire(blocking=False):
+        logger.info(f"Master contract download for {broker} already in progress; skipping")
+        return None
+    try:
+        with broker_scope(broker):
+            return _async_master_contract_download(broker)
+    finally:
+        invalidate_present_brokers()
+        lock.release()
+
+
+def _async_master_contract_download(broker):
+    """Tracks download duration and exchange-wise statistics for smart download feature."""
     start_time = time.time()
 
     # Update status to downloading
@@ -325,7 +369,7 @@ def async_master_contract_download(broker):
 
         # Calculate download duration and get exchange stats
         duration_seconds = int(time.time() - start_time)
-        exchange_stats = get_exchange_stats_from_db()
+        exchange_stats = get_exchange_stats_from_db(broker)
 
         # Update download statistics for smart download tracking
         update_download_stats(broker, duration_seconds, exchange_stats)
@@ -360,13 +404,67 @@ def async_master_contract_download(broker):
     return master_contract_status
 
 
-def handle_auth_success(auth_token, user_session_key, broker, feed_token=None, user_id=None):
+def persist_broker_auth(auth_token, account_id, broker, feed_token=None, user_id=None,
+                        owner_username=None):
+    """Store a freshly obtained broker token for ``account_id`` and make sure
+    the broker's master contract is loaded.
+
+    The session-independent half of a successful broker login: no Flask
+    session, request or response is touched, so it is also safe to call from
+    a server-to-server request (blueprints/cms_broker.py), not only from a
+    browser login (handle_auth_success()).
+
+    Returns:
+        The upserted Auth row id, or None when the token could not be stored.
+    """
+    inserted_id = upsert_auth(
+        account_id, auth_token, broker, feed_token=feed_token, user_id=user_id,
+        owner_username=owner_username,
+    )
+    if not inserted_id:
+        return None
+
+    logger.info(f"Database record upserted with ID: {inserted_id}")
+    # Initialize master contract status for this broker
+    init_broker_status(broker)
+
+    # Smart download: Check if we need to download or can use cached data
+    should_download, reason = should_download_master_contract(broker)
+    logger.info(f"Smart download check for {broker}: should_download={should_download}, reason={reason}")
+
+    if should_download:
+        # Start async download in background thread
+        thread = Thread(target=async_master_contract_download, args=(broker,), daemon=True)
+        thread.start()
+    else:
+        # Use cached data - load existing master contract
+        logger.info(f"Skipping download for {broker}: {reason}")
+        thread = Thread(target=load_existing_master_contract, args=(broker,), daemon=True)
+        thread.start()
+
+    return inserted_id
+
+
+def handle_auth_success(auth_token, user_session_key, broker, feed_token=None, user_id=None,
+                         owner_username=None):
     """
     Handles common tasks after successful authentication.
     - Sets session parameters
     - Stores auth token in the database
     - Initiates asynchronous master contract download (smart: skips if downloaded after 8 AM IST)
+
+    ``user_session_key`` is the broker account_id (database.auth_db.Auth.name)
+    being connected — NOT necessarily the platform login username, since a
+    user may own several accounts. ``owner_username`` is the platform user;
+    when omitted it defaults to ``session["user"]`` (every call site here
+    runs within an authenticated web session), which also reproduces the
+    pre-multi-account behavior where the two were always the same value.
+    Device/session-security tracking (ActiveSession, LoginAttempt) is keyed
+    by owner_username, not account_id, since it tracks web-UI logins, not
+    broker connections.
     """
+    owner_username = owner_username or session.get("user") or user_session_key
+
     # Set session parameters
     session["logged_in"] = True
     # NOTE: do NOT store the broker auth_token in the Flask session. Flask's
@@ -379,6 +477,7 @@ def handle_auth_success(auth_token, user_session_key, broker, feed_token=None, u
     if user_id:
         session["USER_ID"] = user_id  # Store user ID in session if available
     session["user_session_key"] = user_session_key
+    session["active_account_id"] = user_session_key
     session["broker"] = broker
 
     # Set session expiry and login time
@@ -391,9 +490,9 @@ def handle_auth_success(auth_token, user_session_key, broker, feed_token=None, u
     session_id = secrets.token_hex(32)
     session["session_id"] = session_id  # Store in cookie for logout cleanup
 
-    from database.auth_db import register_session, get_active_sessions
+    from database.auth_db import get_active_sessions, register_session
     register_session(
-        username=user_session_key,
+        username=owner_username,
         session_id=session_id,
         device_info=request.headers.get("User-Agent", "")[:500],
         ip_address=get_real_ip(),
@@ -402,19 +501,22 @@ def handle_auth_success(auth_token, user_session_key, broker, feed_token=None, u
 
     # Emit session count update via SocketIO (event-driven, no polling)
     from extensions import socketio
-    active = get_active_sessions(user_session_key)
+    active = get_active_sessions(owner_username)
     socketio.emit("active_sessions_update", {
         "count": len(active),
         "sessions": active,
     })
 
-    logger.info(f"User {user_session_key} logged in successfully with broker {broker}")
+    logger.info(
+        f"User {owner_username} logged in successfully with broker {broker} "
+        f"(account: {user_session_key})"
+    )
 
     # Log OAuth login attempt (resume logins are logged separately in auth.py)
     try:
         from database.auth_db import log_login_attempt
         log_login_attempt(
-            username=user_session_key,
+            username=owner_username,
             ip_address=get_real_ip(),
             device_info=request.headers.get("User-Agent", ""),
             status="success",
@@ -424,29 +526,11 @@ def handle_auth_success(auth_token, user_session_key, broker, feed_token=None, u
     except Exception:
         pass  # Don't block login if logging fails
 
-    # Store auth token in database
-    inserted_id = upsert_auth(
-        user_session_key, auth_token, broker, feed_token=feed_token, user_id=user_id
+    inserted_id = persist_broker_auth(
+        auth_token, user_session_key, broker, feed_token=feed_token, user_id=user_id,
+        owner_username=owner_username,
     )
     if inserted_id:
-        logger.info(f"Database record upserted with ID: {inserted_id}")
-        # Initialize master contract status for this broker
-        init_broker_status(broker)
-
-        # Smart download: Check if we need to download or can use cached data
-        should_download, reason = should_download_master_contract(broker)
-        logger.info(f"Smart download check for {broker}: should_download={should_download}, reason={reason}")
-
-        if should_download:
-            # Start async download in background thread
-            thread = Thread(target=async_master_contract_download, args=(broker,), daemon=True)
-            thread.start()
-        else:
-            # Use cached data - load existing master contract
-            logger.info(f"Skipping download for {broker}: {reason}")
-            thread = Thread(target=load_existing_master_contract, args=(broker,), daemon=True)
-            thread.start()
-
         # Return JSON for AJAX requests (React), redirect for OAuth callbacks
         if is_ajax_request():
             return jsonify(

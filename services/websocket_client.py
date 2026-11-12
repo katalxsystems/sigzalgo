@@ -782,6 +782,16 @@ def get_websocket_client(
             if client.connect():
                 _client_instances[api_key] = client
             else:
+                # connect() started a loop thread, a dispatch thread and a
+                # socket. Left running, a client refused at authentication
+                # (e.g. a regenerated API key) kept reconnecting in the
+                # background, and every retry by the caller added another.
+                try:
+                    client.disconnect()
+                except Exception:
+                    logger.exception(
+                        "Error shutting down a WebSocket client that failed to connect"
+                    )
                 raise ConnectionError("Failed to connect to WebSocket server")
 
         return _client_instances[api_key]

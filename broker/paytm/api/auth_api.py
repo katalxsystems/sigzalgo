@@ -1,12 +1,11 @@
-import os
-
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def authenticate_broker(request_token):
+def authenticate_broker(request_token, account_id=None):
     """
     Authenticate with Paytm Money broker API.
 
@@ -25,8 +24,8 @@ def authenticate_broker(request_token):
             - error_message: Error details if authentication fails, None on success
     """
     try:
-        BROKER_API_KEY = os.getenv("BROKER_API_KEY")
-        BROKER_API_SECRET = os.getenv("BROKER_API_SECRET")
+        BROKER_API_KEY = get_broker_api_key(account_id, broker="paytm")
+        BROKER_API_SECRET = get_broker_api_secret(account_id, broker="paytm")
 
         url = "https://developer.paytmmoney.com/accounts/v2/gettoken"
         data = {

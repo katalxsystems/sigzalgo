@@ -8,6 +8,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from database.auth_db import get_auth_token, get_broker_name, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from utils.logging import get_logger
 
 from .websocket_client import WebSocketClient, get_websocket_client
@@ -81,6 +82,7 @@ def get_websocket_connection(username: str) -> tuple[bool, WebSocketClient | Non
         return False, None, f"Unexpected error: {str(e)}"
 
 
+@scoped_to_broker_arg
 def get_websocket_status(
     username: str, broker: str | None = None
 ) -> tuple[bool, dict[str, Any], int]:
@@ -132,6 +134,7 @@ def get_websocket_status(
         return False, {"status": "error", "message": str(e)}, 500
 
 
+@scoped_to_broker_arg
 def get_websocket_subscriptions(
     username: str, broker: str | None = None
 ) -> tuple[bool, dict[str, Any], int]:
@@ -170,6 +173,7 @@ def get_websocket_subscriptions(
         return False, {"status": "error", "message": str(e)}, 500
 
 
+@scoped_to_broker_arg
 def subscribe_to_symbols(
     username: str, broker: str, symbols: list[dict[str, str]], mode: str = "Quote"
 ) -> tuple[bool, dict[str, Any], int]:
@@ -238,6 +242,7 @@ def subscribe_to_symbols(
         return False, {"status": "error", "message": str(e)}, 500
 
 
+@scoped_to_broker_arg
 def unsubscribe_from_symbols(
     username: str, broker: str, symbols: list[dict[str, str]], mode: str = "Quote"
 ) -> tuple[bool, dict[str, Any], int]:
@@ -294,6 +299,7 @@ def unsubscribe_from_symbols(
         return False, {"status": "error", "message": str(e)}, 500
 
 
+@scoped_to_broker_arg
 def unsubscribe_all(username: str, broker: str) -> tuple[bool, dict[str, Any], int]:
     """
     Unsubscribe from all market data

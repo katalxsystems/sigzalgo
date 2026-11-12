@@ -27,8 +27,10 @@ def tradingview_json():
             product = request.json.get("product")
             mode = request.json.get("mode", "strategy")  # 'strategy' or 'line'
 
-            # Get actual API key for TradingView
-            api_key = get_api_key_for_tradingview(session.get("user"))
+            # Get actual API key for TradingView (active broker account)
+            api_key = get_api_key_for_tradingview(
+                session.get("user_session_key") or session.get("user")
+            )
             broker = session.get("broker")
 
             if not api_key:

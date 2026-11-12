@@ -184,12 +184,31 @@ def get_client_code():
     return None
 
 
-def get_vendor_info(default=""):
+def get_account_credentials(auth=None, account_id=None):
+    """``(client_code, app_api_key)`` for one connected Motilal account.
+
+    Multi-account: each account carries its own credentials (Profile >
+    Accounts). For Motilal the account's API key field holds the client code
+    and its API secret field the app's API key - the convention these
+    accounts were set up with. Resolved from ``account_id`` or, failing that,
+    by reverse lookup of the stored ``auth`` token. ``(None, None)`` when the
+    call is not scoped to an account.
+    """
+    if not auth and not account_id:
+        return None, None
+    from utils.config import resolve_broker_api_key
+
+    client_code, app_api_key = resolve_broker_api_key(auth, "motilal", account_id=account_id)
+    return client_code or None, app_api_key or None
+
+
+def get_vendor_info(default="", auth=None, account_id=None):
     """``vendorinfo`` header: vendor short name, or the client code for clients."""
-    return os.getenv("BROKER_VENDOR_CODE") or get_client_code() or default
+    client_code, _ = get_account_credentials(auth, account_id)
+    return os.getenv("BROKER_VENDOR_CODE") or client_code or get_client_code() or default
 
 
-def get_common_headers(auth=None, vendor_info=None, include_auth=True):
+def get_common_headers(auth=None, vendor_info=None, include_auth=True, account_id=None):
     """Build the documented common header set (05-header-parameters.md).
 
     Args:
@@ -198,20 +217,26 @@ def get_common_headers(auth=None, vendor_info=None, include_auth=True):
             vendor code / client code.
         include_auth: ``False`` for the login call, which must not send
             ``Authorization`` ("Used in all API's excluding login API").
+        account_id: the connected account, when known (login, before the
+            token is stored); otherwise it is looked up from ``auth``.
     """
+    scoped = bool(auth or account_id)
+    _, account_api_key = get_account_credentials(auth, account_id)
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "User-Agent": "MOSL/V.1.1.0",
-        # doc 05: "Api Key of App". OpenAlgo-wide convention: BROKER_API_KEY is
-        # the app API key, BROKER_API_SECRET the app secret. Sending the secret
-        # here is what Motilal rejects with MO2005.
-        "ApiKey": os.getenv("BROKER_API_KEY", ""),
+        # doc 05: "Api Key of App". The account's own app API key when the call
+        # is scoped to an account (see get_account_credentials); otherwise the
+        # instance-wide BROKER_API_KEY.
+        "ApiKey": (account_api_key or "") if scoped else os.getenv("BROKER_API_KEY", ""),
         "ClientLocalIp": os.getenv("BROKER_CLIENT_LOCAL_IP", "127.0.0.1"),
         "ClientPublicIp": os.getenv("BROKER_CLIENT_PUBLIC_IP", "127.0.0.1"),
         "MacAddress": os.getenv("BROKER_MAC_ADDRESS", "00:00:00:00:00:00"),
         "SourceId": "WEB",
-        "vendorinfo": vendor_info if vendor_info is not None else get_vendor_info(),
+        "vendorinfo": vendor_info
+        if vendor_info is not None
+        else get_vendor_info(auth=auth, account_id=account_id),
         "osname": "Windows 10",
         "osversion": "10.0.19041",
         "devicemodel": "AHV",
@@ -223,7 +248,9 @@ def get_common_headers(auth=None, vendor_info=None, include_auth=True):
         "browserversion": "120.0",
     }
 
-    api_secret_key = get_api_secret_key()
+    # The newer-generation API secret key is instance-wide only: accounts have
+    # no field for it (their secret field holds the app API key).
+    api_secret_key = None if scoped else get_api_secret_key()
     if api_secret_key:
         headers["apisecretkey"] = api_secret_key
 

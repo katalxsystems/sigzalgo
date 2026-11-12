@@ -74,6 +74,7 @@ def _resolve_fernet_salt() -> bytes:
     # Fallback path. Print once so prod misuse is visible without spamming.
     if not getattr(_resolve_fernet_salt, "_warned", False):
         import sys as _sys
+
         _sys.stderr.write(
             "[auth_db] WARNING: FERNET_SALT not set or invalid; using legacy\n"
             "static salt. Run the app once via app.py so utils/env_check.py\n"
@@ -177,9 +178,25 @@ Base.query = db_session.query_property()
 
 
 class Auth(Base):
+    """One row per connected broker account.
+
+    ``name`` is the account_id: a stable, globally-unique identifier for
+    this specific broker connection (NOT the platform login username).
+    Every existing helper in this module that takes a ``name``/``user_id``
+    argument (get_auth_token, get_feed_token, get_broker_name, the WS pool
+    keys, the order-update adapter registry, etc.) already treats that value
+    as an opaque per-connection identifier, so pointing it at account_id
+    instead of the username is a transparent swap — see the multi-account
+    plan for details. ``owner_username`` is the platform user (users.username)
+    who owns this connection; a user can own many Auth rows.
+    """
+
     __tablename__ = "auth"
     id = Column(Integer, primary_key=True)
     name = Column(String(255), unique=True, nullable=False)
+    owner_username = Column(String(255), nullable=True, index=True)
+    account_label = Column(String(255), nullable=True)
+    is_default = Column(Boolean, default=False, nullable=False)
     auth = Column(Text, nullable=False)
     feed_token = Column(
         Text, nullable=True
@@ -187,6 +204,34 @@ class Auth(Base):
     broker = Column(String(20), nullable=False)
     user_id = Column(String(255), nullable=True)  # Add user_id column
     is_revoked = Column(Boolean, default=False)
+
+    # Per-account broker app credentials (OAuth API key/secret registered
+    # with the broker). Fernet-encrypted at rest, same key as the auth
+    # token. NULL until backfilled/set — see
+    # upgrade/migrate_broker_credentials_market.py and utils/config.py's
+    # get_broker_api_key/get_broker_api_secret (no instance-wide fallback;
+    # per-account is the only source).
+    broker_api_key = Column(Text, nullable=True)
+    broker_api_secret = Column(Text, nullable=True)
+
+    # Per-account market-data feed credentials (XTS-family brokers' separate
+    # quote/depth login, e.g. compositedge, rmoney, fivepaisaxts, ibulls,
+    # iifl, jainamxts, wisdom). Same resolution shape as broker_api_key
+    # above -- see utils/config.py's get_broker_api_key_market/
+    # get_broker_api_secret_market.
+    broker_api_key_market = Column(Text, nullable=True)
+    broker_api_secret_market = Column(Text, nullable=True)
+
+    # Per-account Analyzer/Sandbox toggle. NULL means "not set for this
+    # account yet, fall back to the instance-wide Settings.analyze_mode
+    # default" (see database.settings_db.get_analyze_mode) — same
+    # resolution shape as broker_api_key above. Explicit True/False once a
+    # user has touched their own toggle. Multiple accounts on one instance
+    # must be able to run live and analyze mode independently: this column
+    # is what lets order placement (services/place_order_service.py etc.)
+    # route each account's own orders instead of one global switch flipping
+    # every tenant's order routing at once.
+    analyze_mode = Column(Boolean, nullable=True)
 
     # Samco 2FA fields
     secret_api_key = Column(Text, nullable=True)
@@ -205,13 +250,26 @@ class Auth(Base):
         Index("idx_auth_broker", "broker"),  # Speeds up get_broker_name() queries
         Index("idx_auth_user_id", "user_id"),  # Speeds up get_user_id() lookups
         Index("idx_auth_is_revoked", "is_revoked"),  # Speeds up token validity checks
+        Index("idx_auth_owner_username", "owner_username"),  # Speeds up list_broker_accounts()
     )
 
 
 class ApiKeys(Base):
+    """One row per OpenAlgo API key.
+
+    Historically one key per platform user (``user_id`` unique). Now one key
+    per broker *account*: ``account_id`` (unique) is the ``Auth.name`` of the
+    broker connection this key resolves to, and ``user_id`` is kept as the
+    owning platform username (no longer unique — one user can own many keys,
+    one per connected account). ``account_id`` is nullable only to keep
+    pre-migration rows loadable; the ``upgrade/`` backfill script sets it to
+    the legacy ``user_id`` value for every existing row.
+    """
+
     __tablename__ = "api_keys"
     id = Column(Integer, primary_key=True)
-    user_id = Column(String, nullable=False, unique=True)
+    user_id = Column(String, nullable=False)
+    account_id = Column(String, nullable=True, unique=True, index=True)
     api_key_hash = Column(Text, nullable=False)  # For verification
     api_key_encrypted = Column(Text, nullable=False)  # For retrieval
     created_at = Column(DateTime(timezone=True), default=func.now())
@@ -221,11 +279,13 @@ class ApiKeys(Base):
     __table_args__ = (
         Index("idx_api_keys_order_mode", "order_mode"),  # Speeds up filtering by order mode
         Index("idx_api_keys_created_at", "created_at"),  # Speeds up time-based queries
+        Index("idx_api_keys_user_id", "user_id"),  # Speeds up list-keys-for-user lookups
     )
 
 
 class ActiveSession(Base):
     """Tracks active login sessions across devices for a user."""
+
     __tablename__ = "active_sessions"
     id = Column(Integer, primary_key=True)
     username = Column(String(255), nullable=False, index=True)
@@ -236,13 +296,12 @@ class ActiveSession(Base):
     login_time = Column(DateTime(timezone=True), default=func.now())
     last_seen = Column(DateTime(timezone=True), default=func.now())
 
-    __table_args__ = (
-        Index("idx_active_sessions_username", "username"),
-    )
+    __table_args__ = (Index("idx_active_sessions_username", "username"),)
 
 
 class LoginAttempt(Base):
     """Records all login attempts (successful and failed) for security auditing."""
+
     __tablename__ = "login_attempts"
     id = Column(Integer, primary_key=True)
     username = Column(String(255), nullable=False)
@@ -266,11 +325,19 @@ def _now_ist():
     from datetime import datetime
 
     import pytz
+
     return datetime.now(pytz.timezone("Asia/Kolkata"))
 
 
-def log_login_attempt(username, ip_address=None, device_info=None, status="failed",
-                      login_type="password", broker=None, failure_reason=None):
+def log_login_attempt(
+    username,
+    ip_address=None,
+    device_info=None,
+    status="failed",
+    login_type="password",
+    broker=None,
+    failure_reason=None,
+):
     """Record a login attempt for audit purposes. All records are retained permanently."""
     try:
         attempt = LoginAttempt(
@@ -341,9 +408,11 @@ def register_session(username, session_id, device_info=None, ip_address=None, br
         # Enforce per-user session cap — remove oldest if at limit
         current_count = ActiveSession.query.filter_by(username=username).count()
         if current_count >= MAX_SESSIONS_PER_USER:
-            oldest = ActiveSession.query.filter_by(username=username).order_by(
-                ActiveSession.login_time.asc()
-            ).first()
+            oldest = (
+                ActiveSession.query.filter_by(username=username)
+                .order_by(ActiveSession.login_time.asc())
+                .first()
+            )
             if oldest:
                 db_session.delete(oldest)
 
@@ -379,9 +448,11 @@ def remove_session(session_id):
 def get_active_sessions(username):
     """Get all active sessions for a user."""
     try:
-        sessions = ActiveSession.query.filter_by(username=username).order_by(
-            ActiveSession.last_seen.desc()
-        ).all()
+        sessions = (
+            ActiveSession.query.filter_by(username=username)
+            .order_by(ActiveSession.last_seen.desc())
+            .all()
+        )
         return [
             {
                 "session_id": s.session_id,
@@ -478,9 +549,7 @@ def decrypt_token(encrypted_token):
 
         try:
             payload = (
-                encrypted_token.encode()
-                if isinstance(encrypted_token, str)
-                else encrypted_token
+                encrypted_token.encode() if isinstance(encrypted_token, str) else encrypted_token
             )
             fp = hashlib.blake2s(payload, digest_size=8).hexdigest()
         except Exception:
@@ -502,8 +571,21 @@ def decrypt_token(encrypted_token):
         return None
 
 
-def upsert_auth(name, auth_token, broker, feed_token=None, user_id=None, revoke=False):
+def upsert_auth(
+    name, auth_token, broker, feed_token=None, user_id=None, revoke=False, owner_username=None
+):
     """Store encrypted auth token and feed token if provided.
+
+    ``name`` is the account_id (see the Auth model docstring). When this
+    call creates a brand-new row (no existing account with this id),
+    ``owner_username`` records which platform user owns it; if omitted it
+    defaults to ``name`` itself, which reproduces the pre-multi-account
+    behavior for callers that pass the platform username as ``name`` (i.e.
+    every login that hasn't gone through the new /api/accounts creation
+    flow). A pre-existing placeholder row created by
+    ``create_broker_account`` already has owner_username/account_label/
+    is_default set and those are intentionally left untouched here — this
+    function only fills them in on first creation.
 
     Also publishes cache invalidation events via ZeroMQ for multi-process deployments.
     This ensures WebSocket proxy and other processes clear their stale cached tokens.
@@ -543,12 +625,43 @@ def upsert_auth(name, auth_token, broker, feed_token=None, user_id=None, revoke=
     if auth_obj:
         auth_obj.auth = encrypted_token
         auth_obj.feed_token = encrypted_feed_token
-        auth_obj.broker = broker
+        # Every revoke call site (logout, auto-expiry, account removal) passes
+        # broker="" since none of them track which broker it was -- but
+        # overwriting the column with that destroys the account's broker
+        # identity, breaking the "Connect" button afterward (get_connect_path("")
+        # produces "//callback", which browsers resolve to a bogus
+        # "https://callback/" host instead of the real broker's login page).
+        # Preserve the existing value in that specific case; a real broker
+        # name (or a genuine login, revoke=False) still updates normally.
+        if not (revoke and not broker):
+            if auth_obj.broker and broker and auth_obj.broker != broker:
+                # The row is being re-pointed at a different broker (e.g. a
+                # legacy username-named row reused by a login for another
+                # broker). Its stored app credentials belong to the OLD
+                # broker's registration; keeping them would make every
+                # later login/request for the new broker send the old
+                # broker's key (observed: a 5paisa "key:::user:::client"
+                # key sent to Angel -> AG8004 Invalid API Key).
+                logger.warning(
+                    f"Account {name} broker changed {auth_obj.broker} -> {broker}; "
+                    f"clearing its stored broker app credentials"
+                )
+                auth_obj.broker_api_key = None
+                auth_obj.broker_api_secret = None
+                auth_obj.broker_api_key_market = None
+                auth_obj.broker_api_secret_market = None
+            auth_obj.broker = broker
         auth_obj.user_id = user_id
         auth_obj.is_revoked = revoke
     else:
+        resolved_owner = owner_username or name
+        has_existing_accounts = (
+            Auth.query.filter_by(owner_username=resolved_owner).first() is not None
+        )
         auth_obj = Auth(
             name=name,
+            owner_username=resolved_owner,
+            is_default=not has_existing_accounts,
             auth=encrypted_token,
             feed_token=encrypted_feed_token,
             broker=broker,
@@ -589,6 +702,7 @@ def upsert_auth(name, auth_token, broker, feed_token=None, user_id=None, revoke=
     # This notifies WebSocket proxy and other processes to clear their stale caches
     try:
         from database.cache_invalidation import publish_all_cache_invalidation
+
         publish_all_cache_invalidation(name)
         logger.debug(f"Published cache invalidation for user: {name}")
     except Exception as e:
@@ -606,6 +720,7 @@ def upsert_auth(name, auth_token, broker, feed_token=None, user_id=None, revoke=
     # token found" until the process is restarted. See issue #1394.
     try:
         from websocket_proxy.broker_factory import cleanup_pools_for_user
+
         cleanup_pools_for_user(name, broker_name=broker)
     except Exception as e:
         # Don't fail auth on cleanup error — the user can still trade via
@@ -645,6 +760,7 @@ def get_auth_token(name, bypass_cache: bool = False):
     Returns:
         The decrypted auth token, or None if not found/revoked
     """
+    name = _session_account_for(name)  # logged-in username -> active account
     # Handle None or empty name gracefully
     if not name:
         logger.debug("get_auth_token called with empty/None name, returning None")
@@ -739,6 +855,7 @@ def get_feed_token(name):
     Returns:
         The feed token string, or ``None`` if unavailable.
     """
+    name = _session_account_for(name)  # logged-in username -> active account
     # Handle None or empty name gracefully
     if not name:
         logger.debug("get_feed_token called with empty/None name, returning None")
@@ -808,6 +925,349 @@ def get_user_id(name):
         return None
 
 
+# ============================================================
+# Multi-account helpers
+#
+# An "account" is one row in the Auth table, identified by its account_id
+# (the Auth.name value). A platform user (owner_username) can own many
+# accounts, including several on the same broker. These helpers are the
+# entry points the account-management UI/API and the broker-login flow use
+# to create and enumerate accounts; the existing get_auth_token /
+# get_feed_token / get_auth_token_broker / get_broker_name functions above
+# already operate correctly on any account_id passed to them (they were
+# never actually specific to usernames — see the multi-account plan).
+# ============================================================
+
+
+def generate_account_id(owner_username, broker):
+    """Generate a new, stable, unique account_id for a broker connection."""
+    import secrets as _secrets
+
+    return f"{owner_username}_{broker}_{_secrets.token_hex(4)}"
+
+
+def create_broker_account(
+    owner_username, broker, label=None, broker_api_key=None, broker_api_secret=None
+):
+    """Create a new (unconnected) broker account for a platform user.
+
+    Inserts a placeholder Auth row (is_revoked=True, no session token yet —
+    mirrors the existing samco_save_secret_key placeholder-row pattern) so
+    the account_id exists before the OAuth/login round trip that will fill
+    in the real auth token. Returns the new account_id.
+    """
+    try:
+        account_id = generate_account_id(owner_username, broker)
+        # Extremely unlikely, but guard against a collision on the unique name column
+        while Auth.query.filter_by(name=account_id).first() is not None:
+            account_id = generate_account_id(owner_username, broker)
+
+        # A user's first account for any broker becomes their default
+        has_existing = Auth.query.filter_by(owner_username=owner_username).first() is not None
+
+        account = Auth(
+            name=account_id,
+            owner_username=owner_username,
+            account_label=label or broker.capitalize(),
+            is_default=not has_existing,
+            auth="pending",
+            broker=broker,
+            is_revoked=True,
+            broker_api_key=encrypt_token(broker_api_key) if broker_api_key else None,
+            broker_api_secret=encrypt_token(broker_api_secret) if broker_api_secret else None,
+        )
+        db_session.add(account)
+        db_session.commit()
+        logger.info(f"Created broker account {account_id} ({broker}) for user {owner_username}")
+        return account_id
+    except Exception as e:
+        db_session.rollback()
+        logger.exception(f"Error creating broker account for {owner_username}/{broker}: {e}")
+        return None
+
+
+def list_broker_accounts(owner_username):
+    """List every broker account owned by a platform user."""
+    try:
+        accounts = Auth.query.filter_by(owner_username=owner_username).order_by(Auth.id.asc()).all()
+        return [
+            {
+                "account_id": a.name,
+                "broker": a.broker,
+                "label": a.account_label or a.broker.capitalize(),
+                "is_default": bool(a.is_default),
+                "connected": not a.is_revoked and a.auth not in (None, "", "pending"),
+                "has_api_key": get_api_key(a.name) is True,
+            }
+            for a in accounts
+        ]
+    except Exception as e:
+        logger.exception(f"Error listing broker accounts for {owner_username}: {e}")
+        return []
+
+
+def get_default_account_id(owner_username):
+    """Resolve the account_id the interactive web UI should operate on for
+    a platform user: their is_default account, falling back to their
+    oldest non-revoked account, falling back to their oldest account of
+    any kind. Returns None if the user has no broker accounts at all.
+    """
+    try:
+        default = Auth.query.filter_by(owner_username=owner_username, is_default=True).first()
+        if default:
+            return default.name
+        fallback = (
+            Auth.query.filter_by(owner_username=owner_username, is_revoked=False)
+            .order_by(Auth.id.asc())
+            .first()
+        )
+        if fallback:
+            return fallback.name
+        any_account = (
+            Auth.query.filter_by(owner_username=owner_username).order_by(Auth.id.asc()).first()
+        )
+        return any_account.name if any_account else None
+    except Exception as e:
+        logger.exception(f"Error resolving default account for {owner_username}: {e}")
+        return None
+
+
+def get_default_account_id_for_broker(owner_username, broker):
+    """Same resolution as get_default_account_id, scoped to one broker.
+
+    Used where the broker being connected is already known (the
+    account_id fallback in blueprints/brlogin.py's broker_callback) but the
+    session wasn't routed to a specific account first (a plain password
+    login or the CMS SSO hand-off, as opposed to the account-management
+    UI's explicit "connect this account" action, which sets
+    pending_account_id itself). A user's overall default account
+    (get_default_account_id) may belong to a *different* broker than the
+    one they're connecting right now, and handing that account's
+    credentials to this broker's login would authenticate with the wrong
+    app registration entirely — this scopes every step of the same
+    fallback chain to `broker` so that can't happen.
+    """
+    try:
+        default = Auth.query.filter_by(
+            owner_username=owner_username, broker=broker, is_default=True
+        ).first()
+        if default:
+            return default.name
+        fallback = (
+            Auth.query.filter_by(owner_username=owner_username, broker=broker, is_revoked=False)
+            .order_by(Auth.id.asc())
+            .first()
+        )
+        if fallback:
+            return fallback.name
+        any_account = (
+            Auth.query.filter_by(owner_username=owner_username, broker=broker)
+            .order_by(Auth.id.asc())
+            .first()
+        )
+        return any_account.name if any_account else None
+    except Exception as e:
+        logger.exception(f"Error resolving default {broker} account for {owner_username}: {e}")
+        return None
+
+
+def get_owner_username(account_id):
+    """Get the platform username that owns a broker account."""
+    try:
+        account = Auth.query.filter_by(name=account_id).first()
+        return account.owner_username if account else None
+    except Exception as e:
+        logger.exception(f"Error getting owner for account {account_id}: {e}")
+        return None
+
+
+def set_default_account(owner_username, account_id):
+    """Mark one of a user's accounts as the default (used by the interactive web UI)."""
+    try:
+        account = Auth.query.filter_by(name=account_id, owner_username=owner_username).first()
+        if not account:
+            return False
+        Auth.query.filter_by(owner_username=owner_username, is_default=True).update(
+            {"is_default": False}
+        )
+        account.is_default = True
+        db_session.commit()
+        return True
+    except Exception as e:
+        db_session.rollback()
+        logger.exception(f"Error setting default account {account_id} for {owner_username}: {e}")
+        return False
+
+
+def _account_matches_broker(account, broker):
+    """True unless ``broker`` is given and the account belongs to a different
+    broker. Stored credentials are one broker's app registration; handing
+    them to another broker's login/API call can never be right."""
+    if broker and account.broker and account.broker != broker:
+        logger.warning(
+            f"Ignoring stored credentials of account {account.name}: "
+            f"account broker is {account.broker}, requested for {broker}"
+        )
+        return False
+    return True
+
+
+def get_broker_credentials(account_id, broker=None):
+    """Get the per-account broker app credentials (trading API key/secret).
+
+    Returns (api_key, api_secret), either of which is None if the account
+    has no DB-stored credentials. Per-account is the only source — see
+    utils.config.get_broker_api_key/get_broker_api_secret. When ``broker``
+    is given and the account belongs to a different broker, returns
+    (None, None) rather than the other broker's credentials.
+    """
+    try:
+        account = Auth.query.filter_by(name=account_id).first()
+        if not account or not _account_matches_broker(account, broker):
+            return None, None
+        api_key = decrypt_token(account.broker_api_key) if account.broker_api_key else None
+        api_secret = decrypt_token(account.broker_api_secret) if account.broker_api_secret else None
+        return api_key, api_secret
+    except Exception as e:
+        logger.exception(f"Error getting broker credentials for account {account_id}: {e}")
+        return None, None
+
+
+def set_broker_credentials(account_id, broker_api_key, broker_api_secret):
+    """Store per-account broker app credentials, encrypted at rest.
+
+    A value of None leaves that credential as stored, so updating only the
+    key (a rotated app key, the common case) keeps the secret, and vice versa.
+    """
+    try:
+        account = Auth.query.filter_by(name=account_id).first()
+        if not account:
+            return False
+        if broker_api_key:
+            account.broker_api_key = encrypt_token(broker_api_key)
+        if broker_api_secret:
+            account.broker_api_secret = encrypt_token(broker_api_secret)
+        db_session.commit()
+        return True
+    except Exception as e:
+        db_session.rollback()
+        logger.exception(f"Error setting broker credentials for account {account_id}: {e}")
+        return False
+
+
+def get_broker_credentials_market(account_id, broker=None):
+    """Get the per-account market-data feed credentials (XTS-family
+    brokers' separate quote/depth login: compositedge, rmoney, fivepaisaxts,
+    ibulls, iifl, jainamxts, wisdom).
+
+    Returns (api_key, api_secret), either of which is None if the account
+    has no DB-stored market credentials. Per-account is the only source —
+    see utils.config.get_broker_api_key_market/get_broker_api_secret_market.
+    ``broker`` behaves as in get_broker_credentials.
+    """
+    try:
+        account = Auth.query.filter_by(name=account_id).first()
+        if not account or not _account_matches_broker(account, broker):
+            return None, None
+        api_key = (
+            decrypt_token(account.broker_api_key_market) if account.broker_api_key_market else None
+        )
+        api_secret = (
+            decrypt_token(account.broker_api_secret_market)
+            if account.broker_api_secret_market
+            else None
+        )
+        return api_key, api_secret
+    except Exception as e:
+        logger.exception(f"Error getting market broker credentials for account {account_id}: {e}")
+        return None, None
+
+
+def set_broker_credentials_market(account_id, broker_api_key_market, broker_api_secret_market):
+    """Store per-account market-data feed credentials, encrypted at rest."""
+    try:
+        account = Auth.query.filter_by(name=account_id).first()
+        if not account:
+            return False
+        account.broker_api_key_market = (
+            encrypt_token(broker_api_key_market) if broker_api_key_market else None
+        )
+        account.broker_api_secret_market = (
+            encrypt_token(broker_api_secret_market) if broker_api_secret_market else None
+        )
+        db_session.commit()
+        return True
+    except Exception as e:
+        db_session.rollback()
+        logger.exception(f"Error setting market broker credentials for account {account_id}: {e}")
+        return False
+
+
+def get_account_id_from_auth_token(auth_token, broker=None):
+    """Reverse-lookup: which account_id (Auth.name) a decrypted broker auth
+    token belongs to.
+
+    Needed by broker plugins whose per-request API calls (funds/orders/data)
+    only receive the bare auth_token, not the account_id -- e.g. 5Paisa,
+    which must resend its app-level BROKER_API_KEY (a per-account credential,
+    see get_broker_credentials) on every request, not just at login. Without
+    this, those call sites can only fall back to the instance-wide default
+    key (utils.config.get_broker_api_key with no account_id), silently
+    ignoring a different key set for this specific account via Profile >
+    Accounts.
+
+    O(n) over this instance's connected accounts (decrypt-and-compare,
+    there's no way to look up by plaintext token in an encrypted column) --
+    fine for the handful of broker accounts a self-hosted instance has.
+    Pass ``broker`` to narrow the scan when the caller already knows it.
+    """
+    if not auth_token:
+        return None
+    try:
+        query = Auth.query.filter_by(is_revoked=False)
+        if broker:
+            query = query.filter_by(broker=broker)
+        for account in query.all():
+            if account.auth and decrypt_token(account.auth) == auth_token:
+                return account.name
+        return None
+    except Exception as e:
+        logger.exception(f"Error resolving account_id from auth token: {e}")
+        return None
+
+
+def get_account_analyze_mode(account_id):
+    """Get this account's own Analyzer/Sandbox override.
+
+    Returns None if the account has never set one (caller should fall back
+    to the instance-wide database.settings_db.get_analyze_mode() default),
+    or the account doesn't exist. Otherwise returns the explicit bool.
+    """
+    try:
+        account = Auth.query.filter_by(name=account_id).first()
+        if not account or account.analyze_mode is None:
+            return None
+        return bool(account.analyze_mode)
+    except Exception as e:
+        logger.exception(f"Error getting analyze mode for account {account_id}: {e}")
+        return None
+
+
+def set_account_analyze_mode(account_id, mode: bool):
+    """Store this account's own Analyzer/Sandbox override."""
+    try:
+        account = Auth.query.filter_by(name=account_id).first()
+        if not account:
+            return False
+        account.analyze_mode = bool(mode)
+        db_session.commit()
+        return True
+    except Exception as e:
+        db_session.rollback()
+        logger.exception(f"Error setting analyze mode for account {account_id}: {e}")
+        return False
+
+
 def invalidate_user_cache(user_id):
     """
     Invalidate all cached data for a user when their credentials change.
@@ -823,8 +1283,18 @@ def invalidate_user_cache(user_id):
     logger.info(f"Cleared all caches for user_id: {user_id}")
 
 
-def upsert_api_key(user_id, api_key):
-    """Store both hashed and encrypted API key"""
+def upsert_api_key(account_id, api_key, owner_username=None):
+    """Store both hashed and encrypted API key for a broker account.
+
+    One key per ``account_id`` (an ``Auth.name`` value). ``owner_username``
+    is the platform user the key should be listed under; when omitted it
+    defaults to ``account_id`` itself, which preserves the historical
+    one-key-per-user behavior for callers that haven't been updated to pass
+    a distinct account_id yet (pre-migration rows and single-account
+    installs have account_id == username == owner_username).
+    """
+    owner_username = owner_username or account_id
+
     # Hash with Argon2 for verification
     peppered_key = api_key + PEPPER
     hashed_key = ph.hash(peppered_key)
@@ -832,43 +1302,133 @@ def upsert_api_key(user_id, api_key):
     # Encrypt for retrieval
     encrypted_key = encrypt_token(api_key)
 
-    api_key_obj = ApiKeys.query.filter_by(user_id=user_id).first()
+    api_key_obj = ApiKeys.query.filter_by(account_id=account_id).first()
+    old_key = None
+    if api_key_obj and api_key_obj.api_key_encrypted:
+        old_key = decrypt_token(api_key_obj.api_key_encrypted)
     if api_key_obj:
         api_key_obj.api_key_hash = hashed_key
         api_key_obj.api_key_encrypted = encrypted_key
+        api_key_obj.user_id = owner_username
     else:
         api_key_obj = ApiKeys(
-            user_id=user_id, api_key_hash=hashed_key, api_key_encrypted=encrypted_key
+            user_id=owner_username,
+            account_id=account_id,
+            api_key_hash=hashed_key,
+            api_key_encrypted=encrypted_key,
         )
         db_session.add(api_key_obj)
     db_session.commit()
 
     # Security: Invalidate all caches when API key changes
-    invalidate_user_cache(user_id)
+    invalidate_user_cache(account_id)
+
+    if old_key and old_key != api_key:
+        _move_price_alerts_to_new_key(old_key, api_key)
 
     return api_key_obj.id
 
 
-def get_api_key(user_id):
-    """Check if user has an API key"""
+def _move_price_alerts_to_new_key(old_key, new_key):
+    """Point the running Flow price monitor's alerts at a regenerated key.
+
+    Workflows look their account's key up when they run (see
+    flow_db.get_workflow_api_key), but the price monitor holds one per alert
+    for its live-tick feed. Without this, every alert of the account kept
+    authenticating with the replaced key until a restart. The monitor is only
+    touched if it is already loaded: storing a key must not start it.
+    """
+    import sys
+
+    module = sys.modules.get("services.flow_price_monitor_service")
+    if module is None:
+        return
     try:
-        api_key_obj = ApiKeys.query.filter_by(user_id=user_id).first()
+        module.get_flow_price_monitor().replace_api_key(old_key, new_key)
+    except Exception:
+        logger.exception("Could not move Flow price alerts to the regenerated API key")
+
+
+def get_api_key(account_id):
+    """Check if the given broker account has an API key"""
+    try:
+        api_key_obj = ApiKeys.query.filter_by(account_id=account_id).first()
         return api_key_obj is not None
     except Exception as e:
         logger.exception(f"Error while querying the database for API key: {e}")
         return None
 
 
-def get_api_key_for_tradingview(user_id):
-    """Get decrypted API key for TradingView configuration"""
+def _session_account_for(account_id):
+    """Map the logged-in platform username to the session's active account.
+
+    About 70 web routes pass ``session["user"]`` (the platform username) where
+    an account id is expected -- correct before multiple broker accounts, when
+    the two were the same. With several accounts it picked the legacy account
+    named after the user, not the one being worked in, so pages used an API
+    key whose broker was not connected ("No valid auth token or broker found
+    for user_id '<username>'"). Any other value, and calls outside a request,
+    are returned unchanged.
+    """
     try:
-        api_key_obj = ApiKeys.query.filter_by(user_id=user_id).first()
+        from flask import has_request_context, session
+
+        if has_request_context() and account_id and account_id == session.get("user"):
+            from utils.account_context import current_account_id
+
+            return current_account_id() or account_id
+    except Exception:
+        logger.exception("Could not resolve the session's active account")
+    return account_id
+
+
+def get_api_key_for_tradingview(account_id):
+    """Get decrypted API key for a broker account (TradingView/webhook configuration).
+
+    Given the logged-in username during a request, uses the session's active
+    account instead (see _session_account_for).
+    """
+    return get_account_api_key(_session_account_for(account_id))
+
+
+def get_account_api_key(account_id):
+    """Decrypted API key of exactly this broker account, or None.
+
+    Unlike get_api_key_for_tradingview, never substitutes the session's
+    active account, so background callers (Flow workflows) get the key of
+    the account they name even inside a request by that account's owner.
+    """
+    if not account_id:
+        return None
+    try:
+        api_key_obj = ApiKeys.query.filter_by(account_id=account_id).first()
         if api_key_obj and api_key_obj.api_key_encrypted:
             return decrypt_token(api_key_obj.api_key_encrypted)
         return None
     except Exception as e:
         logger.exception(f"Error while querying the database for API key: {e}")
         return None
+
+
+def list_api_keys_for_user(owner_username):
+    """List every API key record owned by a platform user (one per broker account).
+
+    Returns dicts with the account_id and masked-safe metadata; never the
+    decrypted key itself.
+    """
+    try:
+        rows = ApiKeys.query.filter_by(user_id=owner_username).all()
+        return [
+            {
+                "account_id": r.account_id,
+                "order_mode": r.order_mode,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.exception(f"Error listing API keys for user {owner_username}: {e}")
+        return []
 
 
 def get_first_available_api_key():
@@ -881,13 +1441,14 @@ def get_first_available_api_key():
     deleted users or users with revoked sessions.
     """
     try:
-        # Join api_keys with auth to only return keys for users with active sessions
+        # Join api_keys with auth to only return keys for accounts with active sessions
         api_keys = ApiKeys.query.all()
         for api_key_obj in api_keys:
             if not api_key_obj.api_key_encrypted:
                 continue
-            # Check if this user has an active auth session with a broker
-            auth_obj = Auth.query.filter_by(name=api_key_obj.user_id).first()
+            # Check if this account has an active auth session with a broker
+            account_id = api_key_obj.account_id or api_key_obj.user_id
+            auth_obj = Auth.query.filter_by(name=account_id).first()
             if auth_obj and not auth_obj.is_revoked and auth_obj.broker:
                 return decrypt_token(api_key_obj.api_key_encrypted)
         return None
@@ -900,8 +1461,13 @@ def verify_api_key(provided_api_key):
     """
     Verify an API key using Argon2 with intelligent caching.
 
+    Returns the account_id (Auth.name) the key resolves to — one key per
+    broker account. Falls back to the legacy ``user_id`` column for rows
+    that predate the account_id column (pre-migration installs where
+    account_id == the platform username).
+
     Security measures:
-    - Only caches user_id (not sensitive data)
+    - Only caches account_id (not sensitive data)
     - Uses SHA256 hash as cache key (never stores plaintext)
     - Invalid keys cached for 5min (prevents brute force)
     - Valid keys cached for 1hr (balances security vs performance)
@@ -925,9 +1491,9 @@ def verify_api_key(provided_api_key):
 
     # Step 2: Check valid cache (fast path for legitimate requests)
     if cache_key in verified_api_key_cache:
-        user_id = verified_api_key_cache[cache_key]
-        logger.debug(f"API key verified from cache for user_id: {user_id}")
-        return user_id
+        account_id = verified_api_key_cache[cache_key]
+        logger.debug(f"API key verified from cache for account_id: {account_id}")
+        return account_id
 
     # Step 3: Cache miss - perform expensive Argon2 verification
     peppered_key = provided_api_key + PEPPER
@@ -940,9 +1506,10 @@ def verify_api_key(provided_api_key):
             try:
                 ph.verify(api_key_obj.api_key_hash, peppered_key)
                 # Valid key found - cache it
-                verified_api_key_cache[cache_key] = api_key_obj.user_id
-                logger.debug(f"API key verified and cached for user_id: {api_key_obj.user_id}")
-                return api_key_obj.user_id
+                account_id = api_key_obj.account_id or api_key_obj.user_id
+                verified_api_key_cache[cache_key] = account_id
+                logger.debug(f"API key verified and cached for account_id: {account_id}")
+                return account_id
             except VerifyMismatchError:
                 continue
 
@@ -975,7 +1542,7 @@ def verify_api_key(provided_api_key):
 
 
 def get_username_by_apikey(provided_api_key):
-    """Get username for a given API key"""
+    """Get the account_id (broker account identifier) for a given API key"""
     return verify_api_key(provided_api_key)
 
 
@@ -1004,7 +1571,34 @@ def get_broker_name(provided_api_key):
     return None
 
 
+def api_key_auth_error(provided_api_key):
+    """User-facing message for when get_auth_token_broker() returned no token.
+
+    That happens for two different reasons: the key itself is invalid, or it
+    is valid but its broker account has no live session (never logged in,
+    logged out, token expired, or the last broker login failed). Reporting
+    the second as "Invalid openalgo apikey" sends people chasing the wrong
+    problem.
+    """
+    if not provided_api_key or not verify_api_key(provided_api_key):
+        return "Invalid openalgo apikey"
+    return "No active broker session for this account. Log in to the broker again."
+
+
 def get_auth_token_broker(provided_api_key, include_feed_token=False):
+    """Resolve an API key to its account's auth token and broker, and scope the
+    current request's symbol lookups to that broker (see
+    database.broker_context). Details in _get_auth_token_broker."""
+    result = _get_auth_token_broker(provided_api_key, include_feed_token)
+    broker = result[-1] if result else None
+    if broker:
+        from database.broker_context import set_request_broker
+
+        set_request_broker(broker)
+    return result
+
+
+def _get_auth_token_broker(provided_api_key, include_feed_token=False):
     """
     Get auth token, feed token (optional) and broker for a valid API key with caching.
 
@@ -1018,17 +1612,17 @@ def get_auth_token_broker(provided_api_key, include_feed_token=False):
     # Generate cache key
     cache_key = f"{hashlib.sha256(provided_api_key.encode()).hexdigest()}_{include_feed_token}"
 
-    # Check cache first (but still verify revocation status).
-    #
-    # One get rather than a membership test followed by a subscript. auth_cache
-    # is a TTLCache with a maxsize, and the entry can go between the two: the
-    # TTL can lapse, an LRU eviction can drop it (two different key schemes
-    # share this cache), or another path can delete it. The KeyError then
-    # escaped this function and reached /quotes and /multiquotes, where it was
-    # reported to the user as "Broker Session Expired" on a session that was
-    # perfectly valid.
+    # Check cache first (but still verify revocation status). One get rather
+    # than a membership test followed by a subscript: the entry can expire or
+    # be evicted between the two, and the KeyError reached /quotes as
+    # "Broker Session Expired" on a valid session.
     cached_result = auth_cache.get(cache_key)
     if cached_result is not None:
+        # A cached negative result grants nothing, so it needs no revocation
+        # re-check. Re-checking would evict it on every call for a revoked
+        # account, so it never held and every call hit the DB and logged.
+        if cached_result[0] is None:
+            return cached_result
         # Security: Still check if auth is revoked even with cached data
         user_id = verify_api_key(provided_api_key)
         if user_id:
@@ -1045,8 +1639,7 @@ def get_auth_token_broker(provided_api_key, include_feed_token=False):
             except Exception as e:
                 logger.exception(f"Error checking revocation status: {e}")
                 # On error, don't use cache. pop, not del: this is the recovery
-                # path, and a del here raised a SECOND KeyError that nothing
-                # caught, turning a harmless cache miss into a failed request.
+                # path, and a del here raised a second, uncaught KeyError.
                 auth_cache.pop(cache_key, None)
 
     # Cache miss or revocation check failed - fetch from database
@@ -1074,7 +1667,9 @@ def get_auth_token_broker(provided_api_key, include_feed_token=False):
                 # (e.g., orphaned users with revoked sessions polled by background services)
                 negative_result = (None, None, None) if include_feed_token else (None, None)
                 auth_cache[cache_key] = negative_result
-                logger.warning(f"No valid auth token or broker found for user_id '{user_id}'. Cached negative result.")
+                logger.warning(
+                    f"No valid auth token or broker found for user_id '{user_id}'. Cached negative result."
+                )
                 return negative_result
         except Exception as e:
             logger.exception(f"Error while querying the database for auth token and broker: {e}")
@@ -1083,36 +1678,41 @@ def get_auth_token_broker(provided_api_key, include_feed_token=False):
         return (None, None, None) if include_feed_token else (None, None)
 
 
-def get_order_mode(user_id):
+def get_order_mode(account_id):
     """
-    Get the order mode for a user (auto or semi_auto)
+    Get the order mode for a broker account (auto or semi_auto)
+
+    Order mode is per-account, not per-platform-user, since a user's
+    different broker accounts may want different auto/semi-auto settings.
 
     Args:
-        user_id: User identifier
+        account_id: Broker account identifier (Auth.name / ApiKeys.account_id).
+            For pre-migration installs this is the same value as the
+            platform username.
 
     Returns:
         str: 'auto' or 'semi_auto', defaults to 'auto' if not set
     """
-    cached_mode = order_mode_cache.get(user_id)
+    cached_mode = order_mode_cache.get(account_id)
     if cached_mode is not None:
         return cached_mode
 
     try:
-        api_key_obj = ApiKeys.query.filter_by(user_id=user_id).first()
+        api_key_obj = ApiKeys.query.filter_by(account_id=account_id).first()
         mode = api_key_obj.order_mode if api_key_obj and api_key_obj.order_mode else "auto"
-        order_mode_cache[user_id] = mode
+        order_mode_cache[account_id] = mode
         return mode
     except Exception as e:
-        logger.exception(f"Error getting order mode for user {user_id}: {e}")
+        logger.exception(f"Error getting order mode for account {account_id}: {e}")
         return "auto"  # Default to auto on error
 
 
-def update_order_mode(user_id, mode):
+def update_order_mode(account_id, mode):
     """
-    Update the order mode for a user
+    Update the order mode for a broker account
 
     Args:
-        user_id: User identifier
+        account_id: Broker account identifier (Auth.name / ApiKeys.account_id)
         mode: 'auto' or 'semi_auto'
 
     Returns:
@@ -1123,18 +1723,18 @@ def update_order_mode(user_id, mode):
             logger.error(f"Invalid order mode: {mode}")
             return False
 
-        api_key_obj = ApiKeys.query.filter_by(user_id=user_id).first()
+        api_key_obj = ApiKeys.query.filter_by(account_id=account_id).first()
         if api_key_obj:
             api_key_obj.order_mode = mode
             db_session.commit()
 
             # Clear caches when mode changes
-            invalidate_user_cache(user_id)
+            invalidate_user_cache(account_id)
 
-            logger.info(f"Order mode updated to '{mode}' for user: {user_id}")
+            logger.info(f"Order mode updated to '{mode}' for account: {account_id}")
             return True
         else:
-            logger.error(f"No API key found for user: {user_id}")
+            logger.error(f"No API key found for account: {account_id}")
             return False
     except Exception as e:
         logger.exception(f"Error updating order mode: {e}")

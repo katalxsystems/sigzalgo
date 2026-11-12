@@ -2,7 +2,8 @@ import copy
 import importlib
 from typing import Any, Dict, Optional, Tuple
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, PositionClosedEvent
 from utils.event_bus import bus
@@ -42,6 +43,7 @@ def emit_analyzer_error(request_data: dict[str, Any], error_message: str) -> dic
     return error_response
 
 
+@scoped_to_broker_arg
 def import_broker_module(broker_name: str) -> Any | None:
     """
     Dynamically import the broker-specific order API module.
@@ -61,6 +63,7 @@ def import_broker_module(broker_name: str) -> Any | None:
         return None
 
 
+@scoped_to_broker_arg
 def close_position_with_auth(
     position_data: dict[str, Any], auth_token: str, broker: str, original_data: dict[str, Any]
 ) -> tuple[bool, dict[str, Any], int]:
@@ -83,11 +86,12 @@ def close_position_with_auth(
     if "apikey" in position_request_data:
         position_request_data.pop("apikey", None)
 
+    api_key = original_data.get("apikey")
+
     # If in analyze mode, route to sandbox for real position closing
-    if get_analyze_mode():
+    if get_analyze_mode(verify_api_key(api_key) if api_key else None):
         from services.sandbox_service import sandbox_close_position
 
-        api_key = original_data.get("apikey")
         if not api_key:
             return (
                 False,
@@ -184,6 +188,7 @@ def close_position_with_auth(
         return False, error_response, status_code
 
 
+@scoped_to_broker_arg
 def close_position(
     position_data: dict[str, Any] = None,
     api_key: str | None = None,
@@ -217,11 +222,12 @@ def close_position(
     if api_key and not (auth_token and broker):
         # Check if user is in semi-auto mode (closeposition is blocked in semi-auto)
         # BUT allow execution in analyze/sandbox mode (sandbox trading should always work)
-        from database.auth_db import get_order_mode, verify_api_key
+        from database.auth_db import get_order_mode
+
+        user_id = verify_api_key(api_key)
 
         # Check analyze mode first - if in analyze mode, allow execution
-        if not get_analyze_mode():
-            user_id = verify_api_key(api_key)
+        if not get_analyze_mode(user_id):
             if user_id:
                 order_mode = get_order_mode(user_id)
                 if order_mode == "semi_auto":

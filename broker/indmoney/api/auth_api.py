@@ -23,10 +23,10 @@ previous token.
 """
 
 import json
-import os
 
 from broker.indmoney.api.baseurl import get_url
 from broker.indmoney.api.rate_limiter import rate_limited_request
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -106,19 +106,20 @@ def validate_access_token(access_token):
         return None, f"validation request failed: {e}"
 
 
-def authenticate_broker(code):
+def authenticate_broker(code, account_id=None):
     """
-    Manual-token login: use the access token pasted into BROKER_API_SECRET,
-    after confirming it is still live.
+    Manual-token login: use the access token pasted into the account's API
+    secret (BROKER_API_SECRET), after confirming it is still live.
 
     Args:
         code: Unused; kept for the shared broker-auth call signature.
+        account_id: The connected account whose credentials to use.
 
     Returns:
         tuple[str | None, str | None]: (access_token, error_message)
     """
     try:
-        access_token = (os.getenv("BROKER_API_SECRET") or "").strip()
+        access_token = (get_broker_api_secret(account_id, broker="indmoney") or "").strip()
 
         if not access_token:
             return None, (
@@ -155,18 +156,19 @@ def authenticate_broker(code):
         return None, f"An exception occurred: {str(e)}"
 
 
-def authenticate_broker_totp(mpin, totp_code):
+def authenticate_broker_totp(mpin, totp_code, account_id=None):
     """
     Generate a fresh access token via POST /generate/token.
 
     Args:
         mpin: The account MPIN.
         totp_code: Current 6-digit code from the authenticator app.
+        account_id: The connected account whose Client ID to use.
 
     Returns:
         tuple[str | None, str | None]: (access_token, error_message)
     """
-    client_id = (os.getenv("BROKER_API_KEY") or "").strip()
+    client_id = (get_broker_api_key(account_id, broker="indmoney") or "").strip()
 
     if not client_id:
         return None, (

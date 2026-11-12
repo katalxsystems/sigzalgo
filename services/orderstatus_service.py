@@ -4,7 +4,8 @@ from typing import Any, Dict, Optional, Tuple
 from database.analyzer_db import async_log_analyzer
 from database.apilog_db import async_log_order
 from database.apilog_db import executor as log_executor
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from extensions import socketio
 from services.tradebook_service import get_tradebook
@@ -44,6 +45,7 @@ def emit_analyzer_error(request_data: dict[str, Any], error_message: str) -> dic
     return error_response
 
 
+@scoped_to_broker_arg
 def get_order_status_with_auth(
     status_data: dict[str, Any], auth_token: str, broker: str, original_data: dict[str, Any]
 ) -> tuple[bool, dict[str, Any], int]:
@@ -67,7 +69,8 @@ def get_order_status_with_auth(
         request_data.pop("apikey", None)
 
     # Log the mode and order details
-    is_analyze_mode = get_analyze_mode()
+    api_key = original_data.get("apikey")
+    is_analyze_mode = get_analyze_mode(verify_api_key(api_key) if api_key else None)
     orderid = status_data.get("orderid")
     logger.info(
         f"[OrderStatus] Processing order status request - Mode: {'ANALYZE' if is_analyze_mode else 'LIVE'}, OrderID: {orderid}, Broker: {broker}"
@@ -79,7 +82,6 @@ def get_order_status_with_auth(
 
         logger.info(f"[OrderStatus] Routing to sandbox for order ID {orderid} in analyzer mode")
 
-        api_key = original_data.get("apikey")
         if not api_key:
             return (
                 False,
@@ -283,6 +285,7 @@ def get_order_status_with_auth(
     return True, response_data, 200
 
 
+@scoped_to_broker_arg
 def get_order_status(
     status_data: dict[str, Any],
     api_key: str | None = None,

@@ -82,3 +82,33 @@ def test_unknown_strategy_returns_a_flat_shape():
 
     assert result["open_quantity"] == 0.0
     assert result["legs"] == []
+
+
+def test_open_legs_counts_a_hedged_structure_that_nets_to_zero():
+    """An open iron condor nets open_quantity to 0; open_legs must still see 4."""
+    legs = [
+        _leg("OLD", 0.0, 0.0, realized_pnl=50.0),
+        _leg("PE_BUY", 75.0, 40.0),
+        _leg("PE_SELL", -75.0, 85.0),
+        _leg("CE_SELL", -75.0, 80.0),
+        _leg("CE_BUY", 75.0, 35.0),
+    ]
+
+    result = pnl_from_book(legs, [], strategy="S")
+
+    assert result["open_quantity"] == 0.0
+    assert result["open_legs"] == 4
+    assert [leg["symbol"] for leg in result["legs"][:4]] == [
+        "PE_BUY",
+        "PE_SELL",
+        "CE_SELL",
+        "CE_BUY",
+    ]
+
+
+def test_open_legs_is_zero_when_flat_or_unknown():
+    flat = pnl_from_book([_leg("CLOSED", 0.0, 0.0)], [], strategy="S")
+    unknown = pnl_from_book([], [], strategy="never-traded")
+
+    assert flat["open_legs"] == 0
+    assert unknown["open_legs"] == 0

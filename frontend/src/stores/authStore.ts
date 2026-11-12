@@ -7,6 +7,7 @@ interface User {
   broker: string | null
   isLoggedIn: boolean
   loginTime: string | null
+  isAdmin: boolean
 }
 
 interface AuthStore {
@@ -33,11 +34,14 @@ export const useAuthStore = create<AuthStore>()(
       setApiKey: (apiKey) => set({ apiKey }),
 
       login: (username, broker) => {
+        // isAdmin defaults false here; AuthSync's /auth/session-status poll
+        // (which runs right after) corrects it from the real DB value.
         const user: User = {
           username,
           broker,
           isLoggedIn: true,
           loginTime: new Date().toISOString(),
+          isAdmin: false,
         }
         set({ user, isAuthenticated: true })
       },

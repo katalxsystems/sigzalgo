@@ -20,7 +20,8 @@ import {
   SheetTitle,
   SheetTrigger,
 } from '@/components/ui/sheet'
-import { isActiveRoute, mobileSheetItems, navItems } from '@/config/navigation'
+import { isActiveRoute } from '@/config/navigation'
+import { useNavItems } from '@/hooks/useNavItems'
 import { useProfileMenuItems } from '@/hooks/useProfileMenuItems'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
@@ -51,6 +52,8 @@ export function Navbar({ fluid = false }: NavbarProps = {}) {
 
   // Profile menu filtered by broker capabilities (shared hook, issue #1480)
   const filteredProfileMenuItems = useProfileMenuItems()
+  // Main nav items filtered by admin-configured per-role visibility
+  const { navItems, mobileSheetItems } = useNavItems()
 
   const handleLogout = async () => {
     try {
@@ -113,8 +116,8 @@ export function Navbar({ fluid = false }: NavbarProps = {}) {
                 className="flex items-center gap-2 px-2"
                 onClick={() => setMobileOpen(false)}
               >
-                <img src="/logo.png" alt="OpenAlgo" className="h-8 w-8" />
-                <span className="font-semibold">OpenAlgo</span>
+                <img src="/logo.png" alt="AlgoZ" className="h-8 w-8" />
+                <span className="font-semibold">AlgoZ</span>
               </Link>
 
               {/* Secondary nav items (not in bottom nav) */}
@@ -202,8 +205,8 @@ export function Navbar({ fluid = false }: NavbarProps = {}) {
 
         {/* Logo */}
         <Link to="/dashboard" className="flex items-center gap-2 mr-6">
-          <img src="/logo.png" alt="OpenAlgo" className="h-8 w-8" />
-          <span className="hidden font-semibold sm:inline-block">OpenAlgo</span>
+          <img src="/logo.png" alt="AlgoZ" className="h-8 w-8" />
+          <span className="hidden font-semibold sm:inline-block">AlgoZ</span>
         </Link>
 
         {/* Desktop Navigation.

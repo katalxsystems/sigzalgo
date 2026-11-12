@@ -170,7 +170,7 @@ def orderbook():
         return "Broker not set in session", 400
 
     # Check if in analyze mode and route accordingly
-    if get_analyze_mode():
+    if get_analyze_mode(login_username):
         # Get API key for sandbox mode
         api_key = get_api_key_for_tradingview(login_username)
         if api_key:
@@ -212,7 +212,7 @@ def tradebook():
         return "Broker not set in session", 400
 
     # Check if in analyze mode and route accordingly
-    if get_analyze_mode():
+    if get_analyze_mode(login_username):
         # Get API key for sandbox mode
         api_key = get_api_key_for_tradingview(login_username)
         if api_key:
@@ -252,7 +252,7 @@ def positions():
         return "Broker not set in session", 400
 
     # Check if in analyze mode and route accordingly
-    if get_analyze_mode():
+    if get_analyze_mode(login_username):
         # Get API key for sandbox mode
         api_key = get_api_key_for_tradingview(login_username)
         if api_key:
@@ -292,7 +292,7 @@ def holdings():
         return "Broker not set in session", 400
 
     # Check if in analyze mode and route accordingly
-    if get_analyze_mode():
+    if get_analyze_mode(login_username):
         # Get API key for sandbox mode
         api_key = get_api_key_for_tradingview(login_username)
         if api_key:
@@ -333,7 +333,7 @@ def export_orderbook():
             return redirect(url_for("auth.logout"))
 
         # Check if in analyze mode and route accordingly
-        if get_analyze_mode():
+        if get_analyze_mode(login_username):
             # Get API key for sandbox mode
             api_key = get_api_key_for_tradingview(login_username)
             if api_key:
@@ -394,7 +394,7 @@ def export_tradebook():
             return redirect(url_for("auth.logout"))
 
         # Check if in analyze mode and route accordingly
-        if get_analyze_mode():
+        if get_analyze_mode(login_username):
             # Get API key for sandbox mode
             api_key = get_api_key_for_tradingview(login_username)
             if api_key:
@@ -454,7 +454,7 @@ def export_positions():
             return redirect(url_for("auth.logout"))
 
         # Check if in analyze mode and route accordingly
-        if get_analyze_mode():
+        if get_analyze_mode(login_username):
             # Get API key for sandbox mode
             api_key = get_api_key_for_tradingview(login_username)
             if api_key:
@@ -527,7 +527,7 @@ def close_position():
         broker_name = session.get("broker")
 
         # Check if in analyze mode
-        if get_analyze_mode():
+        if get_analyze_mode(login_username):
             # In analyze mode, use placesmartorder service with quantity=0 and position_size=0
             api_key = get_api_key_for_tradingview(login_username)
 
@@ -668,7 +668,7 @@ def close_all_positions():
 
         # Get API key for analyze mode
         api_key = None
-        if get_analyze_mode():
+        if get_analyze_mode(login_username):
             api_key = get_api_key_for_tradingview(login_username)
 
         # Call the service with appropriate parameters
@@ -713,7 +713,7 @@ def cancel_all_orders_ui():
 
         # Get API key for analyze mode
         api_key = None
-        if get_analyze_mode():
+        if get_analyze_mode(login_username):
             api_key = get_api_key_for_tradingview(login_username)
 
         # Call the service with appropriate parameters
@@ -776,7 +776,7 @@ def cancel_order_ui():
 
         # Get API key for analyze mode
         api_key = None
-        if get_analyze_mode():
+        if get_analyze_mode(login_username):
             api_key = get_api_key_for_tradingview(login_username)
 
         # Call the service with appropriate parameters
@@ -816,7 +816,7 @@ def modify_gtt_order_ui():
         from services.modify_gtt_order_service import modify_gtt_order
 
         api_key = None
-        if get_analyze_mode():
+        if get_analyze_mode(login_username):
             api_key = get_api_key_for_tradingview(login_username)
 
         order_data = {
@@ -870,7 +870,7 @@ def cancel_gtt_order_ui():
         from services.cancel_gtt_order_service import cancel_gtt_order
 
         api_key = None
-        if get_analyze_mode():
+        if get_analyze_mode(login_username):
             api_key = get_api_key_for_tradingview(login_username)
 
         success, response_data, status_code = cancel_gtt_order(
@@ -914,7 +914,7 @@ def modify_order_ui():
 
         # Get API key for analyze mode
         api_key = None
-        if get_analyze_mode():
+        if get_analyze_mode(login_username):
             api_key = get_api_key_for_tradingview(login_username)
 
         # Build order data for modification

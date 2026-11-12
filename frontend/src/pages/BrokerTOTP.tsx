@@ -402,10 +402,10 @@ export default function BrokerTOTP() {
 
       const data = await response.json()
 
-      if (data.status === 'success' || response.ok) {
+      if (data.status === 'success') {
         login(formData.userid || formData.mobile || '', broker || '')
         showToast.success('Authentication successful')
-        navigate('/dashboard')
+        navigate(data.redirect || '/dashboard')
       } else {
         setError(data.message || 'Authentication failed. Please try again.')
       }

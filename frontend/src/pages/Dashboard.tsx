@@ -1,6 +1,7 @@
 import { BarChart3, BookOpen, FileText, GraduationCap, Search, Zap } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router'
+import { webClient } from '@/api/client'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { useOrderEventRefresh } from '@/hooks/useOrderEventRefresh'
@@ -67,9 +68,46 @@ export default function Dashboard() {
     status: 'pending',
   })
   const [isAuthenticated, setIsAuthenticated] = useState(true) // Assume authenticated initially
-  // Broker token revoked/expired while the app session is still valid
-  // (daily token rollover). Routes the user to /broker, not /login (#1400).
+  // No broker connected yet, or a previously-connected broker's token
+  // expired (daily rollover) — either way the app session itself is fine,
+  // so this routes to /broker, not /login (#1400). The backend sends a
+  // message tailored to which of the two it is; brokerMessage carries that
+  // through instead of a hardcoded string.
   const [brokerExpired, setBrokerExpired] = useState(false)
+  const [brokerMessage, setBrokerMessage] = useState('')
+  // "no_broker": this account has never connected any broker -- there's no
+  // account_id to reconnect, so the CTA below sends the user to create one
+  // via Profile > Accounts instead of the legacy single-broker /broker page.
+  // "token_expired": an existing account's broker token expired (daily
+  // rollover/revocation) -- reconnectAccountId carries which one, so the
+  // CTA can reconnect that specific account instead of guessing.
+  const [brokerReason, setBrokerReason] = useState<'no_broker' | 'token_expired' | null>(null)
+  const [reconnectAccountId, setReconnectAccountId] = useState<string | null>(null)
+  const [isReconnecting, setIsReconnecting] = useState(false)
+
+  // Reconnect this specific account_id's broker session (same mechanism as
+  // Profile > Accounts' own "Connect" button) instead of the legacy
+  // single-broker /broker page, which has no notion of which account to
+  // target and would resolve the wrong one for anyone not using the legacy
+  // account_id==username convention.
+  const handleReconnectAccount = useCallback(async (accountId: string) => {
+    setIsReconnecting(true)
+    try {
+      const response = await webClient.post<{
+        status: string
+        data?: { connect_url: string }
+      }>(`/api/accounts/${accountId}/connect`)
+      const connectUrl = response.data.data?.connect_url
+      if (connectUrl) {
+        window.location.href = connectUrl
+        return
+      }
+    } catch {
+      // fall through to the generic /broker page below
+    }
+    setIsReconnecting(false)
+    window.location.href = '/broker'
+  }, [])
 
   // Fetch dashboard funds data
   const fetchFundsData = useCallback(async () => {
@@ -83,6 +121,9 @@ export default function Dashboard() {
         const body = await response.json().catch(() => null)
         if (body?.code === 'BROKER_SESSION_EXPIRED') {
           setBrokerExpired(true)
+          setBrokerMessage(body.message || 'Connect your broker to continue.')
+          setBrokerReason(body.reason === 'token_expired' ? 'token_expired' : 'no_broker')
+          setReconnectAccountId(body.account_id || null)
         } else {
           setIsAuthenticated(false)
         }
@@ -204,7 +245,7 @@ export default function Dashboard() {
   const quickAccessCards = [
     {
       href: '/search',
-      label: 'OpenAlgo Symbols',
+      label: 'AlgoZ Symbols',
       description: 'Universal symbology across brokers',
       icon: Search,
       gradient: 'from-primary/10 to-primary/5 hover:from-primary/20 hover:to-primary/10',
@@ -268,21 +309,34 @@ export default function Dashboard() {
     },
   ]
 
-  // Broker token expired but the app session is fine: send the user to the
-  // broker reconnect flow, not /login (which would bounce back) — #1400.
+  // No broker connected (yet), or a connected one's token expired: the app
+  // session is fine either way, so send the user to the broker connect
+  // flow, not /login (which would bounce back) — #1400. Which flow depends
+  // on brokerReason: a genuinely broker-less account has nothing to
+  // reconnect, so it goes to Profile > Accounts to create one; an existing
+  // account's expired token reconnects that same account_id directly.
   if (brokerExpired) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[50vh] space-y-4">
-        <h1 className="text-2xl font-bold">Broker Session Expired</h1>
-        <p className="text-muted-foreground">
-          Your broker token has expired (brokers roll tokens daily). Reconnect to continue trading.
-        </p>
-        <Link
-          to="/broker"
-          className="inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-        >
-          Reconnect Broker
-        </Link>
+        <h1 className="text-2xl font-bold">Connect Your Broker</h1>
+        <p className="text-muted-foreground">{brokerMessage}</p>
+        {brokerReason === 'token_expired' && reconnectAccountId ? (
+          <button
+            type="button"
+            onClick={() => handleReconnectAccount(reconnectAccountId)}
+            disabled={isReconnecting}
+            className="inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {isReconnecting ? 'Connecting...' : 'Reconnect Broker'}
+          </button>
+        ) : (
+          <Link
+            to="/profile?tab=accounts"
+            className="inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            Connect Broker
+          </Link>
+        )}
       </div>
     )
   }

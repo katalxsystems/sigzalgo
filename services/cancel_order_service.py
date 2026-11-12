@@ -2,9 +2,10 @@ import copy
 import importlib
 from typing import Any, Dict, Optional, Tuple
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
-from events import AnalyzerErrorEvent, OrderCancelledEvent, OrderCancelFailedEvent
+from events import AnalyzerErrorEvent, OrderCancelFailedEvent, OrderCancelledEvent
 from utils.event_bus import bus
 from utils.logging import get_logger
 
@@ -42,6 +43,7 @@ def emit_analyzer_error(request_data: dict[str, Any], error_message: str) -> dic
     return error_response
 
 
+@scoped_to_broker_arg
 def import_broker_module(broker_name: str) -> Any | None:
     """
     Dynamically import the broker-specific order API module.
@@ -61,6 +63,7 @@ def import_broker_module(broker_name: str) -> Any | None:
         return None
 
 
+@scoped_to_broker_arg
 def cancel_order_with_auth(
     orderid: str, auth_token: str, broker: str, original_data: dict[str, Any]
 ) -> tuple[bool, dict[str, Any], int]:
@@ -83,12 +86,14 @@ def cancel_order_with_auth(
     if "apikey" in order_request_data:
         order_request_data.pop("apikey", None)
 
+    # Get API key from original data — resolved before the analyze-mode
+    # check so that check is scoped to *this* account, not the instance.
+    api_key = original_data.get("apikey")
+
     # If in analyze mode, route to sandbox for sandbox trading
-    if get_analyze_mode():
+    if get_analyze_mode(verify_api_key(api_key) if api_key else None):
         from services.sandbox_service import sandbox_cancel_order
 
-        # Get API key from original data
-        api_key = original_data.get("apikey")
         if not api_key:
             error_response = {
                 "status": "error",
@@ -172,6 +177,7 @@ def cancel_order_with_auth(
         return False, error_response, status_code
 
 
+@scoped_to_broker_arg
 def cancel_order(
     orderid: str,
     api_key: str | None = None,
@@ -214,12 +220,13 @@ def cancel_order(
     if api_key and not (auth_token and broker):
         # Check if user is in semi-auto mode (cancelorder is blocked in semi-auto)
         # BUT allow execution in analyze/sandbox mode (sandbox trading should always work)
-        from database.auth_db import get_order_mode, verify_api_key
+        from database.auth_db import get_order_mode
         from database.settings_db import get_analyze_mode
 
+        user_id = verify_api_key(api_key)
+
         # Check analyze mode first - if in analyze mode, allow execution
-        if not get_analyze_mode():
-            user_id = verify_api_key(api_key)
+        if not get_analyze_mode(user_id):
             if user_id:
                 order_mode = get_order_mode(user_id)
                 if order_mode == "semi_auto":

@@ -29,7 +29,7 @@ import type { DataFeed, DataLoadingOptions, SeriesApi } from 'openalgo-charts'
 import { createWidget, type SymbolSearch, type Widget } from 'openalgo-charts/widget'
 import { useEffect, useRef, useState } from 'react'
 import { ensureCalendarIntervals, ensureInterval } from '@/lib/chart/intervalRegistry'
-import { buildChartTheme, volumeColor } from '@/lib/trading/chartTheme'
+import { algozBranding, buildChartTheme, volumeColor } from '@/lib/trading/chartTheme'
 import { loadCustomIndicators } from '@/lib/trading/customIndicators'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/stores/themeStore'
@@ -346,6 +346,7 @@ export function OpenAlgoChart({
         interval: startInterval,
         chartType: p.chartType,
         theme: buildChartTheme(theme.mode, theme.appMode),
+        branding: algozBranding(theme.mode, theme.appMode),
         // The widget's own clock, in milliseconds, which is what sizes the
         // opening load window.
         now: () => (latest.current.dataEndsAt ?? Math.floor(Date.now() / 1000)) * 1000,

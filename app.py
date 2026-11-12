@@ -45,7 +45,7 @@ mimetypes.add_type("application/font-woff", ".woff")
 mimetypes.add_type("application/font-woff2", ".woff2")
 
 from flask import Flask, session
-from flask_wtf.csrf import CSRFProtect  # Import CSRF protection
+from flask_wtf.csrf import CSRFError, CSRFProtect  # Import CSRF protection
 
 from blueprints.admin import admin_bp  # Import the admin blueprint
 from blueprints.agent import agent_bp  # Import the agent blueprint
@@ -54,11 +54,13 @@ from blueprints.apikey import api_key_bp
 from blueprints.arbitrage import arbitrage_bp  # Import the Arbitrage blueprint
 from blueprints.auth import auth_bp
 from blueprints.brlogin import brlogin_bp
+from blueprints.broker_accounts import broker_accounts_bp  # Import the broker accounts blueprint
 from blueprints.broker_credentials import (
     broker_credentials_bp,  # Import the broker credentials blueprint
 )
 from blueprints.chart_test import chart_test_bp  # Standalone chart test page (dev/testing only)
 from blueprints.chartink import chartink_bp  # Import the chartink blueprint
+from blueprints.cms_broker import cms_broker_bp  # CMS server-to-server broker login API
 from blueprints.core import core_bp
 from blueprints.custom_indicators import custom_indicators_bp  # User chart indicators
 from blueprints.custom_straddle import custom_straddle_bp  # Import custom straddle blueprint
@@ -78,6 +80,7 @@ from blueprints.logging import logging_bp  # Import the logging blueprint
 from blueprints.master_contract_status import (
     master_contract_status_bp,  # Import the master contract status blueprint
 )
+from blueprints.menu_visibility import menu_visibility_bp  # Profile menu visibility blueprint
 from blueprints.oiprofile import oiprofile_bp  # Import the OI Profile blueprint
 from blueprints.oitracker import oitracker_bp  # Import the OI tracker blueprint
 from blueprints.orders import orders_bp
@@ -280,6 +283,7 @@ def create_app():
     # Warming here means the first backtest does not pay it and boot does not
     # block on it.
     from portfolio import warm_analytics
+
     warm_analytics()
 
     # Exempt API endpoints from CSRF protection (they use API key authentication)
@@ -341,7 +345,13 @@ def create_app():
     app.register_blueprint(flow_bp)  # Register Flow blueprint
     app.register_blueprint(agent_bp)  # Register Agent blueprint
     app.register_blueprint(broker_credentials_bp)  # Register Broker credentials blueprint
+    app.register_blueprint(broker_accounts_bp)  # Register Broker accounts (multi-account) blueprint
+    app.register_blueprint(cms_broker_bp)  # Register CMS server-to-server broker login API
+    # Called only by the CMS server, never a browser: the HMAC signature +
+    # single-use nonce in blueprints/cms_broker.py is the authentication.
+    csrf.exempt(cms_broker_bp)
     app.register_blueprint(system_permissions_bp)  # Register System permissions blueprint
+    app.register_blueprint(menu_visibility_bp)  # Register profile menu visibility blueprint
     app.register_blueprint(strategy_portfolio_bp)  # Register Strategy Portfolio blueprint
     app.register_blueprint(postback_bp)  # Register broker postback (order-update webhook) blueprint
 
@@ -455,6 +465,12 @@ def create_app():
         # covered separately by the fetch-metadata check in auth.logout, since
         # Flask-WTF never validates safe methods.
 
+        # Exempt the WordPress CMS single sign-on bridge from CSRF — the
+        # browser being handed off has no session/CSRF cookie yet, so the
+        # HMAC signature + single-use nonce inside blueprints/auth.py:
+        # cms_sso_login() is the actual authentication, not the CSRF cookie.
+        csrf.exempt(app.view_functions["auth.cms_sso_login"])
+
         # Exempt health check endpoints from CSRF (for AWS ELB, K8s probes)
         csrf.exempt(app.view_functions["health_bp.simple_health"])
         csrf.exempt(app.view_functions["health_bp.detailed_health_check"])
@@ -507,6 +523,36 @@ def create_app():
             app.db_ready.wait(timeout=30)
 
     @app.before_request
+    def record_symtoken_broker():
+        """Scope this request's symbol lookups to the serving account's broker.
+
+        Logged-in UI requests use the session's broker. /api/ requests use the
+        API key's account, resolved up front so services that look symbols up
+        before they authenticate still get the right broker's contract
+        (get_auth_token_broker is cached and records the broker itself).
+        """
+        from flask import request, session
+
+        from database.broker_context import set_request_broker
+
+        if session.get("logged_in"):
+            set_request_broker(session.get("broker"))
+
+        if request.path.startswith("/api/"):
+            api_key = request.headers.get("X-API-KEY") or request.args.get("apikey")
+            if not api_key and request.is_json:
+                body = request.get_json(silent=True)
+                if isinstance(body, dict):
+                    api_key = body.get("apikey")
+            if api_key and isinstance(api_key, str):
+                try:
+                    from database.auth_db import get_auth_token_broker
+
+                    get_auth_token_broker(api_key)
+                except Exception:
+                    logger.exception("Could not resolve broker for API request")
+
+    @app.before_request
     def check_session_expiry():
         """Check session validity before each request"""
         from flask import request
@@ -552,9 +598,17 @@ def create_app():
             session.clear()
             # Don't redirect here, let individual routes handle it
 
-    @app.errorhandler(400)
+    @app.errorhandler(CSRFError)
     def csrf_error(error):
-        """Custom handler for CSRF errors (400 Bad Request)"""
+        """Dedicated handler for Flask-WTF CSRFError (a 400 subclass).
+
+        Registered on the exception class itself rather than relying on the
+        generic 400 handler's string-matching on the description — Flask-WTF's
+        referrer checks ("The referrer header is missing.", "The referrer does
+        not match the host.") don't contain the word "csrf", so that matching
+        let them fall through to a raw-text 400 body that non-browser/JSON
+        clients can't parse.
+        """
         from flask import flash, jsonify, redirect, request, url_for
 
         error_description = str(error)
@@ -565,20 +619,20 @@ def create_app():
             f"CSRF Error on {redact_url_credentials(request.path)}: {error_description}"
         )
 
-        # Check if it's a CSRF error
-        if "CSRF" in error_description or "csrf" in error_description.lower():
-            if request.is_json or request.path.startswith("/api"):
-                return jsonify(
-                    {
-                        "error": "CSRF validation failed",
-                        "message": "Security token expired or invalid. Please refresh the page and try again.",
-                    }
-                ), 400
-            else:
-                flash("Security token expired. Please try again.", "error")
-                return redirect(request.referrer or url_for("auth.login"))
+        if request.is_json or request.path.startswith("/api"):
+            return jsonify(
+                {
+                    "error": "CSRF validation failed",
+                    "message": "Security token expired or invalid. Please refresh the page and try again.",
+                }
+            ), 400
+        else:
+            flash("Security token expired. Please try again.", "error")
+            return redirect(request.referrer or url_for("auth.login"))
 
-        # For other 400 errors
+    @app.errorhandler(400)
+    def bad_request_error(error):
+        """Fallback handler for non-CSRF 400 errors."""
         return str(error), 400
 
     @app.errorhandler(404)
@@ -731,6 +785,7 @@ def setup_environment(app):
             import time
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
+            from database.basket_db import ensure_basket_tables_exists
             from database.chart_prefs_db import ensure_chart_prefs_tables_exists
             from database.market_calendar_db import ensure_market_calendar_tables_exists
             from database.qty_freeze_db import ensure_qty_freeze_tables_exists
@@ -761,6 +816,7 @@ def setup_environment(app):
                 ("Leverage DB", ensure_leverage_tables_exists),
                 ("Strategy Portfolio DB", ensure_strategy_portfolio_tables_exists),
                 ("Agent DB", ensure_agent_tables_exists),
+                ("Basket DB", ensure_basket_tables_exists),
                 # Created here, not left to APScheduler's own CREATE TABLE in
                 # scheduler.start(). That DDL would otherwise run further down
                 # this function, after db_ready releases the rest of the boot,
@@ -889,6 +945,13 @@ def setup_environment(app):
                 logger.error(f"Failed to initialize Strategy module: {e}")
 
             try:
+                from services.broker_auto_login_service import start_broker_auto_login
+
+                start_broker_auto_login()
+            except Exception:
+                logger.exception("Failed to start broker auto-login monitor")
+
+            try:
                 # Server-side scalping SL / target / trailing-stop engine. Runs
                 # browser-independently so stops keep working after the user
                 # leaves /scalping or closes the tab. Idles when no SL is set.
@@ -929,61 +992,61 @@ def setup_environment(app):
                 name="WhatsAppAutoStart",
             ).start()
 
-            # Auto-start analyzer mode services (depends on DB being ready)
+            # Auto-start sandbox execution engine + square-off scheduler unconditionally.
+            # analyze_mode is now per-account (database.auth_db.Auth.analyze_mode), not one
+            # instance-wide flag, so "only start if analyze_mode is on" no longer makes sense
+            # -- any single account could be in analyze mode regardless of the instance
+            # default. Both engines already scan across every account's pending sandbox
+            # orders (see sandbox/execution_engine.py's SandboxOrders query) and are cheap
+            # no-ops when nothing is pending, so running them continuously from boot is the
+            # correct multi-tenant-safe behavior -- no per-toggle start/stop needed.
             try:
-                from database.settings_db import get_analyze_mode
+                from sandbox.execution_thread import start_execution_engine
+                from sandbox.squareoff_thread import start_squareoff_scheduler
 
-                if get_analyze_mode():
-                    from sandbox.execution_thread import start_execution_engine
-                    from sandbox.squareoff_thread import start_squareoff_scheduler
+                def start_engine():
+                    success, message = start_execution_engine()
+                    return ("execution_engine", success, message)
 
-                    def start_engine():
-                        success, message = start_execution_engine()
-                        return ("execution_engine", success, message)
+                def start_scheduler():
+                    success, message = start_squareoff_scheduler()
+                    return ("squareoff_scheduler", success, message)
 
-                    def start_scheduler():
-                        success, message = start_squareoff_scheduler()
-                        return ("squareoff_scheduler", success, message)
+                def run_catchup():
+                    from sandbox.position_manager import catchup_missed_settlements
 
-                    def run_catchup():
-                        from sandbox.position_manager import catchup_missed_settlements
+                    catchup_missed_settlements()
+                    return ("catchup_settlement", True, "Completed")
 
-                        catchup_missed_settlements()
-                        return ("catchup_settlement", True, "Completed")
-
-                    with ThreadPoolExecutor(max_workers=3) as executor:
-                        futures = [
-                            executor.submit(start_engine),
-                            executor.submit(start_scheduler),
-                            executor.submit(run_catchup),
-                        ]
-                        for future in as_completed(futures):
-                            try:
-                                service_name, success, message = future.result()
-                                if service_name == "execution_engine":
-                                    if success:
-                                        logger.debug(
-                                            "Execution engine auto-started (Analyzer mode is ON)"
-                                        )
-                                    else:
-                                        logger.warning(
-                                            f"Failed to auto-start execution engine: {message}"
-                                        )
-                                elif service_name == "squareoff_scheduler":
-                                    if success:
-                                        logger.debug(
-                                            "Square-off scheduler auto-started (Analyzer mode is ON)"
-                                        )
-                                    else:
-                                        logger.warning(
-                                            f"Failed to auto-start square-off scheduler: {message}"
-                                        )
-                                elif service_name == "catchup_settlement":
-                                    logger.debug("Catch-up settlement check completed on startup")
-                            except Exception as e:
-                                logger.error(f"Error starting service: {e}")
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    futures = [
+                        executor.submit(start_engine),
+                        executor.submit(start_scheduler),
+                        executor.submit(run_catchup),
+                    ]
+                    for future in as_completed(futures):
+                        try:
+                            service_name, success, message = future.result()
+                            if service_name == "execution_engine":
+                                if success:
+                                    logger.debug("Execution engine auto-started")
+                                else:
+                                    logger.warning(
+                                        f"Failed to auto-start execution engine: {message}"
+                                    )
+                            elif service_name == "squareoff_scheduler":
+                                if success:
+                                    logger.debug("Square-off scheduler auto-started")
+                                else:
+                                    logger.warning(
+                                        f"Failed to auto-start square-off scheduler: {message}"
+                                    )
+                            elif service_name == "catchup_settlement":
+                                logger.debug("Catch-up settlement check completed on startup")
+                        except Exception as e:
+                            logger.error(f"Error starting service: {e}")
             except Exception as e:
-                logger.error(f"Error checking analyzer mode on startup: {e}")
+                logger.error(f"Error auto-starting sandbox services on startup: {e}")
 
             # Auto-start Telegram bot if it was active (after DB tables exist)
             try:

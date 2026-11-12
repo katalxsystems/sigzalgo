@@ -10,6 +10,7 @@ from broker.jainamxts.streaming.jainamxts_websocket import JainamXTSWebSocketCli
 from database.auth_db import get_auth_token, get_feed_token
 from database.token_db import get_token
 from utils.logging import get_logger
+from utils.config import resolve_broker_api_key_market
 
 # Add parent directory to path to allow imports
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../"))
@@ -68,14 +69,15 @@ class JainamXTSWebSocketAdapter(BaseBrokerWebSocketAdapter):
                 self.logger.error(f"No authentication tokens found for user {user_id}")
                 raise ValueError(f"No authentication tokens found for user {user_id}")
 
-            # For XTS, we need API key and secret, not just tokens
-            # These should be stored in environment variables or config
-            api_key = os.getenv("BROKER_API_KEY_MARKET")
-            api_secret = os.getenv("BROKER_API_SECRET_MARKET")
+            # For XTS, we need API key and secret, not just tokens. Resolved
+            # per-account (reverse-looked-up from auth_token) first, falling
+            # back to the instance-wide default -- see
+            # utils.config.resolve_broker_api_key_market.
+            api_key, api_secret = resolve_broker_api_key_market(auth_token, "jainamxts")
 
             if not api_key or not api_secret:
                 self.logger.error(
-                    "Missing BROKER_API_KEY_MARKET or BROKER_API_SECRET_MARKET environment variables"
+                    "Missing BROKER_API_KEY_MARKET or BROKER_API_SECRET_MARKET (per-account or instance-wide)"
                 )
                 raise ValueError("Missing JainamXTS API credentials in environment variables")
 
@@ -83,8 +85,9 @@ class JainamXTSWebSocketAdapter(BaseBrokerWebSocketAdapter):
             # Use provided tokens
             auth_token = auth_data.get("auth_token")
             feed_token = auth_data.get("feed_token")
-            api_key = auth_data.get("api_key", os.getenv("BROKER_API_KEY_MARKET"))
-            api_secret = auth_data.get("api_secret", os.getenv("BROKER_API_SECRET_MARKET"))
+            default_key, default_secret = resolve_broker_api_key_market(auth_token, "jainamxts")
+            api_key = auth_data.get("api_key", default_key)
+            api_secret = auth_data.get("api_secret", default_secret)
 
             if not auth_token or not feed_token:
                 self.logger.error("Missing required authentication data")

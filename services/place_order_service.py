@@ -2,7 +2,8 @@ import copy
 import importlib
 from typing import Any, Dict, Optional, Tuple
 
-from database.auth_db import get_auth_token_broker
+from database.auth_db import get_auth_token_broker, verify_api_key
+from database.broker_context import scoped_to_broker_arg
 from database.settings_db import get_analyze_mode
 from events import AnalyzerErrorEvent, OrderFailedEvent, OrderPlacedEvent
 from restx_api.schemas import OrderSchema
@@ -23,6 +24,7 @@ logger = get_logger(__name__)
 order_schema = OrderSchema()
 
 
+@scoped_to_broker_arg
 def import_broker_module(broker_name: str) -> Any | None:
     """
     Dynamically import the broker-specific order API module.
@@ -116,6 +118,7 @@ def validate_order_data(data: dict[str, Any]) -> tuple[bool, dict[str, Any] | No
         return False, None, str(err)
 
 
+@scoped_to_broker_arg
 def place_order_with_auth(
     order_data: dict[str, Any],
     auth_token: str,
@@ -162,7 +165,7 @@ def place_order_with_auth(
     # (see orderbook_service). This is the same idea made explicit, because a
     # write path should not infer intent from whether a logging argument
     # happens to be None.
-    if get_analyze_mode() and not force_live:
+    if get_analyze_mode(verify_api_key(api_key) if api_key else None) and not force_live:
         from services.sandbox_service import sandbox_place_order
 
         if not api_key:
@@ -283,6 +286,7 @@ def place_order_with_auth(
         return False, error_response, res.status if res.status != 200 else 500
 
 
+@scoped_to_broker_arg
 def place_order(
     order_data: dict[str, Any],
     api_key: str | None = None,
@@ -327,7 +331,7 @@ def place_order(
     # Validate the order data
     is_valid, _, error_message = validate_order_data(order_data)
     if not is_valid:
-        if get_analyze_mode():
+        if get_analyze_mode(verify_api_key(api_key) if api_key else None):
             return False, emit_analyzer_error(original_data, error_message), 400
         error_response = {"status": "error", "message": error_message}
         safe_request = {k: v for k, v in original_data.items() if k != "apikey"}

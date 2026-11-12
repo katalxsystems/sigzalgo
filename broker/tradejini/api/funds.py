@@ -29,7 +29,7 @@ def get_margin_data(auth_token):
     """
     try:
         # Get API key from environment
-        api_key = get_api_key()
+        api_key = get_api_key(auth_token)
         if not api_key:
             logger.error(API_KEY_MISSING_ERROR)
             return {}

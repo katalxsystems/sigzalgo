@@ -7,7 +7,7 @@
 #   token  -> the user JWT access token (returned by authenticate_broker,
 #             persisted encrypted in the Auth table, passed back to each call)
 
-import os
+from utils.config import resolve_broker_api_key
 
 # REST hosts -------------------------------------------------------------
 # Everything (orders, positions, holdings, funds, margin, quotes, user,
@@ -45,8 +45,9 @@ def get_arrow_headers(auth_token, with_json=False):
     Returns:
         dict of headers including appID (from BROKER_API_KEY) and token.
     """
+    api_key, _ = resolve_broker_api_key(auth_token, "arrow")
     headers = {
-        "appID": os.getenv("BROKER_API_KEY"),
+        "appID": api_key,
         "token": auth_token,
     }
     if with_json:

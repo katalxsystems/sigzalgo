@@ -24,26 +24,10 @@ logger = get_logger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL")  # Replace with your database path
 
-engine = create_db_engine(DATABASE_URL)
-db_session = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=engine))
-Base = declarative_base()
-Base.query = db_session.query_property()
-
-
-class SymToken(Base):
-    __tablename__ = "symtoken"
-    id = Column(Integer, Sequence("symtoken_id_seq"), primary_key=True)
-    symbol = Column(String, nullable=False, index=True)  # Single column index
-    brsymbol = Column(String, nullable=False, index=True)  # Single column index
-    name = Column(String)
-    exchange = Column(String, index=True)  # Include this column in a composite index
-    brexchange = Column(String, index=True)
-    token = Column(String, index=True)  # Indexed for performance
-    expiry = Column(String)
-    strike = Column(Float)
-    lotsize = Column(Integer)
-    instrumenttype = Column(String)
-    tick_size = Column(Float)
+# symtoken's engine, session and model are shared by every broker
+# (database.symbol), which scopes each query, delete and insert to the
+# rows of the broker running this code -- see database.broker_context.
+from database.symbol import SYMTOKEN_INSERT_BATCH, Base, SymToken, db_session, engine
 
 
 def init_db():
@@ -64,7 +48,15 @@ def delete_symtoken_table():
 def copy_from_dataframe(df):
     """Copy dataframe to database"""
     try:
-        df.to_sql("symtoken", con=engine, if_exists="append", index=False)
+        # pandas bypasses the ORM, so stamp the broker column explicitly.
+        df = df.assign(broker="definedge")
+        # One to_sql call per batch: each runs in its own transaction, so
+        # openalgo.db's write lock is released between batches. chunksize=
+        # alone would still write every chunk inside a single transaction.
+        for start in range(0, len(df), SYMTOKEN_INSERT_BATCH):
+            df.iloc[start : start + SYMTOKEN_INSERT_BATCH].to_sql(
+                "symtoken", con=engine, if_exists="append", index=False
+            )
         logger.info(f"Inserted {len(df)} records into symtoken table")
     except Exception as e:
         logger.error(f"Error copying dataframe to database: {e}")

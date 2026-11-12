@@ -9,7 +9,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { createChart } from 'openalgo-charts'
-import { buildChartTheme } from '@/lib/trading/chartTheme'
+import { algozBranding, buildChartTheme } from '@/lib/trading/chartTheme'
 import { useThemeStore } from '@/stores/themeStore'
 
 export interface SeriesSpec {
@@ -43,7 +43,10 @@ export function PortfolioLineChart({ series, height = 320, format }: Props) {
     // are the same chart wearing the same colours.
     // No height option: the engine sizes itself to its container, which the
     // wrapper below fixes.
-    const chart = createChart(el, { theme: buildChartTheme(mode, appMode) })
+    const chart = createChart(el, {
+      theme: buildChartTheme(mode, appMode),
+      branding: algozBranding(mode, appMode, 22),
+    })
 
     const handles = series.map((s) =>
       chart.addSeries(s.area ? 'area' : 'line', {

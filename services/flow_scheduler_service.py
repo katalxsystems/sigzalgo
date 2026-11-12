@@ -9,18 +9,11 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Optional
 
-from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from database.apscheduler_jobstore_db import (
-    FLOW_JOBSTORE_TABLE,
-    ensure_jobstore_table,
-    get_database_url,
-)
-from database.engine_factory import create_db_engine
 from utils.env_config import env_int
 from utils.logging import get_logger
 
@@ -79,7 +72,19 @@ class FlowScheduler:
         return cls._instance
 
     def init(self, db_url: str = None, api_key: str = None):
-        """Initialize the scheduler with database URL for job persistence"""
+        """Initialize and start the scheduler.
+
+        Jobs are held in memory, not in the database. The schedule is a
+        projection of the active workflows' trigger nodes, rebuilt at every
+        boot by reconcile_scheduler_jobs() -- the same model as the strategy
+        module's scheduler. A database job store made the scheduler's own
+        thread write to openalgo.db after every run; when another writer held
+        the lock past the retry budget (a master contract download does), that
+        write raised inside APScheduler's loop and killed the thread, and no
+        scheduled workflow ran again until a restart.
+
+        ``db_url`` is accepted for existing callers and no longer used.
+        """
         if self._initialized:
             return
 
@@ -87,33 +92,11 @@ class FlowScheduler:
             if self._initialized:
                 return
 
-            if db_url is None:
-                db_url = get_database_url()
-
             self._api_key = api_key
 
             try:
-                # Create the job store table before APScheduler would. Its own
-                # DDL in start() is one-shot: an install that loses the boot
-                # write-lock race never initializes the scheduler, and every
-                # scheduled workflow then silently never runs for the life of
-                # the process (issue #1750). app.py normally creates this during
-                # the serialized database-init phase, which leaves the call
-                # below a read-only no-op; it retries here for any caller that
-                # starts the scheduler outside that path.
-                ensure_jobstore_table(FLOW_JOBSTORE_TABLE, database_url=db_url)
-
-                # engine= rather than url= so the job store uses the project
-                # NullPool policy instead of SQLAlchemy's default QueuePool,
-                # which would hold connections open for the life of the
-                # process. See database/engine_factory.py.
-                jobstores = {
-                    "default": SQLAlchemyJobStore(
-                        engine=create_db_engine(db_url), tablename=FLOW_JOBSTORE_TABLE
-                    )
-                }
+                # No jobstores argument: the default MemoryJobStore is the point.
                 self._scheduler = BackgroundScheduler(
-                    jobstores=jobstores,
                     job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 60},
                 )
                 self._scheduler.start()
@@ -240,11 +223,12 @@ class FlowScheduler:
             func,
             trigger=trigger,
             id=job_id,
-            # The API key is deliberately NOT stored here. APScheduler pickles
-            # these args into flow_apscheduler_jobs.job_state, which lives in the
-            # same database that encrypts flow_workflows.api_key -- persisting it
-            # here defeated that encryption and froze the key at activation time,
-            # so regenerating it silently broke every scheduled workflow. The
+            # The API key is deliberately NOT stored here. When the job store was
+            # database-backed, APScheduler pickled these args into
+            # flow_apscheduler_jobs.job_state, next to the encrypted
+            # flow_workflows.api_key -- persisting it there defeated that
+            # encryption and froze the key at activation time, so regenerating
+            # it silently broke every scheduled workflow. The
             # default executor resolves the current key at run time instead.
             # Only the default executor takes the market-hours flag. A custom
             # callback still receives the documented (workflow_id, api_key) pair,
@@ -434,12 +418,12 @@ def is_within_market_hours(
 
 
 def reconcile_scheduler_jobs() -> dict:
-    """Bring the persistent jobstore and the database back into agreement.
+    """Bring the scheduler's jobs and the database back into agreement.
 
-    Activation writes two things -- a row flag and a scheduler job -- and a
-    crash, a failed write or a hand-edited database can leave those disagreeing.
-    The jobstore is persistent, so a stale job is restored at every boot and
-    keeps trading a workflow the user believes is off, while a missing job
+    The job store is in memory, so at startup this is what builds the
+    schedule: every active scheduled workflow gets its job here. The orphan
+    pass is kept for any later caller: a job whose workflow is gone or inactive
+    would keep trading a workflow the user believes is off, and a missing job
     leaves a workflow that reports Active and never fires. Neither state can
     correct itself: deactivate short-circuits on `already_inactive`, and
     activate refuses an `already_active` workflow.
@@ -500,9 +484,9 @@ def reconcile_scheduler_jobs() -> dict:
             )
             set_schedule_job_id(workflow.id, job_id)
             restored += 1
-            logger.warning(
-                f"Restored missing scheduler job for active workflow {workflow.id}."
-            )
+            # Routine at every boot now that jobs live in memory, so not a
+            # warning.
+            logger.info(f"Scheduled active workflow {workflow.id}")
         except Exception:
             # A one-shot schedule whose time has passed cannot be rebuilt, and
             # that is not a failure worth blocking startup for.
@@ -514,7 +498,7 @@ def reconcile_scheduler_jobs() -> dict:
     if removed or restored:
         logger.info(
             f"Scheduler reconciliation: removed {removed} orphaned job(s), "
-            f"restored {restored} missing job(s)"
+            f"scheduled {restored} active workflow(s)"
         )
     return {"removed": removed, "restored": restored}
 
@@ -548,6 +532,19 @@ def execute_workflow_scheduled(
     the key in the jobstore, still run. New jobs pass None and the current key
     is decrypted from the workflow row on every run.
     """
+    from utils.db_sessions import remove_all_scoped_sessions
+
+    try:
+        _run_scheduled_workflow(workflow_id, api_key, market_hours_only)
+    finally:
+        # APScheduler runs this on its own worker thread with no Flask app
+        # context, so teardown_appcontext never fires and the sessions this run
+        # touched would stay bound to that thread. Every exit, not only a run
+        # that executed: a skipped run has already read the workflow row.
+        remove_all_scoped_sessions()
+
+
+def _run_scheduled_workflow(workflow_id: int, api_key: str | None, market_hours_only: bool):
     from services.flow_executor_service import execute_workflow
 
     logger.info(f"Scheduled execution of workflow {workflow_id}")
@@ -613,13 +610,6 @@ def execute_workflow_scheduled(
         )
     except Exception as e:
         logger.exception(f"Scheduled execution failed for workflow {workflow_id}: {e}")
-    finally:
-        # APScheduler runs this on its own worker thread with no Flask app
-        # context, so teardown_appcontext never fires and the sessions this run
-        # touched would stay bound to that thread.
-        from utils.db_sessions import remove_all_scoped_sessions
-
-        remove_all_scoped_sessions()
 
 
 # Global scheduler instance

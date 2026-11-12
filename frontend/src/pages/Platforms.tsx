@@ -38,7 +38,7 @@ export default function Platforms() {
           Trading Platforms
         </h1>
         <p className="text-muted-foreground mt-1">
-          Connect your favorite charting platforms with OpenAlgo for automated trading
+          Connect your favorite charting platforms with AlgoZ for automated trading
         </p>
       </div>
 

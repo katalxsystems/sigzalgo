@@ -1,6 +1,7 @@
 import os
 
 from broker.nubra.api.baseurl import get_base_url, get_device_id, get_nubra_headers
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -120,15 +121,16 @@ def _verify_pin(client, base_url, device_id, auth_token, mpin):
     return session_token, None
 
 
-def _get_credentials():
+def _get_credentials(account_id=None):
     """
-    Read the Nubra login credentials from the environment.
+    Read the Nubra login credentials of the connected account (multi-account:
+    the account's API key holds the phone number, its API secret the MPIN).
 
     Returns:
         (phone, mpin, error_message)
     """
-    phone = os.getenv("BROKER_API_KEY")  # Mobile number
-    mpin = os.getenv("BROKER_API_SECRET")  # MPIN
+    phone = get_broker_api_key(account_id, broker="nubra")  # Mobile number
+    mpin = get_broker_api_secret(account_id, broker="nubra")  # MPIN
 
     if not phone or not mpin:
         return None, None, (
@@ -137,7 +139,7 @@ def _get_credentials():
     return phone, mpin, None
 
 
-def request_login_otp():
+def request_login_otp(account_id=None):
     """
     Start a Nubra login by sending an OTP to the registered mobile number.
 
@@ -153,7 +155,7 @@ def request_login_otp():
     Returns:
         (temp_token, masked_phone, error_message)
     """
-    phone, _mpin, error = _get_credentials()
+    phone, _mpin, error = _get_credentials(account_id)
     if error:
         return None, None, error
 
@@ -194,7 +196,7 @@ def request_login_otp():
         return None, masked, str(e)
 
 
-def authenticate_broker(otp_code, temp_token=None):
+def authenticate_broker(otp_code, temp_token=None, account_id=None):
     """
     Authenticate with Nubra using the phone-OTP flow.
 
@@ -212,7 +214,7 @@ def authenticate_broker(otp_code, temp_token=None):
                - feed_token: None (Nubra doesn't return a separate feed token)
                - error_message: Error message if authentication failed
     """
-    phone, mpin, error = _get_credentials()
+    phone, mpin, error = _get_credentials(account_id)
     if error:
         return None, None, error
 
@@ -258,7 +260,7 @@ def authenticate_broker(otp_code, temp_token=None):
         return None, None, str(e)
 
 
-def authenticate_broker_totp(totp_code):
+def authenticate_broker_totp(totp_code, account_id=None):
     """
     Authenticate with Nubra using the TOTP flow.
 
@@ -277,7 +279,7 @@ def authenticate_broker_totp(totp_code):
     Returns:
         tuple: (auth_token, feed_token, error_message)
     """
-    phone, mpin, error = _get_credentials()
+    phone, mpin, error = _get_credentials(account_id)
     if error:
         return None, None, error
 

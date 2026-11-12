@@ -123,7 +123,15 @@ These are set directly on each strategy subprocess (only the ones below — the 
 - `STRATEGY_ID` — unique identifier for the strategy
 - `STRATEGY_NAME` — name of the strategy
 - `OPENALGO_STRATEGY_EXCHANGE` — the exchange picked at upload/edit time (`NSE` / `BSE` / `NFO` / `BFO` / `MCX` / `BCD` / `CDS` / `CRYPTO`). Read this in your script so its trading calls match the calendar the host is gating against
-- `OPENALGO_API_KEY` — decrypted API key for this user
+- `OPENALGO_API_KEY` — API key of the broker account the strategy belongs to (the account that was active when it was uploaded). Its orders and data go to that account. Not set when that account has no API key yet — generate one at `/apikey` while that account is active
+- `OPENALGO_ACCOUNT_ID` — that broker account's id
+- `STRATEGY_PARAMS` — the strategy's own parameters as a JSON object (edit them under **Parameters** on the strategy's edit page; `{}` when none). Changes apply from the next start:
+
+  ```python
+  import json, os
+  params = json.loads(os.getenv("STRATEGY_PARAMS", "{}"))
+  quantity = params.get("quantity", 1)
+  ```
 - `OPENALGO_HOST` — OpenAlgo host URL, **set with `setdefault` to `http://127.0.0.1:5000`**. If `OPENALGO_HOST` is already present in `.env` (it usually isn't — `.env` uses `HOST_SERVER`), that value is kept. Treat this as a convenience fallback only
 
 ### Inherited from `.env`

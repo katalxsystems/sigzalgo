@@ -7,6 +7,7 @@ Executes workflow nodes using internal OpenAlgo services (synchronous Flask vers
 import json
 import logging
 import math
+import os
 import re
 import threading
 import time as time_module
@@ -217,85 +218,11 @@ def symbol_prefix_filter(column, prefix: str):
 _workflow_locks: "weakref.WeakValueDictionary[int, threading.Lock]" = (
     weakref.WeakValueDictionary()
 )
+
+# Longest trigger payload copied into a run's Execution Log; the log is stored
+# with every execution row, and a webhook body is caller-controlled.
+_RECEIVED_DATA_LOG_LIMIT = 2000
 _locks_mutex = threading.Lock()
-
-
-# Symbols each workflow has an open market-data subscription for, as
-# {workflow_id: {(symbol, exchange, mode), ...}}.
-#
-# The subscribe nodes open a broker-side subscription and nothing ever closed
-# it: the websocket client is a process-wide singleton whose subscription set
-# outlives every run, so a workflow reading `{{webhook.symbol}}` accumulated one
-# per distinct symbol until the adapter ceiling (1000 x 3) was reached, after
-# which new subscriptions from /trading, the sandbox engine and the API began
-# failing. Deactivating or deleting the workflow now gives them back.
-_workflow_subscriptions: dict[int, set[tuple[str, str, str]]] = {}
-_workflow_subscriptions_lock = threading.Lock()
-
-
-def record_workflow_subscription(
-    workflow_id: int | None, symbol: str, exchange: str, mode: str
-) -> None:
-    """Remember a subscription so it can be released with the workflow."""
-    if workflow_id is None:
-        return
-    with _workflow_subscriptions_lock:
-        _workflow_subscriptions.setdefault(workflow_id, set()).add((symbol, exchange, mode))
-
-
-def release_workflow_subscriptions(workflow_id: int) -> int:
-    """Drop every subscription a workflow opened. Returns how many were released.
-
-    Called when a workflow is deactivated or deleted. Safe to call for a
-    workflow that never subscribed, and safe to call twice.
-    """
-    with _workflow_subscriptions_lock:
-        entries = _workflow_subscriptions.pop(workflow_id, set())
-    if not entries:
-        return 0
-
-    try:
-        from services.websocket_service import unsubscribe_from_symbols
-    except Exception:
-        logger.exception("Cannot release subscriptions: websocket service unavailable")
-        return 0
-
-    # Resolved once, not per symbol: it is a database read.
-    username, broker = _subscription_owner(workflow_id)
-    if not username:
-        logger.warning(
-            f"Workflow {workflow_id} has {len(entries)} subscription(s) but no "
-            f"resolvable session to release them from"
-        )
-        return 0
-
-    released = 0
-    for symbol, exchange, mode in entries:
-        try:
-            ok, _result, _ = unsubscribe_from_symbols(
-                username, broker, [{"symbol": symbol, "exchange": exchange}], mode
-            )
-            released += 1 if ok else 0
-        except Exception:
-            # One symbol failing must not strand the rest.
-            logger.exception(f"Failed to release {mode} on {exchange}:{symbol}")
-    logger.info(f"Released {released}/{len(entries)} subscription(s) for workflow {workflow_id}")
-    return released
-
-
-def _subscription_owner(workflow_id: int) -> tuple[str | None, str]:
-    """The username and broker whose session holds this workflow's subscriptions."""
-    from database.auth_db import get_broker_name, get_username_by_apikey
-    from database.flow_db import get_workflow_api_key
-
-    try:
-        api_key = get_workflow_api_key(workflow_id)
-        if not api_key:
-            return None, "unknown"
-        return get_username_by_apikey(api_key), get_broker_name(api_key) or "unknown"
-    except Exception:
-        logger.exception(f"Cannot resolve subscription owner for workflow {workflow_id}")
-        return None, "unknown"
 
 
 def get_workflow_lock(workflow_id: int) -> threading.Lock:
@@ -312,6 +239,248 @@ def get_workflow_lock(workflow_id: int) -> threading.Lock:
             lock = threading.Lock()
             _workflow_locks[workflow_id] = lock
         return lock
+
+
+# Symbols each workflow has an open market-data subscription for, as
+# {workflow_id: {(symbol, exchange, mode), ...}}.
+#
+# The subscribe nodes open a broker-side subscription and nothing ever closed
+# it: the websocket client is a process-wide singleton whose subscription set
+# outlives every run, so a workflow reading `{{webhook.symbol}}` accumulated one
+# per distinct symbol until the adapter ceiling (1000 x 3) was reached, after
+# which new subscriptions from /trading, the sandbox engine and the API began
+# failing. Deactivating or deleting the workflow now gives them back.
+_workflow_subscriptions: dict[int, set[tuple[str, str, str]]] = {}
+_workflow_subscriptions_lock = threading.Lock()
+# A subscription may be recorded again while a previous release waits for
+# the proxy. Versions prevent that older release from forgetting the new owner.
+_workflow_subscription_versions: dict[int, dict[tuple[str, str, str], int]] = {}
+_workflow_subscription_owners: dict[int, dict[tuple[str, str, str], tuple[str, str]]] = {}
+_workflow_subscription_version = 0
+
+
+def record_workflow_subscription(
+    workflow_id: int | None,
+    symbol: str,
+    exchange: str,
+    mode: str,
+    username: str | None = None,
+    broker: str | None = None,
+) -> None:
+    """Remember a subscription so it can be released with the workflow."""
+    if workflow_id is None:
+        return
+    global _workflow_subscription_version
+    entry = (symbol, exchange, mode)
+    with _workflow_subscriptions_lock:
+        _workflow_subscription_version += 1
+        _workflow_subscriptions.setdefault(workflow_id, set()).add(entry)
+        _workflow_subscription_versions.setdefault(workflow_id, {})[entry] = (
+            _workflow_subscription_version
+        )
+        if username:
+            _workflow_subscription_owners.setdefault(workflow_id, {})[entry] = (
+                username,
+                broker or "unknown",
+            )
+
+
+def has_workflow_subscriptions(workflow_id: int) -> bool:
+    """Whether an unsubscribe still needs a retry before cleanup can finish."""
+    with _workflow_subscriptions_lock:
+        return bool(_workflow_subscriptions.get(workflow_id))
+
+
+def _forget_released_subscription(workflow_id: int, entry, version: int) -> None:
+    """Forget only the admission this unsubscribe actually released."""
+    with _workflow_subscriptions_lock:
+        versions = _workflow_subscription_versions.get(workflow_id, {})
+        if versions.get(entry) != version:
+            return
+        entries = _workflow_subscriptions.get(workflow_id)
+        if entries is None:
+            return
+        entries.discard(entry)
+        versions.pop(entry, None)
+        _workflow_subscription_owners.get(workflow_id, {}).pop(entry, None)
+        if not entries:
+            _workflow_subscriptions.pop(workflow_id, None)
+            _workflow_subscription_versions.pop(workflow_id, None)
+            _workflow_subscription_owners.pop(workflow_id, None)
+
+
+def _release_shared_workflow_owner(workflow_id: int, entry, version: int, username: str) -> bool:
+    """Drop this owner's claim without touching a feed another Flow still uses."""
+    with _workflow_subscriptions_lock:
+        if _workflow_subscription_versions.get(workflow_id, {}).get(entry) != version:
+            # A new subscribe for this same workflow took over the key while
+            # release was in progress; it must remain subscribed.
+            return True
+        shared = any(
+            other_id != workflow_id
+            and entry in other_entries
+            and (
+                _workflow_subscription_owners.get(other_id, {}).get(entry, (username, ""))[0]
+                == username
+            )
+            for other_id, other_entries in _workflow_subscriptions.items()
+        )
+        if not shared:
+            return False
+        entries = _workflow_subscriptions[workflow_id]
+        entries.discard(entry)
+        _workflow_subscription_versions[workflow_id].pop(entry, None)
+        _workflow_subscription_owners.get(workflow_id, {}).pop(entry, None)
+        if not entries:
+            _workflow_subscriptions.pop(workflow_id, None)
+            _workflow_subscription_versions.pop(workflow_id, None)
+            _workflow_subscription_owners.pop(workflow_id, None)
+        return True
+
+
+def release_workflow_subscriptions(workflow_id: int) -> int:
+    """Release subscriptions, retaining failures for a later retry.
+
+    Called when a workflow is deactivated or deleted. Safe to call for a
+    workflow that never subscribed, and safe to call twice.
+    """
+    with _workflow_subscriptions_lock:
+        entries = list(_workflow_subscriptions.get(workflow_id, ()))
+        versions = dict(_workflow_subscription_versions.get(workflow_id, {}))
+        owners = dict(_workflow_subscription_owners.get(workflow_id, {}))
+    if not entries:
+        return 0
+
+    try:
+        from services.websocket_service import unsubscribe_from_symbols
+    except Exception:
+        logger.exception("Cannot release subscriptions: websocket service unavailable")
+        return 0
+
+    # Legacy records lack a captured owner. Resolve only once for those; new
+    # records keep their owner even if the workflow's API key later changes.
+    fallback_owner = _subscription_owner(workflow_id) if len(owners) < len(entries) else (None, "")
+
+    released = 0
+    for entry in entries:
+        symbol, exchange, mode = entry
+        username, broker = owners.get(entry, fallback_owner)
+        if not username:
+            # Legacy unowned bookkeeping from a lost session has no client to
+            # unsubscribe. Do not keep an unretryable workflow entry forever.
+            _forget_released_subscription(workflow_id, entry, versions.get(entry, 0))
+            logger.warning(
+                f"Workflow {workflow_id} subscription {exchange}:{symbol} has no "
+                "resolvable session to release it from"
+            )
+            continue
+        if _release_shared_workflow_owner(workflow_id, entry, versions.get(entry, 0), username):
+            released += 1
+            continue
+        try:
+            ok, _result, _ = unsubscribe_from_symbols(
+                username, broker, [{"symbol": symbol, "exchange": exchange}], mode
+            )
+            if ok:
+                released += 1
+                _forget_released_subscription(workflow_id, entry, versions.get(entry, 0))
+        except Exception:
+            # One symbol failing must not strand the rest.
+            logger.exception(f"Failed to release {mode} on {exchange}:{symbol}")
+    logger.info(f"Released {released}/{len(entries)} subscription(s) for workflow {workflow_id}")
+    return released
+
+
+# Workflows that were deactivated or deleted while one of their
+# subscriptions could not be released (typically the feed client was
+# disconnected, e.g. after the daily broker token expiry). Upstream refuses
+# the deactivate/delete in that case and leaves the triggers running; here the
+# workflow is always stopped and the release is retried later, because a user
+# must be able to stop a live trading workflow while the feed is down. The
+# owner (username, broker) is captured at subscribe time, so a retry still
+# works after the workflow row is gone.
+_pending_release_ids: set[int] = set()
+
+
+def release_workflow_subscriptions_or_defer(workflow_id: int) -> bool:
+    """Release a workflow's subscriptions, queueing a retry for any that fail.
+
+    Returns:
+        True when nothing is left to release, False when a retry is pending.
+    """
+    release_workflow_subscriptions(workflow_id)
+    pending = has_workflow_subscriptions(workflow_id)
+    with _workflow_subscriptions_lock:
+        if pending:
+            _pending_release_ids.add(workflow_id)
+        else:
+            _pending_release_ids.discard(workflow_id)
+    if pending:
+        logger.warning(
+            f"Workflow {workflow_id}: market-data release pending; will retry on the next "
+            "Flow activate, deactivate or delete"
+        )
+    return not pending
+
+
+def defer_release(workflow_id: int) -> None:
+    """Queue a release without attempting it now (a run holds the workflow).
+
+    The retry skips the workflow while its lock is held, so whatever the run
+    subscribes to before it ends is released afterwards too.
+    """
+    with _workflow_subscriptions_lock:
+        _pending_release_ids.add(workflow_id)
+
+
+def cancel_pending_release(workflow_id: int) -> None:
+    """Stop retrying a release: the workflow was activated and owns its feed again."""
+    with _workflow_subscriptions_lock:
+        _pending_release_ids.discard(workflow_id)
+
+
+def retry_pending_releases() -> int:
+    """Retry deferred releases. Returns how many workflows are now fully released.
+
+    A workflow whose lock is held is skipped: a run in progress (Run Now works
+    on an inactive workflow) may be using the subscription right now.
+    """
+    with _workflow_subscriptions_lock:
+        pending = list(_pending_release_ids)
+    cleared = 0
+    for workflow_id in pending:
+        lock = get_workflow_lock(workflow_id)
+        if not lock.acquire(blocking=False):
+            continue
+        try:
+            with _workflow_subscriptions_lock:
+                if workflow_id not in _pending_release_ids:
+                    continue  # activated meanwhile
+            if release_workflow_subscriptions_or_defer(workflow_id):
+                cleared += 1
+        except Exception:
+            logger.exception(f"Retrying market-data release for workflow {workflow_id} failed")
+        finally:
+            lock.release()
+    return cleared
+
+
+def _subscription_owner(workflow_id: int) -> tuple[str | None, str]:
+    """The username and broker whose session holds this workflow's subscriptions."""
+    from database.auth_db import get_broker_name, get_username_by_apikey
+    from database.flow_db import get_workflow, get_workflow_api_key
+
+    try:
+        # get_workflow_api_key takes the workflow row, not its id -- it reads
+        # workflow.api_key directly.
+        workflow = get_workflow(workflow_id)
+        api_key = get_workflow_api_key(workflow) if workflow else None
+        if not api_key:
+            return None, "unknown"
+        return get_username_by_apikey(api_key), get_broker_name(api_key) or "unknown"
+    except Exception:
+        logger.exception(f"Cannot resolve subscription owner for workflow {workflow_id}")
+        return None, "unknown"
 
 
 def parse_time_string(
@@ -483,6 +652,11 @@ class WorkflowContext:
             value = self._walk_path(var_path)
             if value is self._UNRESOLVED:
                 return match.group(0)
+            if isinstance(value, (dict, list, tuple)):
+                # JSON, not str(): a Python repr ('single quotes', None, True)
+                # is not valid JSON, so `"legs": {{pnl.legs}}` in an HTTP
+                # Request body failed to parse and was posted as plain text.
+                return json.dumps(value, default=str)
             return str(value)
 
         return re.sub(r"\{\{([^}]+)\}\}", replacer, text)
@@ -2024,10 +2198,16 @@ class NodeExecutor:
         `strategy` defaults to this workflow's name, which is also the tag its
         order nodes apply, so the common case needs no configuration.
         """
-        from services.strategy_pnl_service import get_strategy_pnl
+        from services.strategy_pnl_service import get_strategy_pnl, get_supplied_legs_pnl
 
         strategy = self.get_str(node_data, "strategy", "") or self.default_strategy
-        result = get_strategy_pnl(self.client, strategy=strategy)
+        supplied_legs = node_data.get("legs")
+        if isinstance(supplied_legs, list) and supplied_legs:
+            # Legs owned by an external platform (see the strategy monitor
+            # API), valued against live quotes instead of the strategy book.
+            result = get_supplied_legs_pnl(self.client, supplied_legs, strategy=strategy)
+        else:
+            result = get_strategy_pnl(self.client, strategy=strategy)
         if result.get("status") == "error":
             self.log(f"Strategy P&L error: {result.get('message')}", "error")
             return result
@@ -2118,6 +2298,7 @@ class NodeExecutor:
         lookback without a separate node per unit.
         """
         from services.indicator_service import (
+            _parse_timestamp,
             bar_at_offset,
             clamp_bars,
             fetch_history_cached,
@@ -2151,12 +2332,20 @@ class NodeExecutor:
                 "message": f"Not enough history to reach {offset_bars} bars back for {symbol}",
             }
 
+        # Brokers return `timestamp` as epoch seconds or as an ISO string; the
+        # epoch form is always numeric, so a varCondition can compare bar times.
+        try:
+            timestamp_epoch = int(_parse_timestamp(row.get("timestamp")).timestamp())
+        except (TypeError, ValueError, OverflowError, OSError):
+            timestamp_epoch = None
+
         output = {
             "status": "success",
             "symbol": symbol,
             "exchange": exchange,
             "offsetBars": offset_bars,
             "timestamp": row.get("timestamp"),
+            "timestamp_epoch": timestamp_epoch,
             "open": row.get("open"),
             "high": row.get("high"),
             "low": row.get("low"),
@@ -2166,6 +2355,176 @@ class NodeExecutor:
         self.log(f"Bar offset {offset_bars} for {symbol}: {output}")
         self.store_output(node_data, output)
         return output
+
+    def execute_candle_scan(self, node_data: dict) -> dict:
+        """Execute Candle Breach Scan node.
+
+        Scans every closed candle of the last `lookbackMinutes` (default 120)
+        for the first one whose high went above `above` or whose low went
+        below `below`. Unlike Bar Offset, which reads one bar, this finds a
+        breach in any bar of the window, so a run that was skipped or failed
+        does not lose the breach it would have seen.
+
+        `sinceEpoch` (optional) excludes candles that started before it. A
+        fetch failure returns an error and stores no output, so a condition
+        on `{{name.breached}}` errors and takes neither branch.
+        """
+        from services.indicator_service import (
+            fetch_history_cached,
+            first_candle_breach,
+            history_window,
+            trim_records,
+        )
+
+        symbol = self.context.interpolate(self.get_str(node_data, "symbol"))
+        exchange = self.get_str(node_data, "exchange", "NSE")
+        interval = self.get_str(node_data, "interval", "1m")
+        source = self.get_str(node_data, "source", "api")
+        lookback_minutes = max(self.get_int(node_data, "lookbackMinutes", 120), 1)
+        if not symbol:
+            return {"status": "error", "message": "Symbol is required"}
+
+        def level(key):
+            raw = node_data.get(key)
+            if raw in (None, ""):
+                return None
+            try:
+                return float(self.context.interpolate(str(raw)))
+            except (TypeError, ValueError):
+                raise ValueError(f"{key} did not resolve to a number: {raw!r}") from None
+
+        try:
+            above, below = level("above"), level("below")
+            since_raw = node_data.get("sinceEpoch")
+            since_epoch = (
+                int(float(self.context.interpolate(str(since_raw))))
+                if since_raw not in (None, "")
+                else None
+            )
+        except ValueError as e:
+            self.log(f"Candle scan aborted: {e}", "error")
+            return {"status": "error", "message": str(e)}
+        if above is None and below is None:
+            return {"status": "error", "message": "Set at least one of above / below"}
+
+        # A few bars of headroom so the window is fully covered after the
+        # forming bar is dropped.
+        start_date, end_date = history_window(
+            lookback_bars=lookback_minutes + 10, interval=interval
+        )
+        result = fetch_history_cached(
+            self.client, symbol, exchange, interval, start_date, end_date, source
+        )
+        history_error = self._history_error(result, symbol, interval, source)
+        records = [] if history_error else trim_records((result or {}).get("data") or [])
+        if node_data.get("alertOnNoData"):
+            # An expired broker session can come back as an empty, successful
+            # history response, so "no candles at all in the fetched range" is
+            # treated as a failure too, not only an error status.
+            no_data_reason = history_error or (
+                None
+                if records
+                else f"no {interval} candles returned for {start_date} to {end_date}"
+            )
+            self._track_candle_data(symbol, exchange, interval, no_data_reason)
+        if history_error:
+            self.log(history_error, "error")
+            return {"status": "error", "message": history_error}
+        if not records:
+            # Nothing to scan. Stored as an error, not as "no breach", so a
+            # condition on it takes neither branch and the run log shows why.
+            message = f"No {interval} candles returned for {symbol} ({exchange})"
+            self.log(message, "error")
+            return {"status": "error", "message": message}
+        scan = first_candle_breach(
+            records,
+            above=above,
+            below=below,
+            lookback_minutes=lookback_minutes,
+            since_epoch=since_epoch,
+            interval=interval,
+            tie_prefer=self.get_str(node_data, "tiePrefer", "below"),
+        )
+
+        output = {"status": "success", "symbol": symbol, "exchange": exchange, **scan}
+        if scan["breached"]:
+            self.log(
+                f"Candle scan {symbol}: {scan['side']} breach at {scan['breach_price']} "
+                f"(candle {scan['candle']['timestamp']}, {scan['candles_scanned']} scanned)"
+            )
+        else:
+            self.log(
+                f"Candle scan {symbol}: no breach in {scan['candles_scanned']} candle(s) "
+                f"(above={above}, below={below})"
+            )
+        self.store_output(node_data, output)
+        return output
+
+    def _track_candle_data(
+        self, symbol: str, exchange: str, interval: str, no_data_reason: str | None
+    ) -> None:
+        """Record whether this candle-check run had usable data, and alert once
+        when a workflow has gone CANDLE_CHECK_ALERT_AFTER_RUNS runs without
+        any (and once more when it recovers). See services/candle_check_health.
+
+        Never raises: alerting must not change what the run itself does.
+        """
+        from services import candle_check_health as health
+
+        workflow_id = getattr(self.context, "workflow_id", None)
+        try:
+            event = health.record_run(workflow_id, has_data=no_data_reason is None)
+            if event is None:
+                return
+            name = f"workflow {workflow_id}"
+            try:
+                from database.flow_db import get_workflow
+
+                workflow = get_workflow(workflow_id)
+                if workflow is not None:
+                    name = f"workflow {workflow_id} '{workflow.name}'"
+            except Exception:
+                logger.debug(f"Could not read the name of workflow {workflow_id}")
+
+            if event == health.OUTAGE:
+                message = (
+                    f"Candle check NOT WORKING: {name}, {symbol} on {exchange}. "
+                    f"No usable {interval} candle data for {health.failure_count(workflow_id)} "
+                    f"consecutive runs ({no_data_reason}). {self._quote_probe(symbol, exchange)} "
+                    "Breaches are not being checked from candles until data returns. "
+                    "Check the broker session (log in again if it expired) and that the "
+                    f"broker serves {interval} history for this contract."
+                )
+                logger.error(message)
+                self.log(message, "error")
+            else:
+                message = (
+                    f"Candle check recovered: {name}, {symbol} on {exchange} is receiving "
+                    f"{interval} candle data again and rescans its look-back window."
+                )
+                logger.info(message)
+                self.log(message)
+            if self.client is not None:
+                result = self.client.telegram(message=message) or {}
+                if result.get("status") != "success":
+                    logger.info(
+                        f"Candle check alert for {name} not sent to Telegram: "
+                        f"{result.get('error') or result.get('message')}"
+                    )
+        except Exception:
+            logger.exception(f"Candle check health tracking failed for workflow {workflow_id}")
+
+    def _quote_probe(self, symbol: str, exchange: str) -> str:
+        """One live quote, to say whether the broker answers at all. Run only
+        when an alert is about to go out, never on every failing run."""
+        try:
+            quote = self.client.get_quotes(symbol=symbol, exchange=exchange) or {}
+        except Exception as e:
+            return f"A live quote also failed ({e}), so the broker session is likely down."
+        if quote.get("status") == "success":
+            return "A live quote works, so the broker session is up; the history data is missing."
+        detail = quote.get("message") or quote.get("error") or "no detail"
+        return f"A live quote also failed ({detail}), so the broker session is likely down."
 
     def execute_indicator(self, node_data: dict) -> dict:
         """Execute Indicator node - any openalgo.ta indicator over a symbol's
@@ -3002,6 +3361,8 @@ class NodeExecutor:
     # Flask worker for its whole duration.
     HTTP_TIMEOUT_MAX_MS = 60_000
     HTTP_TIMEOUT_DEFAULT_MS = 30_000
+    # Stored timeouts at or below this are legacy seconds (see execute_http_request).
+    HTTP_TIMEOUT_LEGACY_SECONDS_MAX = 60
 
     @staticmethod
     def _redact_url(url: str) -> str:
@@ -3022,6 +3383,52 @@ class NodeExecutor:
             host = f"{host}:{parts.port}"
         redacted = urlunsplit((parts.scheme, host, parts.path, "", ""))
         return f"{redacted}?<redacted>" if parts.query else redacted
+
+    # This instance's own monitor endpoints that Flow workflows built by the
+    # price-breach, price-alert and strategy monitors call back into, on the
+    # loopback base URL, to deactivate themselves after a delivered breach.
+    # Each one requires the account's API key in the request body.
+    _MONITOR_CALLBACK_PATHS = ("/api/v1/pricebreach/", "/api/v1/strategymonitor/deactivate")
+
+    @classmethod
+    def _is_trusted_http_destination(cls, parts) -> bool:
+        """Destinations exempt from the public-address rule below.
+
+        Only two, neither steerable by a webhook caller's payload into
+        anything else: the monitors' own self-deactivation endpoints on this
+        instance's loopback base URL (exact scheme and host, a fixed path
+        prefix, no dot segments), and hosts an administrator lists in
+        FLOW_HTTP_ALLOWED_HOSTS (comma-separated host or host:port, e.g. a CMS
+        on a private network that receives the monitors' breach webhooks).
+        """
+        host = (parts.hostname or "").lower()
+        hostport = f"{host}:{parts.port}" if parts.port else host
+        allowed = {
+            h.strip().lower()
+            for h in os.getenv("FLOW_HTTP_ALLOWED_HOSTS", "").split(",")
+            if h.strip()
+        }
+        if host in allowed or hostport in allowed:
+            return True
+
+        if ".." in parts.path or "%2e" in parts.path.lower():
+            return False
+        try:
+            from urllib.parse import urlsplit
+
+            from services.price_breach_service import _loopback_base_url
+
+            base = urlsplit(_loopback_base_url())
+        except Exception:
+            return False
+        return (
+            parts.scheme == base.scheme
+            and parts.netloc.lower() == base.netloc.lower()
+            and any(
+                parts.path.startswith(base.path.rstrip("/") + p)
+                for p in cls._MONITOR_CALLBACK_PATHS
+            )
+        )
 
     @classmethod
     def _check_http_destination(cls, url: str) -> str | None:
@@ -3049,6 +3456,9 @@ class NodeExecutor:
         host = parts.hostname
         if not host:
             return "URL has no host"
+
+        if cls._is_trusted_http_destination(parts):
+            return None
 
         try:
             infos = socket.getaddrinfo(host, parts.port or None, proto=socket.IPPROTO_TCP)
@@ -3088,6 +3498,12 @@ class NodeExecutor:
         timeout_ms = self.get_int(node_data, "timeout", self.HTTP_TIMEOUT_DEFAULT_MS)
         if timeout_ms <= 0:
             timeout_ms = self.HTTP_TIMEOUT_DEFAULT_MS
+        elif timeout_ms <= self.HTTP_TIMEOUT_LEGACY_SECONDS_MAX:
+            # Saved when this field was read as seconds (the price-breach,
+            # price-alert and strategy monitors wrote 10-30). The validator now
+            # requires >= 1000 ms, so a value this small can only be seconds;
+            # read as ms it would time out every request in a few milliseconds.
+            timeout_ms *= 1000
         timeout = min(timeout_ms, self.HTTP_TIMEOUT_MAX_MS) / 1000
 
         if not url:
@@ -3666,8 +4082,10 @@ class NodeExecutor:
             )
             return {"status": "error", "condition": False, "ltp": ltp}
 
+        self.log("=============BREACH Starts===================")
         self.log(f"Price alert: {symbol} LTP={ltp} {condition_type} {price} = {condition_met}")
         self.store_output(node_data, {"ltp": ltp, "condition_met": condition_met})
+        self.log("=============BREACH Ends===================")
         return {"status": "success", "condition": condition_met, "ltp": ltp}
 
     # === Streaming Nodes (WebSocket with REST API fallback) ===
@@ -3690,8 +4108,6 @@ class NodeExecutor:
         Returns:
             Market data dict or None if failed
         """
-        import threading
-
         try:
             from database.auth_db import get_broker_name, verify_api_key
             from services.websocket_service import get_websocket_connection, subscribe_to_symbols
@@ -3767,7 +4183,12 @@ class NodeExecutor:
                 sub_success, sub_result, _ = subscribe_to_symbols(username, broker, symbols, mode)
                 if sub_success:
                     record_workflow_subscription(
-                        self.context.workflow_id, symbol, exchange, mode
+                        getattr(self.context, "workflow_id", None),
+                        symbol,
+                        exchange,
+                        mode,
+                        username,
+                        broker,
                     )
 
                 if not sub_success:
@@ -4354,6 +4775,8 @@ def execute_node_chain(
         result = executor.execute_prior_period_ohlc(node_data)
     elif node_type == "barOffset":
         result = executor.execute_bar_offset(node_data)
+    elif node_type == "candleScan":
+        result = executor.execute_candle_scan(node_data)
     elif node_type == "indicator":
         result = executor.execute_indicator(node_data)
     elif node_type == "symbol":
@@ -4649,7 +5072,7 @@ def execute_workflow(
 
         if webhook_data:
             context.set_variable("webhook", webhook_data)
-            logger.info(f"Webhook data injected: {webhook_data}")
+            logger.info(f"Webhook data injected for workflow {workflow_id}: {webhook_data}")
 
         try:
             if not api_key:
@@ -4659,6 +5082,30 @@ def execute_workflow(
             executor = NodeExecutor(client, context, logs, default_strategy=workflow.name)
             logger.info(f"Starting workflow: {workflow.name}")
             executor.log(f"Starting workflow: {workflow.name}")
+            breach = (webhook_data or {}).get("breach")
+            if isinstance(breach, dict) and breach.get("description"):
+                # Price-alert runs: record which level was breached, so the
+                # saved Execution Log shows why this run happened.
+                executor.log(
+                    f"Price alert: {breach.get('symbol')}@{breach.get('exchange')} "
+                    f"{breach['description']} (via {breach.get('source')})"
+                )
+            if webhook_data:
+                # What the run was started with, so the saved Execution Log
+                # shows e.g. the trigger_price a webhook sent. Appended
+                # directly: executor.log() would repeat the server-log line
+                # above. The breach dict is already described just above.
+                received = {k: v for k, v in webhook_data.items() if k != "breach"}
+                body = json.dumps(received, default=str)
+                if len(body) > _RECEIVED_DATA_LOG_LIMIT:
+                    body = body[:_RECEIVED_DATA_LOG_LIMIT] + "... (truncated)"
+                logs.append(
+                    {
+                        "time": datetime.now().isoformat(),
+                        "message": f"Received data: {body}",
+                        "level": "info",
+                    }
+                )
 
             nodes = workflow.nodes or []
             edges = workflow.edges or []

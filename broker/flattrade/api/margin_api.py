@@ -1,8 +1,8 @@
 import json
-import os
 
 from broker.flattrade.api.rate_limit import DATA_LIMITER, clamp_from_response
 from broker.flattrade.mapping.margin_data import parse_margin_response, transform_margin_positions
+from utils.config import resolve_broker_api_key
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -21,7 +21,7 @@ def calculate_margin_api(positions, auth):
     """
     AUTH_TOKEN = auth
 
-    full_api_key = os.getenv("BROKER_API_KEY")
+    full_api_key, _ = resolve_broker_api_key(AUTH_TOKEN, "flattrade")
     if not full_api_key or ":::" not in full_api_key:
         error_response = {
             "status": "error",

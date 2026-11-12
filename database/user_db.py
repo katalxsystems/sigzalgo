@@ -224,11 +224,48 @@ def find_user_by_username():
     return User.query.filter_by(is_admin=True).first()
 
 
+def list_users():
+    """List every platform user (admin use only). Never includes
+    password_hash or totp_secret."""
+    return [
+        {
+            "id": u.id,
+            "username": u.username,
+            "email": u.email,
+            "is_admin": bool(u.is_admin),
+            "totp_enabled": bool(u.totp_enabled),
+        }
+        for u in User.query.order_by(User.id.asc()).all()
+    ]
+
+
 def find_user_by_exact_username(username):
     """Look up a user by exact username match. Returns None if not found."""
     if not username:
         return None
     return User.query.filter_by(username=username).first()
+
+
+def set_user_password(username, new_password):
+    """Set a user's password without the old one (administrator reset).
+
+    Also drops the user's ``username_cache`` entry, which would otherwise keep
+    accepting the old password for up to 30 seconds. The caller validates
+    strength and authorization. Returns False if the user does not exist or
+    the update fails.
+    """
+    user = find_user_by_exact_username(username)
+    if user is None:
+        return False
+    try:
+        user.set_password(new_password)
+        db_session.commit()
+    except Exception:
+        db_session.rollback()
+        logger.exception(f"Error setting password for user {username}")
+        return False
+    username_cache.pop(f"user-{username}", None)
+    return True
 
 
 def rehash_all_passwords():

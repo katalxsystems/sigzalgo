@@ -16,6 +16,7 @@ from typing import Any
 
 import websocket
 
+from utils.config import resolve_broker_api_key
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -73,7 +74,10 @@ class MstockWebSocket:
         self.auth_error_check = auth_error_check
         self.auth_failed = False
         self.auth_failure_reason = None
-        self.api_key = os.getenv("BROKER_API_SECRET") or os.getenv("BROKER_API_KEY")
+        # Per-account credentials (multi-account): the key belongs to the
+        # account this token was issued for, not the instance-wide .env.
+        _resolved_key, _resolved_secret = resolve_broker_api_key(auth_token, "mstock")
+        self.api_key = _resolved_secret or _resolved_key
         self.ws_url = self._build_ws_url()
 
         # Streaming mode variables

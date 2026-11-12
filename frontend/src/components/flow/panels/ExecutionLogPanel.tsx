@@ -1,7 +1,11 @@
 // components/flow/panels/ExecutionLogPanel.tsx
-// Displays real-time execution logs from workflow runs
+// Displays execution logs: the run just started from the editor, and the saved
+// history of every run (schedule, webhook, price alert, order update, Run Now).
 
+import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, CheckCircle2, Clock, Terminal, X, XCircle } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { flowQueryKeys, getWorkflowExecutions } from '@/api/flow'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
@@ -13,13 +17,65 @@ export interface LogEntry {
   node?: string
 }
 
+type PanelStatus = 'idle' | 'running' | 'success' | 'error'
+
 interface ExecutionLogPanelProps {
+  workflowId: number
+  /** Logs of the run started from this editor ("Run Now"), if any */
   logs: LogEntry[]
-  status: 'idle' | 'running' | 'success' | 'error'
+  status: PanelStatus
   onClose: () => void
 }
 
-export function ExecutionLogPanel({ logs, status, onClose }: ExecutionLogPanelProps) {
+const LIVE = 'live'
+
+function toPanelStatus(status: string): PanelStatus {
+  if (status === 'completed') return 'success'
+  if (status === 'failed') return 'error'
+  if (status === 'running' || status === 'pending') return 'running'
+  return 'idle'
+}
+
+export function ExecutionLogPanel({
+  workflowId,
+  logs: liveLogs,
+  status: liveStatus,
+  onClose,
+}: ExecutionLogPanelProps) {
+  const hasLiveRun = liveStatus !== 'idle'
+  const { data: executions = [] } = useQuery({
+    queryKey: flowQueryKeys.executions(workflowId),
+    queryFn: () => getWorkflowExecutions(workflowId, 20),
+    refetchInterval: 15000,
+  })
+  const [selected, setSelected] = useState<string>(LIVE)
+
+  // Show the editor's own run when there is one, else the latest saved run.
+  useEffect(() => {
+    if (hasLiveRun) {
+      setSelected(LIVE)
+    } else if (selected === LIVE && executions.length > 0) {
+      setSelected(String(executions[0].id))
+    }
+  }, [hasLiveRun, executions, selected])
+
+  const saved = executions.find((e) => String(e.id) === selected)
+  const logs: LogEntry[] = saved ? ((saved.logs ?? []) as LogEntry[]) : liveLogs
+  const status: PanelStatus = saved ? toPanelStatus(saved.status) : liveStatus
+
+  const formatRunLabel = (startedAt: string | null, runStatus: string, runId: number) => {
+    const when = startedAt
+      ? new Date(startedAt).toLocaleString('en-IN', {
+          day: '2-digit',
+          month: 'short',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false,
+        })
+      : `Run #${runId}`
+    return `${when} - ${runStatus}`
+  }
   const getStatusIcon = () => {
     switch (status) {
       case 'running':
@@ -103,6 +159,29 @@ export function ExecutionLogPanel({ logs, status, onClose }: ExecutionLogPanelPr
         </div>
       </div>
 
+      {/* Run picker: this editor's run and saved history */}
+      {(hasLiveRun || executions.length > 0) && (
+        <div className="border-b border-border px-4 py-2">
+          <label htmlFor="execution-run" className="sr-only">
+            Execution
+          </label>
+          <select
+            id="execution-run"
+            value={selected}
+            onChange={(e) => setSelected(e.target.value)}
+            className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs"
+          >
+            {hasLiveRun && <option value={LIVE}>This run</option>}
+            {executions.map((e) => (
+              <option key={e.id} value={String(e.id)}>
+                {formatRunLabel(e.started_at, e.status, e.id)}
+              </option>
+            ))}
+          </select>
+          {saved?.error && <p className="mt-1 text-xs text-red-500 break-words">{saved.error}</p>}
+        </div>
+      )}
+
       {/* Log entries */}
       <ScrollArea className="flex-1 min-h-0">
         <div className="p-3 space-y-2">
@@ -110,7 +189,11 @@ export function ExecutionLogPanel({ logs, status, onClose }: ExecutionLogPanelPr
             <div className="text-center py-8 text-muted-foreground text-sm">
               <Terminal className="h-8 w-8 mx-auto mb-2 opacity-50" />
               <p>No logs yet</p>
-              <p className="text-xs mt-1">Click "Run Now" to execute the workflow</p>
+              <p className="text-xs mt-1">
+                {saved
+                  ? 'This run recorded no log entries'
+                  : 'Click "Run Now", or wait for a scheduled or webhook run'}
+              </p>
             </div>
           ) : (
             logs.map((log, index) => (

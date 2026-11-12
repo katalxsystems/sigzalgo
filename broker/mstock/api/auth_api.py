@@ -1,15 +1,15 @@
 import json
-import os
 
 import httpx
 
+from utils.config import get_broker_api_key, get_broker_api_secret
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def authenticate_with_totp(password, totp_code):
+def authenticate_with_totp(password, totp_code, account_id=None):
     """
     Authenticate with mstock using Type B TOTP authentication (single-step).
 
@@ -23,7 +23,7 @@ def authenticate_with_totp(password, totp_code):
     logger.info("Starting mStock Type B TOTP authentication (single-step)")
 
     # Get credentials from environment variables
-    clientcode = os.getenv("BROKER_API_KEY")
+    clientcode = get_broker_api_key(account_id, broker="mstock")
 
     if not clientcode:
         return None, None, "BROKER_API_KEY (clientcode) not found in environment variables."
@@ -80,7 +80,7 @@ def authenticate_with_totp(password, totp_code):
         logger.info("Login with TOTP successful, now verifying TOTP to get final token")
 
         # Step 2: Verify TOTP with refresh token to get the final authentication token
-        api_key = os.getenv("BROKER_API_SECRET")
+        api_key = get_broker_api_secret(account_id, broker="mstock")
         verify_headers = {
             "X-Mirae-Version": "1",
             "X-PrivateKey": api_key,
@@ -138,7 +138,7 @@ def authenticate_with_totp(password, totp_code):
         return None, None, str(e)
 
 
-def send_otp(password):
+def send_otp(password, account_id=None):
     """
     Step 1 of Type B authentication: Send password to trigger OTP.
 
@@ -151,7 +151,7 @@ def send_otp(password):
     logger.info("Starting mStock Type B authentication - Step 1: Send OTP")
 
     # Get credentials from environment variables
-    clientcode = os.getenv("BROKER_API_KEY")
+    clientcode = get_broker_api_key(account_id, broker="mstock")
 
     if not clientcode:
         return None, None, "BROKER_API_KEY (clientcode) not found in environment variables."
@@ -219,7 +219,7 @@ def send_otp(password):
         return None, None, str(e)
 
 
-def verify_otp(otp_code, refresh_token):
+def verify_otp(otp_code, refresh_token, account_id=None):
     """
     Step 2 of Type B authentication: Verify OTP to get access token.
 
@@ -232,7 +232,7 @@ def verify_otp(otp_code, refresh_token):
     """
     logger.info("Starting mStock Type B authentication - Step 2: Verify OTP")
 
-    api_key = os.getenv("BROKER_API_SECRET")
+    api_key = get_broker_api_secret(account_id, broker="mstock")
 
     if not api_key:
         return None, None, "BROKER_API_SECRET (API key) not found in environment variables."
@@ -306,7 +306,7 @@ def verify_otp(otp_code, refresh_token):
 
 
 # Keep authenticate_broker for backward compatibility (deprecated, use send_otp + verify_otp)
-def authenticate_broker(otp_code, password=None):
+def authenticate_broker(otp_code, password=None, account_id=None):
     """
     DEPRECATED: Use send_otp() and verify_otp() for proper two-step authentication.
 

@@ -18,6 +18,9 @@ export interface PythonStrategy {
   schedule_days: string[]
   created_at: string
   updated_at: string
+  /** Broker account the strategy trades on (its API key is injected at start) */
+  account_id?: string | null
+  owner_username?: string | null
 }
 
 export interface PythonStrategyContent {

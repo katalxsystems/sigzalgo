@@ -1,6 +1,5 @@
-import os
-
 from broker.rmoney.baseurl import HOSTLOOKUP_URL, INTERACTIVE_URL, MARKET_DATA_URL
+from utils.config import get_broker_api_key_market, get_broker_api_secret_market
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -33,19 +32,23 @@ def get_host_lookup():
         return None, None, f"HostLookup exception: {str(e)}"
 
 
-def authenticate_broker(request_token):
+def authenticate_broker(request_token, account_id=None):
     """Authenticate with RMoney XTS using token from OAuth callback.
 
     For RMoney, the XTS OAuth third-party login already returns the full session
     with auth token. This function is kept for compatibility with the plugin system
-    and for non-OAuth authentication flows.
+    and for non-OAuth authentication flows. account_id is accepted for
+    signature consistency with every other broker plugin (blueprints/brlogin.py's
+    live rmoney callback path bypasses this function entirely and calls
+    get_feed_token() directly instead), but isn't used yet since this path
+    takes no credential of its own to resolve.
     """
     try:
         # The request_token from OAuth IS the final auth token
         auth_token = request_token
 
         # Get feed token for market data
-        feed_token, user_id, feed_error = get_feed_token()
+        feed_token, user_id, feed_error = get_feed_token(account_id)
         if feed_error:
             return auth_token, None, None, f"Feed token error: {feed_error}"
 
@@ -55,10 +58,12 @@ def authenticate_broker(request_token):
         return None, None, None, f"Error during authentication: {str(e)}"
 
 
-def get_feed_token():
+def get_feed_token(account_id=None):
     try:
-        BROKER_API_KEY_MARKET = os.getenv("BROKER_API_KEY_MARKET")
-        BROKER_API_SECRET_MARKET = os.getenv("BROKER_API_SECRET_MARKET")
+        # Fetch credentials for feed token (per-account first, see
+        # utils.config.get_broker_api_key_market's docstring)
+        BROKER_API_KEY_MARKET = get_broker_api_key_market(account_id, broker="rmoney")
+        BROKER_API_SECRET_MARKET = get_broker_api_secret_market(account_id, broker="rmoney")
 
         feed_payload = {
             "secretKey": BROKER_API_SECRET_MARKET,
