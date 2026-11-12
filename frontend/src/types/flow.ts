@@ -27,6 +27,8 @@ export interface PriceAlertNodeData {
   price: number
   ltp?: number // Live LTP from quotes API
   enabled?: boolean
+  /** Ignore prices at weekends and overnight (equity 15:45-09:00, MCX/NCDEX 23:45-08:45 IST) */
+  pauseOutsideMarketHours?: boolean
 }
 
 /** Order Update Trigger - Start when a live/sandbox order changes status */

@@ -42,6 +42,8 @@ def _client_cm(http):
     client = mock.MagicMock()
     client.__enter__.return_value = http
     return client
+
+
 KEY = "KEY"
 ARMED = 1_794_000_000  # a minute boundary
 MIN = 60
@@ -471,7 +473,10 @@ def test_create_arms_both_candle_checks_alongside_the_ltp_watches(created):
     sl_id, entry_id = sl_info["workflow_id"], entry_info["workflow_id"]
     assert sl_info["active"] is True and entry_info["active"] is True
     assert sl_info["lookback_minutes"] == entry_info["lookback_minutes"] == 120
-    assert (created.recorded["candle_workflow_id"], created.recorded["candle_entry_workflow_id"]) == (
+    assert (
+        created.recorded["candle_workflow_id"],
+        created.recorded["candle_entry_workflow_id"],
+    ) == (
         sl_id,
         entry_id,
     )
@@ -487,13 +492,33 @@ def test_create_arms_both_candle_checks_alongside_the_ltp_watches(created):
     # The two entry watches retire each other.
     ltp_entry_id = created.workflows["Entry re-cross"]
     ltp_entry = created.updated[ltp_entry_id]
-    assert f"/workflow/{entry_id}/deactivate" in _node(ltp_entry, "deactivate_candle_entry")[
-        "data"
-    ]["url"]
+    assert (
+        f"/workflow/{entry_id}/deactivate"
+        in _node(ltp_entry, "deactivate_candle_entry")["data"]["url"]
+    )
     candle_entry = created.updated[entry_id]
-    assert f"/workflow/{ltp_entry_id}/deactivate" in _node(candle_entry, "deactivate_ltp_entry")[
-        "data"
-    ]["url"]
+    assert (
+        f"/workflow/{ltp_entry_id}/deactivate"
+        in _node(candle_entry, "deactivate_ltp_entry")["data"]["url"]
+    )
+
+
+@pytest.mark.parametrize("pause", [True, False])
+def test_the_pause_option_reaches_both_ltp_watches(created, monkeypatch, pause):
+    armed = []
+    monkeypatch.setattr(
+        pbs,
+        "get_flow_price_monitor",
+        lambda: types.SimpleNamespace(add_alert=lambda **kw: armed.append(kw)),
+    )
+    ok, body, _ = created.call(pause_outside_market_hours=pause)
+
+    assert ok and body["pause_outside_market_hours"] is pause
+    assert [a["pause_outside_market_hours"] for a in armed] == [pause, pause]
+    # Stored on the trigger nodes too, so a restart restores it.
+    for key in ("SL/Target", "Entry re-cross"):
+        trigger = _node(created.updated[created.workflows[key]], "trigger")
+        assert trigger["data"]["pauseOutsideMarketHours"] is pause
 
 
 def test_no_candle_entry_check_when_price_is_already_at_entry(created):

@@ -630,6 +630,19 @@ export function ConfigPanel() {
                 </div>
                 <div className="flex items-center justify-between rounded-lg border p-3">
                   <div>
+                    <Label className="text-xs">Pause outside market hours</Label>
+                    <p className="text-[10px] text-muted-foreground">
+                      Prices are ignored at weekends and overnight: NSE, BSE, NFO and BFO from
+                      3:45 PM to 9:00 AM; MCX and NCDEX from 11:45 PM to 8:45 AM.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={(nodeData.pauseOutsideMarketHours as boolean) ?? false}
+                    onCheckedChange={(v) => handleDataChange('pauseOutsideMarketHours', v)}
+                  />
+                </div>
+                <div className="flex items-center justify-between rounded-lg border p-3">
+                  <div>
                     <Label className="text-xs">Play Sound</Label>
                   </div>
                   <Switch

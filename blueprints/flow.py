@@ -415,8 +415,7 @@ def update_workflow(workflow_id):
         # so without this a new schedule time or alert symbol saved cleanly
         # while the scheduler and monitors kept running the old one.
         logger.info(
-            f"Workflow {workflow_id} trigger configuration changed while active; "
-            "re-registering it"
+            f"Workflow {workflow_id} trigger configuration changed while active; re-registering it"
         )
         try:
             _reregister_trigger(workflow)
@@ -611,6 +610,7 @@ def _register_trigger(workflow_id, trigger_type, trigger_data, api_key):
             # and the expiry window was never applied.
             trigger=trigger_data.get("trigger", "once"),
             expiration=trigger_data.get("expiration", "none"),
+            pause_outside_market_hours=bool(trigger_data.get("pauseOutsideMarketHours", False)),
         )
 
     elif trigger_type == "orderUpdateTrigger":
@@ -1771,7 +1771,9 @@ def get_symbol_lot_sizes():
                 found[f"{exchange}:{symbol}"] = size
         # Echo every requested pair, so a caller can tell "looked up, not found"
         # from "not looked up" without diffing its own request.
-        lot_sizes = {f"{exchange}:{symbol}": found.get(f"{exchange}:{symbol}") for symbol, exchange in pairs}
+        lot_sizes = {
+            f"{exchange}:{symbol}": found.get(f"{exchange}:{symbol}") for symbol, exchange in pairs
+        }
         return jsonify({"status": "success", "lotSizes": lot_sizes})
     except Exception as e:
         logger.exception(f"Error fetching lot sizes for {len(pairs)} pair(s): {e}")

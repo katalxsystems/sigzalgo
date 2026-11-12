@@ -1221,6 +1221,7 @@ export const DEFAULT_NODE_DATA = {
     // Both are honored at activation; defaults match the panel's own.
     trigger: 'once' as const,
     expiration: 'none' as const,
+    pauseOutsideMarketHours: false,
   },
   orderUpdateTrigger: {
     orderId: '',

@@ -86,6 +86,10 @@ class PriceBreachCreateSchema(Schema):
     target1 = fields.Float(required=True)
     webhook_url = fields.Url(required=True, schemes={"http", "https"})
     name = fields.Str(load_default=None, allow_none=True, validate=validate.Length(max=200))
+    # The LTP watches ignore prices outside market hours and at weekends:
+    # NSE/BSE/NFO/BFO from 15:45 to 09:00 IST, MCX/NCDEX from 23:45 to 08:45.
+    # Other exchanges are unaffected.
+    pause_outside_market_hours = fields.Bool(load_default=False)
 
 
 class PriceBreachDeactivateSchema(Schema):

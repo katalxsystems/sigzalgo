@@ -1648,6 +1648,7 @@ TRIGGER_CONFIG_FIELDS: tuple[str, ...] = (
     "priceUpper",
     "percentage",
     "expiration",
+    "pauseOutsideMarketHours",
     # orderUpdateTrigger
     "orderId",
     "status",

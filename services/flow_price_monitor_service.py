@@ -22,7 +22,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from datetime import time as dtime
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from services.flow_openalgo_client import FlowOpenAlgoClient, get_flow_client
 from utils import real_threading
@@ -30,6 +32,42 @@ from utils.env_config import env_int
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# The "pause outside market hours" option. A watch on one of these exchanges
+# that has it set is live only from its resume time to its pause time (IST) on
+# weekdays, and ignores every price outside that, all weekend included:
+# post-close and pre-session prices (closing-price revisions, mock trading
+# sessions) are not prices a call should be judged on. Indices are gated with
+# the exchange they are computed on.
+_EQUITY_HOURS = (dtime(9, 0), dtime(15, 45))
+_COMMODITY_HOURS = (dtime(8, 45), dtime(23, 45))
+MONITORING_HOURS: dict[str, tuple[dtime, dtime]] = {
+    "NSE": _EQUITY_HOURS,
+    "BSE": _EQUITY_HOURS,
+    "NFO": _EQUITY_HOURS,
+    "BFO": _EQUITY_HOURS,
+    "NSE_INDEX": _EQUITY_HOURS,
+    "BSE_INDEX": _EQUITY_HOURS,
+    "MCX": _COMMODITY_HOURS,
+    "NCDEX": _COMMODITY_HOURS,
+    "MCX_INDEX": _COMMODITY_HOURS,
+}
+_IST = ZoneInfo("Asia/Kolkata")
+
+
+def is_outside_monitoring_hours(exchange: str, now: datetime | None = None) -> bool:
+    """True while a pausable watch on ``exchange`` should be paused: outside
+    its MONITORING_HOURS window on weekdays (NSE/BSE/NFO/BFO 09:00-15:45,
+    MCX/NCDEX 08:45-23:45 IST), and all of Saturday and Sunday. Always False
+    for an exchange with no window (CDS, BCD, crypto)."""
+    hours = MONITORING_HOURS.get(str(exchange or "").upper())
+    if hours is None:
+        return False
+    now = now.astimezone(_IST) if now is not None else datetime.now(_IST)
+    if now.weekday() >= 5:
+        return True
+    resume_at, pause_at = hours
+    return not (resume_at <= now.time() < pause_at)
 
 
 def _fmt_price(value: float | None) -> str:
@@ -85,9 +123,15 @@ def describe_breach(
     was = _fmt_price(previous)
 
     if condition == "greater_than":
-        return f"LTP {now} is above level {_fmt_price(target)} by {_signed(price - target, target)}", target
+        return (
+            f"LTP {now} is above level {_fmt_price(target)} by {_signed(price - target, target)}",
+            target,
+        )
     if condition == "less_than":
-        return f"LTP {now} is below level {_fmt_price(target)} by {_signed(price - target, target)}", target
+        return (
+            f"LTP {now} is below level {_fmt_price(target)} by {_signed(price - target, target)}",
+            target,
+        )
     if condition == "crossing":
         return (
             f"LTP {now} reached level {_fmt_price(target)} "
@@ -127,6 +171,7 @@ def describe_breach(
         )
         return f"moved {was} -> {now} ({_signed(move, previous)}{threshold})", previous
     return f"LTP {now} met condition {alert.condition!r} at {_fmt_price(target)}", target
+
 
 # Shared and bounded, never one thread per fire: an every_time alert on a fast
 # poll interval would otherwise spawn a thread per tick, each running a whole
@@ -170,6 +215,10 @@ class PriceAlert:
     # "Every Time" silently behaved as "Only Once" and expiry never applied.
     trigger: str = "once"
     expiration: str = "none"
+    # See is_outside_monitoring_hours. `paused` only records the last state
+    # seen, so the pause and the resume are each logged once.
+    pause_outside_market_hours: bool = False
+    paused: bool = False
 
 
 class FlowPriceMonitor:
@@ -237,8 +286,7 @@ class FlowPriceMonitor:
         self._shutdown_done = False
 
         logger.debug(
-            f"FlowPriceMonitor initialized (WS-primary, "
-            f"{self._poll_interval}s poll backstop)"
+            f"FlowPriceMonitor initialized (WS-primary, {self._poll_interval}s poll backstop)"
         )
 
     # The editor and this monitor grew separate vocabularies for the same four
@@ -276,6 +324,7 @@ class FlowPriceMonitor:
         api_key: str | None = None,
         trigger: str = "once",
         expiration: str = "none",
+        pause_outside_market_hours: bool = False,
     ) -> bool:
         """Add a price alert for a workflow"""
         condition = self.normalize_condition(condition)
@@ -291,6 +340,7 @@ class FlowPriceMonitor:
             api_key=api_key,
             trigger=str(trigger or "once").strip().lower(),
             expiration=str(expiration or "none").strip().lower(),
+            pause_outside_market_hours=bool(pause_outside_market_hours),
         )
 
         with self._alerts_lock:
@@ -298,7 +348,13 @@ class FlowPriceMonitor:
             logger.info(
                 f"Added price alert for workflow {workflow_id}: watching "
                 f"{symbol}@{exchange} for {describe_watch(alert)} "
-                f"(trigger: {alert.trigger}, expires: {alert.expiration})"
+                f"(trigger: {alert.trigger}, expires: {alert.expiration}"
+                + (
+                    ", paused outside market hours and at weekends"
+                    if alert.pause_outside_market_hours
+                    else ""
+                )
+                + ")"
             )
 
             if not self._running:
@@ -642,6 +698,25 @@ class FlowPriceMonitor:
         "1w": timedelta(weeks=1),
     }
 
+    @staticmethod
+    def _is_paused(alert: PriceAlert, now: datetime | None = None) -> bool:
+        """Whether this watch is in its paused window, logging each change."""
+        paused = alert.pause_outside_market_hours and is_outside_monitoring_hours(
+            alert.exchange, now
+        )
+        if paused != alert.paused:
+            alert.paused = paused
+            logger.info(
+                f"Price alert for workflow {alert.workflow_id} ({alert.symbol}@{alert.exchange}) "
+                + (
+                    f"paused until {MONITORING_HOURS[alert.exchange.upper()][0]:%H:%M} IST "
+                    "on the next weekday."
+                    if paused
+                    else "resumed for the trading session."
+                )
+            )
+        return paused
+
     def _is_expired(self, alert: PriceAlert) -> bool:
         window = self._EXPIRATION_WINDOWS.get(alert.expiration)
         if window is None:
@@ -662,6 +737,10 @@ class FlowPriceMonitor:
                 f"{alert.expiration}; no longer watching."
             )
             self.remove_alert(alert.workflow_id)
+            return
+
+        # No quote is spent on a paused watch; _apply_price would ignore it.
+        if self._is_paused(alert):
             return
 
         try:
@@ -699,6 +778,11 @@ class FlowPriceMonitor:
         never fire even though the breach was correctly detected).
         """
         if alert.triggered:
+            return
+        # Ignored entirely, last_price included: the first price after the
+        # resume is compared with the last one before the pause, so a gap
+        # through a level at the open still counts as crossing it.
+        if self._is_paused(alert):
             return
 
         previous_price = alert.last_price
@@ -952,13 +1036,11 @@ class FlowPriceMonitor:
 
             deactivate_workflow(workflow_id)
             logger.info(
-                f"One-shot price alert for workflow {workflow_id} consumed; "
-                "workflow deactivated."
+                f"One-shot price alert for workflow {workflow_id} consumed; workflow deactivated."
             )
         except Exception:
             logger.exception(
-                f"Could not deactivate workflow {workflow_id} after its one-shot "
-                "price alert fired"
+                f"Could not deactivate workflow {workflow_id} after its one-shot price alert fired"
             )
 
     @staticmethod
@@ -1100,6 +1182,7 @@ def restore_price_alerts() -> int:
                 api_key=api_key,
                 trigger=data.get("trigger", "once"),
                 expiration=data.get("expiration", "none"),
+                pause_outside_market_hours=bool(data.get("pauseOutsideMarketHours", False)),
             )
             restored += 1
         except (TypeError, ValueError) as e:

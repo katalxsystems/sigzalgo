@@ -77,6 +77,7 @@ class PriceBreachCreate(Resource):
                 target1=data["target1"],
                 webhook_url=data["webhook_url"],
                 name=data["name"],
+                pause_outside_market_hours=data["pause_outside_market_hours"],
             )
             return make_response(jsonify(response_data), status_code)
 

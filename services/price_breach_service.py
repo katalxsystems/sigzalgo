@@ -311,6 +311,7 @@ def _sl_target_graph(
     api_key: str,
     own_id: int,
     name: str,
+    pause_outside_market_hours: bool = False,
 ) -> dict[str, Any]:
     """Trigger -> branch on which bound was crossed -> one of two notify
     bodies (breach_type "stop_loss" or "target1") -> deactivate chain.
@@ -332,6 +333,7 @@ def _sl_target_graph(
         "priceUpper": upper,
         "trigger": "once",
         "expiration": "none",
+        "pauseOutsideMarketHours": bool(pause_outside_market_hours),
     }
     common = _base_notify_body(
         call_id,
@@ -417,6 +419,7 @@ def _entry_recross_graph(
     own_id: int,
     name: str,
     candle_entry_id: int | None = None,
+    pause_outside_market_hours: bool = False,
 ) -> dict[str, Any]:
     """`candle_entry_id`, when set, is the 1-minute candle entry check for the
     same call. It is retired along with this watch, so one re-cross is
@@ -428,6 +431,7 @@ def _entry_recross_graph(
         "price": entry_price,
         "trigger": "once",
         "expiration": "none",
+        "pauseOutsideMarketHours": bool(pause_outside_market_hours),
     }
     notify_body = _base_notify_body(
         call_id,
@@ -800,6 +804,7 @@ def create_and_activate(
     target1: float,
     webhook_url: str,
     name: str | None = None,
+    pause_outside_market_hours: bool = False,
 ) -> tuple[bool, dict[str, Any], int]:
     """Create (and activate) the sl_target watch, and the entry_recross
     watch when active_price != entry_price -- or, when they are equal, send
@@ -923,6 +928,7 @@ def create_and_activate(
         api_key,
         own_id=sl_target_wf.id,
         name=sl_target_wf.name,
+        pause_outside_market_hours=pause_outside_market_hours,
     )
     update_workflow(sl_target_wf.id, nodes=sl_target_graph["nodes"], edges=sl_target_graph["edges"])
 
@@ -943,6 +949,7 @@ def create_and_activate(
             own_id=entry_wf.id,
             name=entry_wf.name,
             candle_entry_id=candle_entry_wf.id if candle_entry_wf else None,
+            pause_outside_market_hours=pause_outside_market_hours,
         )
         update_workflow(entry_wf.id, nodes=entry_graph["nodes"], edges=entry_graph["edges"])
 
@@ -1013,6 +1020,7 @@ def create_and_activate(
         api_key=api_key,
         trigger="once",
         expiration="none",
+        pause_outside_market_hours=pause_outside_market_hours,
     )
     db_activate_workflow(sl_target_wf.id, api_key=api_key)
 
@@ -1026,6 +1034,7 @@ def create_and_activate(
             api_key=api_key,
             trigger="once",
             expiration="none",
+            pause_outside_market_hours=pause_outside_market_hours,
         )
         db_activate_workflow(entry_wf.id, api_key=api_key)
     else:
@@ -1122,6 +1131,7 @@ def create_and_activate(
             "status": "success",
             "call_id": call_id,
             "mentor_id": mentor_id,
+            "pause_outside_market_hours": bool(pause_outside_market_hours),
             "workflows": workflows,
             "message": message,
         },

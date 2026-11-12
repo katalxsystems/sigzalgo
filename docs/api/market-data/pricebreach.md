@@ -391,6 +391,32 @@ key gets `403`. An unknown `workflow_id` gets `404`.
 | target1 | number | create | Mandatory | Target level |
 | webhook_url | string | create | Mandatory | Where breach notifications are POSTed |
 | name | string | create | Optional | Base workflow name (default: `"<call_id>_<mentor_id>_<symbol>"`); the workflows suffix `(SL/Target)` / `(Entry re-cross)` / `(1m Candle SL/Target)` / `(1m Candle Entry)` |
+| pause_outside_market_hours | boolean | create | Optional | Default `false`. When `true`, the two LTP watches ignore every price outside the exchange's monitoring hours and all weekend (see below). Echoed back in the create response |
+
+### Pausing outside market hours
+
+With `pause_outside_market_hours: true`, a paused watch neither polls a quote
+nor evaluates a tick, so post-close prices (closing-price revisions, a
+weekend mock trading session) can never report a breach. The call stays
+active through the pause; nothing is deactivated or re-created.
+
+| Exchange | Watched (IST, Monday to Friday) | Paused |
+|----------|---------------------------------|--------|
+| `NSE`, `BSE`, `NFO`, `BFO`, `NSE_INDEX`, `BSE_INDEX` | 09:00 to 15:45 | 15:45 to 09:00, and all weekend |
+| `MCX`, `NCDEX`, `MCX_INDEX` | 08:45 to 23:45 | 23:45 to 08:45, and all weekend |
+| Any other exchange | Always | Never |
+
+- The first price after the resume is compared with the last price before the
+  pause, so a gap through `entry_price` at the open still counts as a
+  re-cross, and a gap past `stop_loss` or `target1` is a breach at the opening
+  price.
+- The 1-minute candle checks are not affected by this flag. They already run
+  only inside the exchange's trading session (09:15 to 15:30 for NSE/NFO).
+- Holidays are not paused: a weekday holiday is watched during the hours
+  above like a trading day, and simply receives no ticks.
+- In the Flow editor, the same option is the **Pause outside market hours**
+  switch on a Price Alert trigger. Saving a change to it on an active
+  workflow re-arms the watch with the new setting.
 
 ## Notes
 
