@@ -102,13 +102,15 @@ def _login_error(status_code, body, sent_totp=False):
     return message + ". Check the API key and secret in your OpenAlgo settings."
 
 
-def authenticate_broker(code=None, account_id=None):
+def authenticate_broker(code=None, account_id=None, totp=None):
     """Mint the day's Sahi access token from the API key and secret.
 
     Args:
         code: Unused. The login route passes a placeholder.
         account_id: The broker account logging in. Its own stored API key and
             secret are used (see utils.config.get_broker_api_key).
+        totp: Optional, from the login request: a six-digit code used as is,
+            or a base32 seed. Takes precedence over the account's saved seed.
 
     Returns:
         tuple: (access_token, None) on success, (None, error_message) on failure.
@@ -122,6 +124,13 @@ def authenticate_broker(code=None, account_id=None):
         )
 
     payload = {"key_id": key_id, "secret": secret}
+    totp = (totp or "").strip()
+    if totp.isdigit() and len(totp) == 6:
+        payload["totp"] = totp
+        seed = None
+        logger.info(f"Sahi login for account {account_id}: using the code sent with the login")
+    elif totp:
+        seed = totp
     if seed:
         cleaned = normalize_totp_seed(seed)
         if not cleaned:
@@ -133,10 +142,13 @@ def authenticate_broker(code=None, account_id=None):
         # TEMPORARY: diagnosing a refused Sahi TOTP login. Remove once fixed;
         # generated codes must not be logged in normal operation.
         logger.info(f"TEMPORARY Sahi TOTP debug for account {account_id}: code={payload['totp']}")
-    logger.info(
-        f"Sahi login for account {account_id}: "
-        f"{'sending an authenticator code' if seed else 'no TOTP secret saved, sending key and secret only'}"
-    )
+    if "totp" not in payload:
+        logger.info(
+            f"Sahi login for account {account_id}: no TOTP secret saved and none sent "
+            f"with the login, sending key and secret only"
+        )
+    elif seed:
+        logger.info(f"Sahi login for account {account_id}: sending an authenticator code")
 
     client = get_httpx_client()
     try:

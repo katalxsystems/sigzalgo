@@ -38,6 +38,47 @@ def ratelimit_handler(e):
     return jsonify(error="Rate limit exceeded"), 429
 
 
+def _sahi_totp_from_request(account_id):
+    """A TOTP code or base32 seed sent with a Sahi login, from form, query or JSON.
+
+    A seed is saved on the account (with its API secret) so later logins,
+    including the scheduled one, need nothing sent. Returns the value to log
+    in with, or None when the request carried none.
+    """
+    from blueprints.broker_accounts import TOTP_SEED_FIELDS, _pack_totp_seed
+    from database.auth_db import get_broker_credentials, set_broker_credentials
+
+    body = request.get_json(silent=True) if request.is_json else None
+    sources = [request.form, request.args, body if isinstance(body, dict) else {}]
+    value = None
+    for source in sources:
+        for field in TOTP_SEED_FIELDS:
+            candidate = str(source.get(field) or "").strip()
+            if candidate:
+                value = candidate
+                break
+        if value:
+            break
+
+    if not value:
+        # Field names only, never values: shows what a client calls the code.
+        names = sorted({*request.form.keys(), *request.args.keys(), *(sources[2].keys())})
+        logger.info(f"Sahi login request carried no TOTP. Fields sent: {names}")
+        return None
+
+    if value.isdigit() and len(value) == 6:
+        return value
+
+    _, stored = get_broker_credentials(account_id, broker="sahi")
+    packed, error = _pack_totp_seed("sahi", stored, value, account_id=account_id)
+    if error:
+        logger.warning(f"Sahi TOTP secret sent for account {account_id} was not saved: {error}")
+        return value
+    if set_broker_credentials(account_id, None, packed):
+        logger.info(f"Saved the Sahi TOTP secret sent with the login for account {account_id}")
+    return value
+
+
 @brlogin_bp.route("/<broker>/callback", methods=["POST", "GET"])
 @limiter.limit(LOGIN_RATE_LIMIT_MIN)
 @limiter.limit(LOGIN_RATE_LIMIT_HOUR)
@@ -670,8 +711,12 @@ def broker_callback(broker, para=None):
 
     elif broker == "sahi":
         # Sahi mints the day's token from this account's stored API key and
-        # secret; there is nothing for the trader to enter.
-        auth_token, error_message = auth_function("sahi", account_id=account_id)
+        # secret. A TOTP-protected key also needs a code: either the account's
+        # saved base32 seed generates it, or the login request carries one
+        # (a six-digit code, or the seed itself, which is then saved).
+        auth_token, error_message = auth_function(
+            "sahi", account_id=account_id, totp=_sahi_totp_from_request(account_id)
+        )
         forward_url = "broker.html"
 
     elif broker == "wisdom":

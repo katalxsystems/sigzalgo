@@ -56,6 +56,40 @@ def test_a_key_without_a_seed_sends_no_totp(sent, monkeypatch):
     assert sent[0] == {"key_id": "pk_1", "secret": "sahi_sk_1"}
 
 
+def test_a_six_digit_code_sent_with_the_login_is_used_as_is(sent, monkeypatch):
+    _secret(monkeypatch, f"sahi_sk_1:::{SEED}")
+    sahi.authenticate_broker(account_id="a", totp="654321")
+    assert sent[0]["totp"] == "654321"
+
+
+def test_a_seed_sent_with_the_login_generates_the_code(sent, monkeypatch):
+    _secret(monkeypatch, "sahi_sk_1")
+    sahi.authenticate_broker(account_id="a", totp=SEED)
+    assert pyotp.TOTP(SEED).verify(sent[0]["totp"], valid_window=1)
+
+
+def test_the_login_route_reads_and_saves_a_seed(monkeypatch):
+    from flask import Flask
+
+    import blueprints.brlogin as brlogin
+    import database.auth_db as auth_db
+
+    saved = {}
+    monkeypatch.setattr(auth_db, "get_broker_credentials", lambda *a, **k: ("pk_1", "sahi_sk_1"))
+    monkeypatch.setattr(
+        auth_db, "set_broker_credentials", lambda acc, key, secret: saved.update({acc: secret}) or True
+    )
+    app = Flask(__name__)
+    with app.test_request_context("/sahi/callback", method="POST", data={"totp_secret": SEED}):
+        assert brlogin._sahi_totp_from_request("a") == SEED
+    assert saved == {"a": f"sahi_sk_1:::{SEED}"}
+
+    with app.test_request_context("/sahi/callback?totp=123456"):
+        assert brlogin._sahi_totp_from_request("a") == "123456"
+    with app.test_request_context("/sahi/callback", method="POST", data={"other": "x"}):
+        assert brlogin._sahi_totp_from_request("a") is None
+
+
 def test_a_seed_in_authenticator_layout_is_accepted(sent, monkeypatch):
     _secret(monkeypatch, "sahi_sk_1:::jbsw y3dp ehpk 3pxp")
     assert sahi.authenticate_broker(account_id="a")[0] == "tok"
