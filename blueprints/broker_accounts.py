@@ -53,12 +53,29 @@ def _generate_api_key():
 TOTP_SEED_BROKERS = {"sahi"}
 
 
-def _requested_totp_seed(data):
+TOTP_SEED_FIELDS = (
+    "broker_totp_secret",
+    "totp_secret",
+    "totp",
+    "broker_totp",
+    "totp_key",
+    "totp_seed",
+    "broker_api_totp",
+)
+
+
+def _requested_totp_seed(data, broker=None):
     """The base32 TOTP seed in a request body, under any of its accepted names."""
-    for field in ("broker_totp_secret", "totp_secret", "totp"):
-        value = (data.get(field) or "").strip()
+    for field in TOTP_SEED_FIELDS:
+        value = str(data.get(field) or "").strip()
         if value:
             return value
+    if broker in TOTP_SEED_BROKERS:
+        # Field names only, never values: shows what a client calls the seed.
+        logger.info(
+            f"No TOTP secret in the {broker} account request. Fields sent: {sorted(data)}. "
+            f"Accepted names: {list(TOTP_SEED_FIELDS)}"
+        )
     return None
 
 
@@ -179,7 +196,7 @@ def add_account():
             return jsonify({"status": "error", "message": format_error}), 400
 
     broker_api_secret, totp_error = _pack_totp_seed(
-        broker, broker_api_secret, _requested_totp_seed(data)
+        broker, broker_api_secret, _requested_totp_seed(data, broker)
     )
     if totp_error:
         return jsonify({"status": "error", "message": totp_error}), 400
@@ -283,7 +300,7 @@ def update_account_credentials(account_id):
     data = request.get_json(silent=True) or {}
     broker_api_key = (data.get("broker_api_key") or "").strip() or None
     broker_api_secret = (data.get("broker_api_secret") or "").strip() or None
-    totp_seed = _requested_totp_seed(data)
+    totp_seed = _requested_totp_seed(data, account["broker"])
 
     if not broker_api_key and not broker_api_secret and not totp_seed:
         return jsonify({"status": "error", "message": "Nothing to update"}), 400
