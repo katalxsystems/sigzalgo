@@ -890,8 +890,16 @@ def prune_workflow_executions(workflow_id, max_count=None, max_age_days=None):
                     or 0
                 )
 
+        # Always end the transaction, even when nothing was deleted. The DELETE
+        # statements run regardless, and SQLite opens a write transaction for
+        # them whether or not they match a row. Committing only on a non-zero
+        # count left that transaction open for the rest of the run: the run held
+        # the write lock on the shared database until it finished, so any write
+        # it caused elsewhere -- an HTTP node calling this app's own deactivate
+        # route -- waited on the run while the run waited on it, until the HTTP
+        # timeout broke the cycle.
+        db_session.commit()
         if deleted:
-            db_session.commit()
             logger.info(
                 f"Pruned {deleted} execution(s) for workflow {workflow_id} "
                 f"(keep newest {max_count}, max age {max_age_days}d)"

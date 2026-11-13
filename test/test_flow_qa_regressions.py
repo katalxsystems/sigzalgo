@@ -1256,6 +1256,34 @@ def test_retention_leaves_other_workflows_alone(flow_database):
     assert len(flow_database.get_workflow_executions(theirs.id, limit=200)) == 4
 
 
+def test_recording_a_run_does_not_leave_the_write_lock_held(flow_database):
+    """A prune that deleted nothing left its write transaction open.
+
+    Its DELETEs open a write transaction whether or not they match a row, and
+    the commit only ran when one did. The run then held the write lock on the
+    shared database until it finished, so a write it triggered elsewhere -- its
+    HTTP node deactivating another workflow through this app -- blocked until
+    the HTTP call timed out.
+    """
+    import sqlite3
+
+    workflow = flow_database.create_workflow("lock test", nodes=[], edges=[])
+    # Fresh workflow, retention on: prune runs and deletes nothing.
+    flow_database.create_execution(workflow.id, status="running")
+
+    url = flow_database.engine.url
+    if url.get_backend_name() != "sqlite" or not url.database:
+        pytest.skip("checks the SQLite write lock")
+    # A plain connection (not the cooperative one, which would retry for 15s)
+    # that must get the write lock immediately.
+    other = sqlite3.connect(url.database, timeout=0, factory=sqlite3.Connection)
+    try:
+        other.execute("BEGIN IMMEDIATE")
+        other.rollback()
+    finally:
+        other.close()
+
+
 def test_retention_can_be_switched_off(flow_database):
     workflow = flow_database.create_workflow("no retention", nodes=[], edges=[])
     for _ in range(6):
