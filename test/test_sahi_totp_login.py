@@ -71,7 +71,13 @@ def test_the_totp_refusal_tells_the_trader_what_to_add():
     message = sahi._login_error(
         400, {"code": "InvalidRequest", "message": "This API key needs a six-digit totp code"}
     )
-    assert "TOTP secret" in message
+    assert "no TOTP secret is saved" in message
+    sent_message = sahi._login_error(
+        400,
+        {"code": "InvalidRequest", "message": "This API key needs a six-digit totp code"},
+        sent_totp=True,
+    )
+    assert "did not accept the authenticator code" in sent_message
 
 
 def test_the_account_api_packs_the_seed_with_the_secret():

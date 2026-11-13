@@ -55,7 +55,7 @@ def split_secret(stored_secret):
     return secret.strip(), (seed.strip() or None)
 
 
-def _login_error(status_code, body):
+def _login_error(status_code, body, sent_totp=False):
     """A login failure in words a trader can act on.
 
     The auth host answers with {"code", "message"} where code is PascalCase:
@@ -66,11 +66,16 @@ def _login_error(status_code, body):
     reason = body.get("message") if isinstance(body, dict) else None
 
     if isinstance(reason, str) and "totp" in reason.lower():
+        if sent_totp:
+            return (
+                "Sahi did not accept the authenticator code. Check that the TOTP secret saved "
+                "on this broker account belongs to this API key, and that the server clock is "
+                "correct, then log in again."
+            )
         return (
-            "This Sahi API key is protected by an authenticator code. Add the key's TOTP "
-            "secret (the base32 text shown when you set up the authenticator) to this "
-            "broker account, then log in again. If it is already added, check that it "
-            "belongs to this API key and that the server clock is correct."
+            "This Sahi API key is protected by an authenticator code, and no TOTP secret is "
+            "saved on this broker account. Add the key's TOTP secret (the base32 text shown "
+            "when you set up the authenticator), then log in again."
         )
     if status_code == 403 or code == "Forbidden":
         return (
@@ -125,6 +130,13 @@ def authenticate_broker(code=None, account_id=None):
                 "secret shown when you set up the authenticator, not a six-digit code."
             )
         payload["totp"] = pyotp.TOTP(cleaned).now()
+        # TEMPORARY: diagnosing a refused Sahi TOTP login. Remove once fixed;
+        # generated codes must not be logged in normal operation.
+        logger.info(f"TEMPORARY Sahi TOTP debug for account {account_id}: code={payload['totp']}")
+    logger.info(
+        f"Sahi login for account {account_id}: "
+        f"{'sending an authenticator code' if seed else 'no TOTP secret saved, sending key and secret only'}"
+    )
 
     client = get_httpx_client()
     try:
@@ -163,4 +175,4 @@ def authenticate_broker(code=None, account_id=None):
         f"Sahi login refused: HTTP {response.status_code}, code={body.get('code') if isinstance(body, dict) else None}, "
         f"message={body.get('message') if isinstance(body, dict) else None}"
     )
-    return None, _login_error(response.status_code, body)
+    return None, _login_error(response.status_code, body, sent_totp="totp" in payload)
