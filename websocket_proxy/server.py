@@ -32,6 +32,17 @@ from .port_check import find_available_port, is_port_in_use
 logger = get_logger("websocket_proxy")
 
 
+def _call_failed(result) -> str | None:
+    """The error from an adapter's initialize()/connect() result, or None on
+    success. Adapters answer {"status": "error", "message": ...}; the
+    connection pool answers {"success": False, "error": ...}; None is success."""
+    if not result:
+        return None
+    if result.get("status") == "error" or result.get("success") is False:
+        return str(result.get("message") or result.get("error") or "unknown error")
+    return None
+
+
 class WebSocketProxy:
     """
     WebSocket Proxy Server that handles client connections and authentication,
@@ -1856,10 +1867,102 @@ class WebSocketProxy:
                     f"Error cleaning connection pools for user {user_id}: {pool_error}"
                 )
 
+            # The teardown alone left every connected client of this user
+            # subscribed to a feed that no longer existed: no ticks, and any
+            # new subscribe refused with "Broker adapter not found" until that
+            # client authenticated again, which a long-lived client (the Flow
+            # price monitor, the strategy module) never does. A morning
+            # auto-login therefore silenced live ticks for the whole day.
+            self._rebuild_feed_for_user(user_id)
+
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse cache invalidation message: {e}")
         except Exception as e:
             logger.exception(f"Error processing cache invalidation: {e}")
+
+    def _rebuild_feed_for_user(self, user_id: str) -> None:
+        """Reconnect a user's broker feed with the fresh token and restore the
+        subscriptions their connected clients still hold.
+
+        Called right after a cache invalidation tore the old adapter down. The
+        token was committed before the invalidation was published, so the new
+        adapter reads it. A logout or revoke leaves no token, initialization
+        fails, and the feed stays down, which is correct: the next login
+        publishes another invalidation and lands here again.
+
+        The clients' own subscription records and the subscription index are
+        untouched by the teardown, so restoring the broker side is enough for
+        ticks to reach them again; no client has to notice.
+        """
+        client_ids = [cid for cid, uid in self.user_mapping.items() if uid == user_id]
+        broker_name = self.user_broker_mapping.get(user_id)
+        if not client_ids or not broker_name:
+            return
+
+        # One broker subscription per (symbol, exchange, mode, depth), however
+        # many clients share it.
+        wanted: dict[tuple, None] = {}
+        for client_id in client_ids:
+            for sub_json in self.subscriptions.get(client_id, ()):
+                try:
+                    sub = json.loads(sub_json)
+                    key = (sub["symbol"], sub["exchange"], sub["mode"], sub.get("depth_level", 5))
+                except (ValueError, KeyError, TypeError):
+                    continue
+                wanted[key] = None
+
+        adapter = None
+        try:
+            adapter = create_broker_adapter(broker_name)
+            if not adapter:
+                logger.error(
+                    f"Could not rebuild the {broker_name} feed for user {user_id}: "
+                    "no adapter for this broker"
+                )
+                return
+            failure = _call_failed(adapter.initialize(broker_name, user_id))
+            if failure is None:
+                failure = _call_failed(adapter.connect())
+        except Exception as e:
+            logger.exception(f"Error rebuilding the {broker_name} feed for user {user_id}")
+            failure = str(e) or type(e).__name__
+        if failure is not None:
+            logger.warning(
+                f"Could not reconnect the {broker_name} feed for user {user_id} after "
+                f"the session changed ({failure}); it stays down until the next login"
+            )
+            # A half-built adapter may already hold a socket and threads, on
+            # the raised path as much as the refused one.
+            if adapter is not None:
+                try:
+                    adapter.disconnect()
+                except Exception:
+                    logger.debug("Disconnect after a failed feed rebuild also failed", exc_info=True)
+            return
+
+        self.broker_adapters[user_id] = adapter
+
+        restored, refused = 0, []
+        for symbol, exchange, mode, depth in wanted:
+            try:
+                response = adapter.subscribe(symbol, exchange, mode, depth)
+            except Exception:
+                logger.exception(f"Error restoring subscription {exchange}:{symbol}")
+                response = None
+            if response and response.get("status") == "success":
+                restored += 1
+            else:
+                refused.append(f"{exchange}:{symbol}")
+        logger.info(
+            f"Reconnected the {broker_name} feed for user {user_id} with the new session; "
+            f"restored {restored} of {len(wanted)} subscription(s) for "
+            f"{len(client_ids)} connected client(s)"
+        )
+        if refused:
+            logger.warning(
+                f"The rebuilt {broker_name} feed refused {len(refused)} subscription(s): "
+                f"{', '.join(refused[:20])}"
+            )
 
     async def _handle_order_update(self, data_str: str):
         """

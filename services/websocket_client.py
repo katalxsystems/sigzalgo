@@ -51,6 +51,31 @@ def _canonical_mode(value: Any) -> str:
     raise ValueError("Mode must be LTP, Quote, or Depth")
 
 
+def accepted_symbol_keys(result: Any, requested: set[str] | list[str]) -> set[str]:
+    """Which of ``requested`` ("EXCHANGE:SYMBOL") a subscribe() result says the
+    feed accepted.
+
+    A consumer must record only these as subscribed. One that records the whole
+    request regardless (the pattern this replaces) treats a refusal, such as
+    "Broker adapter not found" while the broker feed is down after a re-login,
+    as live, and never asks for those symbols again.
+    """
+    requested = set(requested)
+    if not isinstance(result, dict) or result.get("status") == "error":
+        return set()
+    entries = result.get("subscriptions")
+    if not entries:
+        # An ack with no per-symbol list: all or nothing on its status.
+        return requested if result.get("status") == "success" else set()
+    accepted = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("status") != "success":
+            continue
+        if entry.get("symbol") and entry.get("exchange"):
+            accepted.add(f"{entry['exchange']}:{entry['symbol']}")
+    return accepted & requested
+
+
 class WebSocketClient:
     """
     Internal WebSocket client for connecting to OpenAlgo WebSocket server.
@@ -252,9 +277,7 @@ class WebSocketClient:
             raise box["error"]
         return box.get("value")
 
-    async def _send_and_await_ack(
-        self, message: dict, request_id: str, timeout: float
-    ) -> dict:
+    async def _send_and_await_ack(self, message: dict, request_id: str, timeout: float) -> dict:
         """Send a message and await the proxy's matching response.
 
         Runs inside the asyncio loop thread (called via run_coroutine_threadsafe).
@@ -315,8 +338,7 @@ class WebSocketClient:
             )
         except TimeoutError:
             logger.warning(
-                f"Subscribe timed out waiting for proxy ack (mode={mode}, "
-                f"symbols={len(symbols)})"
+                f"Subscribe timed out waiting for proxy ack (mode={mode}, symbols={len(symbols)})"
             )
             return {
                 "status": "error",
@@ -341,9 +363,7 @@ class WebSocketClient:
                 if key not in self.active_subscriptions:
                     self.active_subscriptions[key] = set()
                 try:
-                    accepted_mode = _canonical_mode(
-                        entry.get("mode", canonical_mode)
-                    )
+                    accepted_mode = _canonical_mode(entry.get("mode", canonical_mode))
                 except (TypeError, ValueError):
                     continue
                 self.active_subscriptions[key].add(accepted_mode)
@@ -420,9 +440,7 @@ class WebSocketClient:
             requested_modes: dict[tuple[str, str], set[str]] = {}
             for symbol_info in symbols:
                 item_mode = _canonical_mode(
-                    symbol_info["mode"]
-                    if "mode" in symbol_info
-                    else canonical_mode
+                    symbol_info["mode"] if "mode" in symbol_info else canonical_mode
                 )
                 wire_symbol = {**symbol_info, "mode": item_mode}
                 wire_symbols.append(wire_symbol)
@@ -447,8 +465,7 @@ class WebSocketClient:
             )
         except TimeoutError:
             logger.warning(
-                f"Unsubscribe timed out waiting for proxy ack (mode={mode}, "
-                f"symbols={len(symbols)})"
+                f"Unsubscribe timed out waiting for proxy ack (mode={mode}, symbols={len(symbols)})"
             )
             return {
                 "status": "error",
@@ -484,9 +501,7 @@ class WebSocketClient:
                 requested_modes: dict[tuple[str, str], set[str]] = {}
                 for symbol_key, modes in self.active_subscriptions.items():
                     exchange, symbol = symbol_key.split(":", 1)
-                    canonical_modes = {
-                        _canonical_mode(item_mode) for item_mode in modes
-                    }
+                    canonical_modes = {_canonical_mode(item_mode) for item_mode in modes}
                     requested_modes[(exchange, symbol)] = canonical_modes
 
             request_id = str(uuid.uuid4())

@@ -135,6 +135,9 @@ STALE_THRESHOLD_SEC = _env_float("STRATEGY_TICK_STALE_THRESHOLD_SEC", 10.0)
 STALE_FATAL_SEC = _env_float("STRATEGY_TICK_STALE_FATAL_SEC", 60.0)
 #: How often the REST fallback runs a cycle.
 POLL_INTERVAL_SEC = _env_float("STRATEGY_TICK_POLL_INTERVAL_SEC", 2.0)
+#: How often a symbol the websocket refused is asked for again. It is priced
+#: by REST meanwhile, so this only decides how soon it is back on live ticks.
+RESUBSCRIBE_RETRY_SEC = _env_float("STRATEGY_TICK_RESUBSCRIBE_SEC", 15.0)
 #: Most symbols in a single multi-quote call. More than this splits into
 #: further calls in the same cycle, so every polling symbol is still covered.
 POLL_BATCH_MAX = _env_int("STRATEGY_TICK_POLL_BATCH_MAX", 50)
@@ -309,9 +312,14 @@ class RiskTickFeed:
 
         self._api_key: str | None = None
 
+        # Keys the websocket refused, retried by the resubscribe loop. Guarded
+        # by _lock; bounded by _symbols (pruned when a symbol is released).
+        self._ws_refused: set[str] = set()
+
         self._running = False
         self._drain_thread: threading.Thread | None = None
         self._poll_thread: threading.Thread | None = None
+        self._resubscribe_thread: threading.Thread | None = None
         self._lifecycle_lock = threading.Lock()
 
         atexit.register(self.stop)
@@ -788,6 +796,13 @@ class RiskTickFeed:
                 target=self._run_poll_loop, name="strategy-tick-poll", daemon=True
             )
             self._poll_thread.start()
+            # Its own loop, not the poll loop: a subscribe can wait seconds for
+            # the proxy's ack, and the poll loop is what prices these symbols
+            # in the meantime.
+            self._resubscribe_thread = threading.Thread(
+                target=self._run_resubscribe_loop, name="strategy-tick-resubscribe", daemon=True
+            )
+            self._resubscribe_thread.start()
 
     def _run_drain_loop(self) -> None:
         """Apply ticks on the hub. Never a blocking get() on the real queue.
@@ -824,6 +839,32 @@ class RiskTickFeed:
                 logger.exception("Strategy tick poll loop error")
             self._sleep(self.poll_interval_sec)
 
+    def _run_resubscribe_loop(self) -> None:
+        while self._running:
+            self._sleep(RESUBSCRIBE_RETRY_SEC)
+            if not self._running:
+                return
+            try:
+                self._retry_refused()
+            except Exception:
+                logger.exception("Strategy tick resubscribe loop error")
+
+    def _retry_refused(self) -> int:
+        """Ask the websocket again for every tracked symbol it refused.
+
+        A refused symbol is priced by the poll loop, so nothing is unpriced
+        meanwhile, but without this it stayed on REST for the rest of the
+        session: the only other re-subscribe is the one after a reconnect, and
+        a re-login rebuilds the broker feed without reconnecting this client.
+        Returns how many symbols were retried.
+        """
+        with self._lock:
+            self._ws_refused &= set(self._symbols)
+            pairs = [(self._symbols[k].symbol, self._symbols[k].exchange) for k in self._ws_refused]
+        if pairs:
+            self._ws_subscribe(pairs)
+        return len(pairs)
+
     def _sleep(self, seconds: float) -> None:
         """Sleep in slices so stop() does not wait out a whole poll interval."""
         remaining = seconds
@@ -841,10 +882,14 @@ class RiskTickFeed:
         """
         with self._lifecycle_lock:
             self._running = False
-            drain, poll = self._drain_thread, self._poll_thread
-            self._drain_thread = self._poll_thread = None
+            drain, poll, resubscribe = (
+                self._drain_thread,
+                self._poll_thread,
+                self._resubscribe_thread,
+            )
+            self._drain_thread = self._poll_thread = self._resubscribe_thread = None
 
-        for thread in (drain, poll):
+        for thread in (drain, poll, resubscribe):
             if thread is not None and thread.is_alive():
                 # Green under eventlet, so this join yields; the timeout is
                 # there for the dev server, where it is a real thread.
@@ -854,6 +899,7 @@ class RiskTickFeed:
             pairs = [(s.symbol, s.exchange) for s in self._symbols.values()]
             self._symbols.clear()
             self._runs.clear()
+            self._ws_refused.clear()
             self._wanted = frozenset()
         if pairs:
             self._ws_unsubscribe(pairs)
@@ -900,20 +946,41 @@ class RiskTickFeed:
         while a greenlet waiting on it yields to the hub, holding the state lock
         across it would block every price read.
         """
+        from services.websocket_client import accepted_symbol_keys
+
         symbols = [{"symbol": s, "exchange": e} for s, e in pairs]
+        requested = {_key(s, e) for s, e in pairs}
+        reason = None
+        result = None
         with self._ws_lock:
             client = self._ensure_ws()
             if client is None:
-                self._force_polling(pairs, "the feed is not available")
-                return
-            try:
-                result = client.subscribe(symbols, mode=SUBSCRIBE_MODE)
-            except Exception:
-                logger.exception("Strategy tick feed subscribe raised")
-                self._force_polling(pairs, "the subscribe failed")
-                return
-        if isinstance(result, dict) and result.get("status") == "error":
-            self._force_polling(pairs, result.get("message") or "the subscribe was refused")
+                reason = "the feed is not available"
+            else:
+                try:
+                    result = client.subscribe(symbols, mode=SUBSCRIBE_MODE)
+                except Exception:
+                    logger.exception("Strategy tick feed subscribe raised")
+                    reason = "the subscribe failed"
+
+        # Per symbol, not on the overall status alone: a "partial" ack used to
+        # leave its refused symbols nominally live until they aged to polling,
+        # and nothing asked for any refused symbol again.
+        accepted = accepted_symbol_keys(result, requested) if reason is None else set()
+        refused_keys = requested - accepted
+        if reason is None and refused_keys:
+            reason = (
+                result.get("message") if isinstance(result, dict) else None
+            ) or "the subscribe was refused"
+        with self._lock:
+            recovered = accepted & self._ws_refused
+            self._ws_refused = (self._ws_refused - accepted) | (refused_keys & set(self._symbols))
+        if recovered:
+            logger.info(
+                "Strategy tick feed: live ticks resubscribed for %d symbol(s)", len(recovered)
+            )
+        if refused_keys:
+            self._force_polling([(s, e) for s, e in pairs if _key(s, e) in refused_keys], reason)
 
     def _ws_unsubscribe(self, pairs: list[tuple[str, str]]) -> None:
         symbols = [{"symbol": s, "exchange": e} for s, e in pairs]

@@ -50,6 +50,9 @@ SUBSCRIBE_MODE = "LTP"
 TICK_QUEUE_MAX = 10_000
 DRAIN_POLL_SEC = 0.005
 DRAIN_DORMANT_SEC = 0.25
+# How often a watched symbol the feed has not accepted is asked for again.
+# Short, because a symbol without ticks is a stop-loss nothing evaluates.
+RESUBSCRIBE_RETRY_SEC = 5
 
 
 def _slkey(symbol: str, exchange: str, product: str) -> str:
@@ -151,6 +154,11 @@ class ScalpingRiskMonitor:
         self._ticks_dropped = 0
         self._drain_thread: threading.Thread | None = None
         self._drain_stop = threading.Event()
+        # Started and stopped with the drain thread. See _resubscribe_loop.
+        self._resubscribe_thread: threading.Thread | None = None
+        # Symbols the feed refused, so each refusal is warned once and its
+        # recovery logged. Bounded by the SLs' symbols.
+        self._refused: set[str] = set()
         atexit.register(self.stop)
 
     # ------------------------------------------------------------------ lifecycle
@@ -188,10 +196,11 @@ class ScalpingRiskMonitor:
     def stop(self) -> None:
         """Tear down the feed subscription/connection (FD hygiene)."""
         self._drain_stop.set()
-        drain = self._drain_thread
-        self._drain_thread = None
-        if drain is not None and drain is not threading.current_thread():
-            drain.join(timeout=2)
+        drain, resubscribe = self._drain_thread, self._resubscribe_thread
+        self._drain_thread = self._resubscribe_thread = None
+        for thread in (drain, resubscribe):
+            if thread is not None and thread is not threading.current_thread():
+                thread.join(timeout=2)
         ws = self._ws
         if ws is not None:
             try:
@@ -231,9 +240,7 @@ class ScalpingRiskMonitor:
         # actual subscribe/unsubscribe (blocking WS calls) happen OUTSIDE the lock so
         # they never block tick processing (_on_tick).
         with self._lock:
-            self._states = {
-                _slkey(r["symbol"], r["exchange"], r["product"]): dict(r) for r in rows
-            }
+            self._states = {_slkey(r["symbol"], r["exchange"], r["product"]): dict(r) for r in rows}
             wanted_syms = {_symkey(r["symbol"], r["exchange"]) for r in rows}
             to_remove = self._subscribed - wanted_syms
 
@@ -242,8 +249,12 @@ class ScalpingRiskMonitor:
                 self._unsubscribe(to_remove)
             return
 
+        # Started before the feed is known to be up, so an SL restored at boot
+        # before the broker login is picked up by the retry loop rather than
+        # waiting for the next SL save.
+        self._ensure_drain()
         if not self._ensure_ws():
-            # Not logged in / proxy unavailable yet — retried on the next sync.
+            # Not logged in / proxy unavailable yet. The resubscribe loop retries.
             return
 
         with self._lock:
@@ -281,13 +292,61 @@ class ScalpingRiskMonitor:
     def _subscribe(self, symkeys: set[str]) -> None:
         if not symkeys or self._ws is None:
             return
+        from services.websocket_client import accepted_symbol_keys
+
         symbols = [{"exchange": k.split(":", 1)[0], "symbol": k.split(":", 1)[1]} for k in symkeys]
         try:
-            self._ws.subscribe(symbols, mode=SUBSCRIBE_MODE)  # blocking (off-lock)
-            with self._lock:
-                self._subscribed |= symkeys
+            result = self._ws.subscribe(symbols, mode=SUBSCRIBE_MODE)  # blocking (off-lock)
         except Exception as e:
-            logger.warning("Scalping risk monitor subscribe failed: %s", e)
+            result = {"status": "error", "message": str(e)}
+
+        # Only what the feed accepted. This monitor has no other price source,
+        # so a refused symbol recorded as subscribed was a stop-loss that could
+        # never fire: nothing asked for it again until the next SL save. The
+        # resubscribe loop retries the rest.
+        accepted = accepted_symbol_keys(result, symkeys)
+        refused = set(symkeys) - accepted
+        with self._lock:
+            self._subscribed |= accepted
+            recovered = accepted & self._refused
+            first_refusal = refused - self._refused
+            self._refused = (self._refused - accepted) | refused
+        if recovered:
+            logger.info(
+                "Scalping risk monitor: live prices restored for %s", ", ".join(sorted(recovered))
+            )
+        if first_refusal:
+            message = (result or {}).get("message") if isinstance(result, dict) else None
+            logger.warning(
+                "Scalping stop-losses on %s are not receiving live prices (%s); retrying every %ss",
+                ", ".join(sorted(first_refusal)),
+                message or "the feed refused the subscription",
+                RESUBSCRIBE_RETRY_SEC,
+            )
+
+    def _resubscribe_loop(self, stop_event: threading.Event) -> None:
+        """Retry every watched symbol the feed has not accepted. A symbol is
+        missing when its subscribe was refused (the broker feed down after a
+        re-login), or when no feed was available at the last sync (an SL
+        restored at boot before the broker login)."""
+        while not stop_event.wait(RESUBSCRIBE_RETRY_SEC):
+            try:
+                self._retry_missing()
+            except Exception:
+                logger.exception("Scalping risk monitor: error retrying subscriptions")
+            finally:
+                self._remove_sessions()
+
+    def _retry_missing(self) -> set[str]:
+        """One retry pass. Returns the symbols it asked for."""
+        with self._lock:
+            wanted = {_symkey(s["symbol"], s["exchange"]) for s in self._states.values()}
+            missing = wanted - self._subscribed
+            # A symbol no SL wants any more need not be warned about.
+            self._refused &= wanted
+        if missing and self._ensure_ws():
+            self._subscribe(missing)
+        return missing
 
     def _unsubscribe(self, symkeys: set[str]) -> None:
         if not symkeys or self._ws is None:
@@ -329,10 +388,22 @@ class ScalpingRiskMonitor:
                 )
 
     def _ensure_drain(self) -> None:
-        """Start the hub-side drain thread if it is not running."""
+        """Start the hub-side drain thread, and the resubscribe loop beside it,
+        if they are not running. Both watch the same stop event."""
         if self._drain_thread is not None and self._drain_thread.is_alive():
             return
+        # The previous generation's stop event: its drain thread is already
+        # gone, but its resubscribe loop may not be, and two would run side by
+        # side for the life of the process.
+        self._drain_stop.set()
         self._drain_stop = threading.Event()
+        self._resubscribe_thread = threading.Thread(
+            target=self._resubscribe_loop,
+            args=(self._drain_stop,),
+            name="scalping-resubscribe",
+            daemon=True,
+        )
+        self._resubscribe_thread.start()
         self._drain_thread = threading.Thread(
             target=self._drain_loop,
             args=(self._drain_stop,),
@@ -509,7 +580,9 @@ class ScalpingRiskMonitor:
                 )
                 return
             exit_api_key, auth_token, broker = auth
-            net_qty = self._live_net_qty(symbol, exchange, product, exit_api_key, auth_token, broker)
+            net_qty = self._live_net_qty(
+                symbol, exchange, product, exit_api_key, auth_token, broker
+            )
             mode = state.get("mode")
             if net_qty == 0:
                 self._clear_state(key, symbol, exchange, product, mode)
@@ -559,9 +632,13 @@ class ScalpingRiskMonitor:
             self._last_exit_attempt.pop(key, None)
             # Drop the feed subscription if no other leg needs this symbol.
             symkey = _symkey(symbol, exchange)
-            if not any(_symkey(s["symbol"], s["exchange"]) == symkey for s in self._states.values()):
+            if not any(
+                _symkey(s["symbol"], s["exchange"]) == symkey for s in self._states.values()
+            ):
                 self._unsubscribe({symkey})
-        self._emit_update(key, None, cleared=True, symbol=symbol, exchange=exchange, product=product)
+        self._emit_update(
+            key, None, cleared=True, symbol=symbol, exchange=exchange, product=product
+        )
 
     # ------------------------------------------------------------------ emit
     def _emit_update(

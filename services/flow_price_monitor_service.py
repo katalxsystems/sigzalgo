@@ -275,6 +275,10 @@ class FlowPriceMonitor:
         # on each -- mirrors scalping_risk_monitor_service.py's _ws/_subscribed.
         self._ws_clients: dict[str, Any] = {}
         self._ws_subscribed: dict[str, set[str]] = {}
+        # Symbols whose subscribe the feed refused, so the refusal is warned
+        # about once and the recovery logged. Bounded by the watched symbols:
+        # cleared on success and when no alert wants the symbol any more.
+        self._ws_refused: set[str] = set()
         self._ws_lock = threading.Lock()
 
         # Real (not green) queue: written by the websocket client's OS thread,
@@ -470,12 +474,52 @@ class FlowPriceMonitor:
             return  # poll backstop covers this alert until the feed comes up
 
         try:
-            client.subscribe([{"exchange": exchange, "symbol": symbol}], mode=_WS_SUBSCRIBE_MODE)
+            result = client.subscribe(
+                [{"exchange": exchange, "symbol": symbol}], mode=_WS_SUBSCRIBE_MODE
+            )
+        except Exception as e:
+            result = {"status": "error", "message": str(e)}
+
+        # Marked only when the proxy accepted it. A refusal (the broker feed
+        # down after a re-login, an unknown symbol) used to be recorded as
+        # subscribed, so it was never asked for again and the watch ran on
+        # the poll backstop for the rest of the day. _retry_unsubscribed asks
+        # again every poll interval.
+        if (result or {}).get("status") == "success":
             with self._ws_lock:
                 self._ws_subscribed.setdefault(api_key, set()).add(key)
-            logger.debug(f"Flow price monitor subscribed to {key} for live ticks")
-        except Exception as e:
-            logger.warning(f"Flow price monitor: WS subscribe failed for {key}: {e}")
+                was_refused = key in self._ws_refused
+                self._ws_refused.discard(key)
+            if was_refused:
+                logger.info(f"Flow price monitor: live ticks for {key} restored")
+            else:
+                logger.debug(f"Flow price monitor subscribed to {key} for live ticks")
+            return
+
+        with self._ws_lock:
+            first_refusal = key not in self._ws_refused
+            self._ws_refused.add(key)
+        message = (result or {}).get("message") or "no response"
+        if first_refusal:
+            logger.warning(
+                f"Flow price monitor: live ticks for {key} unavailable ({message}); "
+                f"checking it by quote every {self._poll_interval}s and retrying"
+            )
+        else:
+            logger.debug(f"Flow price monitor: subscribe for {key} still refused: {message}")
+
+    def _retry_unsubscribed(self) -> None:
+        """Ask again for every watched symbol the feed has not accepted yet:
+        one refused while the broker feed was down, or never attempted
+        because the feed was not up when the watch was added."""
+        with self._alerts_lock:
+            wanted = {
+                (a.api_key, a.symbol, a.exchange)
+                for a in self._alerts.values()
+                if a.api_key and not a.triggered
+            }
+        for api_key, symbol, exchange in wanted:
+            self._ws_subscribe(api_key, symbol, exchange)
 
     def _ws_unsubscribe_if_unused(self, api_key: str, symbol: str, exchange: str) -> None:
         """Unsubscribe only if no other live (non-triggered) alert on this
@@ -491,6 +535,7 @@ class FlowPriceMonitor:
             return
 
         with self._ws_lock:
+            self._ws_refused.discard(key)
             client = self._ws_clients.get(api_key)
             subscribed = self._ws_subscribed.get(api_key, set())
             if key not in subscribed:
@@ -678,6 +723,10 @@ class FlowPriceMonitor:
 
     def _check_all_alerts(self):
         """Check all active alerts against current prices"""
+        try:
+            self._retry_unsubscribed()
+        except Exception:
+            logger.exception("Flow price monitor: error retrying live-tick subscriptions")
         with self._alerts_lock:
             workflow_ids = list(self._alerts.keys())
 
