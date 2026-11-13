@@ -1,18 +1,25 @@
 """Sahi login: exchange the API key and secret for the day's access token.
 
-Sahi has no redirect and no TOTP. The trader creates an API key in the Sahi
-web app (key id ``pk_...``, secret ``sahi_sk_...``), approves it once per
-trading day in the API Dashboard, and the token endpoint on the auth host
-mints a Bearer token valid until the next 06:00 IST boundary
-(broker-api-docs/sahi-api-docs, Authentication).
+Sahi has no redirect. The trader creates an API key in the Sahi web app (key
+id ``pk_...``, secret ``sahi_sk_...``), approves it once per trading day in the
+API Dashboard, and the token endpoint on the auth host mints a Bearer token
+valid until the next 06:00 IST boundary (broker-api-docs/sahi-api-docs,
+Authentication).
 
     POST https://apis.sahi.com/api/v1/apikeys/token
-    {"key_id": "pk_...", "secret": "sahi_sk_..."}
+    {"key_id": "pk_...", "secret": "sahi_sk_...", "totp": "123456"}
     -> {"access_token": "...", "token_type": "Bearer", "expires_in": 65275,
         "expires_at": "...T06:00:00+05:30", "scope": "orders.write ..."}
 
+A key created with two-factor protection is refused without ``totp``
+("This API key needs a six-digit totp code"). For such a key the account's
+API secret is stored as ``sahi_sk_...:::<base32 TOTP seed>`` and the code is
+generated here at login, so no one has to type it.
+
 The account's broker API key holds the key id and its API secret the secret.
 """
+
+import pyotp
 
 from broker.sahi.api.baseurl import AUTH_BASE_URL, USER_AGENT
 from broker.sahi.api.rate_limiter import sahi_request
@@ -24,6 +31,28 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 TOKEN_PATH = "/api/v1/apikeys/token"
+TOTP_SEPARATOR = ":::"
+
+
+def normalize_totp_seed(seed):
+    """A base32 TOTP seed with the spaces and lower case authenticator apps show.
+
+    Returns the cleaned seed, or None when it is not valid base32.
+    """
+    cleaned = "".join((seed or "").split()).upper().rstrip("=")
+    if not cleaned:
+        return None
+    try:
+        pyotp.TOTP(cleaned).now()
+    except Exception:
+        return None
+    return cleaned
+
+
+def split_secret(stored_secret):
+    """(api_secret, totp_seed or None) from a stored ``secret[:::seed]`` value."""
+    secret, _, seed = (stored_secret or "").partition(TOTP_SEPARATOR)
+    return secret.strip(), (seed.strip() or None)
 
 
 def _login_error(status_code, body):
@@ -36,6 +65,13 @@ def _login_error(status_code, body):
     code = body.get("code") if isinstance(body, dict) else None
     reason = body.get("message") if isinstance(body, dict) else None
 
+    if isinstance(reason, str) and "totp" in reason.lower():
+        return (
+            "This Sahi API key is protected by an authenticator code. Add the key's TOTP "
+            "secret (the base32 text shown when you set up the authenticator) to this "
+            "broker account, then log in again. If it is already added, check that it "
+            "belongs to this API key and that the server clock is correct."
+        )
     if status_code == 403 or code == "Forbidden":
         return (
             "Sahi did not issue an access token because the API key is not approved for today. "
@@ -73,12 +109,22 @@ def authenticate_broker(code=None, account_id=None):
         tuple: (access_token, None) on success, (None, error_message) on failure.
     """
     key_id = (get_broker_api_key(account_id, broker="sahi") or "").strip()
-    secret = (get_broker_api_secret(account_id, broker="sahi") or "").strip()
+    secret, seed = split_secret(get_broker_api_secret(account_id, broker="sahi"))
     if not key_id or not secret:
         return None, (
             "Sahi needs BROKER_API_KEY (the API key id, pk_...) and BROKER_API_SECRET "
             "(the API secret, sahi_sk_...). Add both in your OpenAlgo settings."
         )
+
+    payload = {"key_id": key_id, "secret": secret}
+    if seed:
+        cleaned = normalize_totp_seed(seed)
+        if not cleaned:
+            return None, (
+                "The TOTP secret saved for this Sahi account is not valid. Enter the base32 "
+                "secret shown when you set up the authenticator, not a six-digit code."
+            )
+        payload["totp"] = pyotp.TOTP(cleaned).now()
 
     client = get_httpx_client()
     try:
@@ -87,7 +133,7 @@ def authenticate_broker(code=None, account_id=None):
             "POST",
             f"{AUTH_BASE_URL}{TOKEN_PATH}",
             "auth",
-            json={"key_id": key_id, "secret": secret},
+            json=payload,
             headers={
                 "Content-Type": "application/json",
                 "Accept": "application/json",

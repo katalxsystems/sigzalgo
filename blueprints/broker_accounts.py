@@ -46,6 +46,54 @@ def _generate_api_key():
     return secrets.token_hex(32)
 
 
+# Brokers whose login takes a TOTP code generated from a stored base32 seed.
+# The seed is kept with the API secret as "secret:::seed" (see
+# broker/sahi/api/auth_api.py), so it is encrypted at rest with it and needs
+# no column of its own.
+TOTP_SEED_BROKERS = {"sahi"}
+
+
+def _requested_totp_seed(data):
+    """The base32 TOTP seed in a request body, under any of its accepted names."""
+    for field in ("broker_totp_secret", "totp_secret", "totp"):
+        value = (data.get(field) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _pack_totp_seed(broker, secret, seed, account_id=None):
+    """Fold a TOTP seed into the API secret to store.
+
+    Returns (secret_to_store, error_message). With no seed the secret is
+    returned unchanged. With a seed but no secret in the request, the
+    account's stored secret is kept and the seed replaces the old one.
+    """
+    if not seed:
+        return secret, None
+    if broker not in TOTP_SEED_BROKERS:
+        return None, f"{broker.capitalize()} does not use a TOTP secret on the account."
+
+    from broker.sahi.api.auth_api import TOTP_SEPARATOR, normalize_totp_seed, split_secret
+
+    cleaned = normalize_totp_seed(seed)
+    if not cleaned:
+        return None, (
+            "The TOTP secret is not valid. Enter the base32 secret shown when you set up "
+            "the authenticator, not a six-digit code."
+        )
+    if secret:
+        base, _ = split_secret(secret)
+    else:
+        from database.auth_db import get_broker_credentials
+
+        _, stored = get_broker_credentials(account_id, broker=broker) if account_id else (None, None)
+        base, _ = split_secret(stored)
+    if not base:
+        return None, "Add the API secret together with the TOTP secret."
+    return f"{base}{TOTP_SEPARATOR}{cleaned}", None
+
+
 def _can_manage(account_id):
     """The owner of an existing account the caller may manage: the logged-in
     user for their own account, or any owner for an administrator. None when
@@ -129,6 +177,12 @@ def add_account():
         format_error = validate_broker_api_key_format(broker, broker_api_key)
         if format_error:
             return jsonify({"status": "error", "message": format_error}), 400
+
+    broker_api_secret, totp_error = _pack_totp_seed(
+        broker, broker_api_secret, _requested_totp_seed(data)
+    )
+    if totp_error:
+        return jsonify({"status": "error", "message": totp_error}), 400
 
     # Administrators may create an account for another (existing) user.
     owner = (data.get("owner_username") or "").strip() or session["user"]
@@ -229,9 +283,24 @@ def update_account_credentials(account_id):
     data = request.get_json(silent=True) or {}
     broker_api_key = (data.get("broker_api_key") or "").strip() or None
     broker_api_secret = (data.get("broker_api_secret") or "").strip() or None
+    totp_seed = _requested_totp_seed(data)
 
-    if not broker_api_key and not broker_api_secret:
+    if not broker_api_key and not broker_api_secret and not totp_seed:
         return jsonify({"status": "error", "message": "Nothing to update"}), 400
+
+    if totp_seed or (broker_api_secret and account["broker"] in TOTP_SEED_BROKERS):
+        if not totp_seed and broker_api_secret:
+            # A new secret alone keeps the seed already on the account.
+            from broker.sahi.api.auth_api import split_secret
+            from database.auth_db import get_broker_credentials
+
+            _, stored = get_broker_credentials(account_id, broker=account["broker"])
+            _, totp_seed = split_secret(stored)
+        broker_api_secret, totp_error = _pack_totp_seed(
+            account["broker"], broker_api_secret, totp_seed, account_id=account_id
+        )
+        if totp_error:
+            return jsonify({"status": "error", "message": totp_error}), 400
 
     # Some brokers (5paisa, Flattrade, Dhan) pack more than one credential
     # into a single ":::"-delimited BROKER_API_KEY. Reject a malformed value
