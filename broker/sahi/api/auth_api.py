@@ -139,9 +139,6 @@ def authenticate_broker(code=None, account_id=None, totp=None):
                 "secret shown when you set up the authenticator, not a six-digit code."
             )
         payload["totp"] = pyotp.TOTP(cleaned).now()
-        # TEMPORARY: diagnosing a refused Sahi TOTP login. Remove once fixed;
-        # generated codes must not be logged in normal operation.
-        logger.info(f"TEMPORARY Sahi TOTP debug for account {account_id}: code={payload['totp']}")
     if "totp" not in payload:
         logger.info(
             f"Sahi login for account {account_id}: no TOTP secret saved and none sent "
