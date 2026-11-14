@@ -111,8 +111,36 @@ def feed_auth_header(access_token):
     return [f"Authorization: Bearer {access_token}"] if access_token else []
 
 
+#: How long a detailed-market-data subscription stays open after its last
+#: quote request. A page that refreshes (the option chain does, every few
+#: seconds) is then answered from ticks already arriving instead of paying a
+#: subscribe, a wait and an unsubscribe for every strike on every refresh.
+SUBSCRIPTION_LINGER_SEC = 60.0
+
+# Shared detailed-market-data subscriptions, keyed "<token>_<exchange code>"
+# like dtlmktdata_dict. Counted, so a request that finishes never unsubscribes
+# a symbol another request is still waiting on.
+_sub_lock = threading.Lock()
+_sub_refs: dict[str, int] = {}
+_sub_last_used: dict[str, float] = {}
+_subscribed: set[str] = set()
+
+
+def detailed_key(payload) -> str:
+    return f"{payload['instrumentToken']}_{payload['exchangeCode']}"
+
+
+def _forget_subscriptions():
+    """The feed drops every subscription with the connection; so do we."""
+    global dtlmktdata_dict
+    with _sub_lock:
+        _subscribed.clear()
+    dtlmktdata_dict = {}
+
+
 def on_open(ws):
     logger.info("WebSocket connection established")
+    _forget_subscriptions()
     # Start heartbeat thread
     hb_thread = threading.Thread(target=heartbeat_thread, args=(ws,))
     hb_thread.daemon = True
@@ -250,7 +278,7 @@ class PocketfulSocket:
         with ws_connect_lock:
             # Check if we already have a working connection
             if websock and ws_connected:
-                logger.info("WebSocket already connected, reusing existing connection")
+                logger.debug("WebSocket already connected, reusing existing connection")
                 return True
 
             # If we have a socket but it's not connected, close it properly
@@ -331,7 +359,7 @@ class PocketfulSocket:
             global websock
             sub_packet = {"a": "subscribe", "v": subscription_pkt, "m": "marketdata"}
             websock.send(json.dumps(sub_packet))
-            logger.info(f"Subscribed to detailed market data: {detailedmarketdata_payload}")
+            logger.debug(f"Subscribed to detailed market data: {detailedmarketdata_payload}")
             return True
         except Exception as e:
             logger.error(f"Error subscribing to detailed market data: {str(e)}")
@@ -341,6 +369,73 @@ class PocketfulSocket:
         """Read the latest detailed market data"""
         data = get_detailed_marketdata()
         return data
+
+    # --- shared, counted subscriptions (used by the quote paths) ------------
+
+    def acquire_detailed(self, payload) -> bool:
+        """Hold a detailed-market-data subscription for one quote request.
+
+        Subscribes only if nobody holds the symbol and it is not still
+        lingering from an earlier request. Pair every call with
+        release_detailed(). Returns False only if a needed subscribe failed.
+        """
+        key = detailed_key(payload)
+        now = time.time()
+        with _sub_lock:
+            _sub_refs[key] = _sub_refs.get(key, 0) + 1
+            _sub_last_used[key] = now
+            needs_subscribe = key not in _subscribed
+            if needs_subscribe:
+                _subscribed.add(key)
+        ok = True
+        if needs_subscribe:
+            ok = self.subscribe_detailed_marketdata(payload)
+            if not ok:
+                with _sub_lock:
+                    _subscribed.discard(key)
+        self._sweep_idle(now)
+        return ok
+
+    def release_detailed(self, payload) -> None:
+        """Give back a subscription taken with acquire_detailed()."""
+        key = detailed_key(payload)
+        now = time.time()
+        with _sub_lock:
+            _sub_refs[key] = max(0, _sub_refs.get(key, 0) - 1)
+            _sub_last_used[key] = now
+        self._sweep_idle(now)
+
+    def read_detailed_for(self, payload):
+        """The latest tick for this one symbol, or None if none has arrived."""
+        return dtlmktdata_dict.get(detailed_key(payload))
+
+    def _sweep_idle(self, now) -> None:
+        """Unsubscribe symbols nobody has used for SUBSCRIPTION_LINGER_SEC."""
+        with _sub_lock:
+            idle = [
+                key
+                for key in _subscribed
+                if _sub_refs.get(key, 0) == 0
+                and now - _sub_last_used.get(key, 0) >= SUBSCRIPTION_LINGER_SEC
+            ]
+            for key in idle:
+                _subscribed.discard(key)
+                _sub_refs.pop(key, None)
+                _sub_last_used.pop(key, None)
+        # Network I/O after the lock is released.
+        for key in idle:
+            token, exchange_code = key.split("_", 1)
+            self._send_unsubscribe_detailed(int(exchange_code), int(token))
+
+    def _send_unsubscribe_detailed(self, exchange_code, token) -> None:
+        """Unsubscribe one symbol and drop only its stored tick."""
+        try:
+            sub_packet = {"a": "unsubscribe", "v": [[exchange_code, token]], "m": "marketdata"}
+            if websock is not None:
+                websock.send(json.dumps(sub_packet))
+        except Exception as e:
+            logger.debug(f"Unsubscribing {exchange_code}:{token} failed: {e}")
+        dtlmktdata_dict.pop(f"{token}_{exchange_code}", None)
 
     def unsubscribe_detailed_marketdata(self, detailedmarketdata_payload):
         """Unsubscribe from detailed market data"""

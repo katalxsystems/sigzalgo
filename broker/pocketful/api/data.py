@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -7,6 +8,7 @@ from datetime import datetime, timedelta
 
 import httpx
 import pandas as pd
+from cachetools import TTLCache
 
 from broker.pocketful.api.pocketfulwebsocket import (
     PocketfulSocket,
@@ -20,6 +22,14 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+#: Client id per login token (hashed). Bounded: one entry per live login.
+_CLIENT_ID_CACHE = TTLCache(maxsize=64, ttl=12 * 3600)
+
+#: How long a quote waits for its symbol's first tick after subscribing.
+QUOTE_WAIT_SEC = 10.0
+#: How often it looks. Ticks are stored per symbol as they arrive, so a short
+#: poll costs nothing and returns as soon as the tick is there.
+QUOTE_POLL_SEC = 0.1
 
 
 class PocketfulPermissionError(Exception):
@@ -173,7 +183,7 @@ class BrokerData:
 
         # Convert symbol to broker format and get instrument token
         br_symbol = get_br_symbol(symbol, exchange)
-        logger.info(f"Fetching quotes using detailed market data for {exchange}:{br_symbol}")
+        logger.debug(f"Fetching quotes using detailed market data for {exchange}:{br_symbol}")
 
         # Get token from database
         with db_session() as session:
@@ -198,38 +208,27 @@ class BrokerData:
             exchange_code = self.exchange_map.get(exchange, 1)
 
         # Log the instrument details
-        logger.info(f"Using exchange_code={exchange_code}, instrument_token={instrument_token}")
+        logger.debug(f"Using exchange_code={exchange_code}, instrument_token={instrument_token}")
 
-        # Subscribe to detailed market data (includes open/close/volume)
+        # Hold a shared subscription (includes open/close/volume). A symbol
+        # another request already holds, or one still lingering from a recent
+        # request, answers at once from its stored tick.
         detailed_payload = {"exchangeCode": exchange_code, "instrumentToken": instrument_token}
-        subscription_result = self.ws_connection.subscribe_detailed_marketdata(detailed_payload)
-        logger.info(f"Detailed market data subscription result: {subscription_result}")
+        self.ws_connection.acquire_detailed(detailed_payload)
 
-        # Use try/finally to ensure unsubscribe is always called
         detailed_data = None
         try:
-            # Wait for data to be received
-            attempts = 0
-            max_attempts = 10
-
-            while attempts < max_attempts:
-                time.sleep(1.0)
-                detailed_data = self.ws_connection.read_detailed_marketdata()
-                logger.info(f"Attempt {attempts + 1}: Received detailed data: {detailed_data}")
-
-                # Check if we have valid data for our instrument
-                if detailed_data and isinstance(detailed_data, dict):
-                    token_in_data = detailed_data.get("instrument_token") or detailed_data.get(
-                        "instrumentToken"
-                    )
-                    if token_in_data and str(token_in_data) == str(instrument_token):
-                        logger.info(f"Received valid detailed data for {exchange}:{br_symbol}")
-                        break
-
-                attempts += 1
+            deadline = time.time() + QUOTE_WAIT_SEC
+            while True:
+                # This symbol's own tick, never whichever symbol ticked last.
+                detailed_data = self.ws_connection.read_detailed_for(detailed_payload)
+                if detailed_data:
+                    break
+                if time.time() >= deadline:
+                    break
+                time.sleep(QUOTE_POLL_SEC)
         finally:
-            # Always unsubscribe, even if an exception occurs
-            self.ws_connection.unsubscribe_detailed_marketdata(detailed_payload)
+            self.ws_connection.release_detailed(detailed_payload)
 
         # If no valid data received, raise exception
         if not detailed_data or not isinstance(detailed_data, dict):
@@ -319,9 +318,17 @@ class BrokerData:
             str: Client ID for the authenticated user
         """
         if not self.client_id:
+            # A new BrokerData is built for every request, so without this
+            # every quote paid a trading_info round trip first. Keyed by a
+            # hash of the token: a new login (new token) looks it up again.
+            cache_key = hashlib.sha256((self.auth_token or "").encode()).hexdigest()
+            cached = _CLIENT_ID_CACHE.get(cache_key)
+            if cached:
+                self.client_id = cached
+                return self.client_id
             try:
                 # Fetch client_id from trading_info endpoint
-                logger.info("Fetching client_id from trading_info endpoint")
+                logger.debug("Fetching client_id from trading_info endpoint")
 
                 # Get the shared httpx client
                 client = get_httpx_client()
@@ -337,7 +344,9 @@ class BrokerData:
 
                 if info_response.get("status") == "success":
                     self.client_id = info_response.get("data", {}).get("client_id")
-                    logger.info(f"Got client_id from API: {self.client_id}")
+                    if self.client_id:
+                        _CLIENT_ID_CACHE[cache_key] = self.client_id
+                    logger.debug(f"Got client_id from API: {self.client_id}")
                 else:
                     raise PocketfulAPIError(
                         f"Failed to fetch client_id: {info_response.get('message', 'Unknown error')}"
@@ -358,7 +367,7 @@ class BrokerData:
             bool: True if connection is successful, False otherwise
         """
         if self.ws_connection is None:
-            logger.info("Initializing WebSocket connection")
+            logger.debug("Initializing WebSocket connection")
             # Get client_id first
             client_id = self._get_client_id()
             if not client_id:
@@ -373,7 +382,7 @@ class BrokerData:
                     logger.error("Failed to establish WebSocket connection")
                     raise PocketfulAPIError("Failed to establish WebSocket connection")
 
-                logger.info("WebSocket connection established successfully")
+                logger.debug("WebSocket connection established successfully")
                 return True
             except Exception as e:
                 logger.error(f"Error establishing WebSocket connection: {str(e)}")
@@ -783,48 +792,44 @@ class BrokerData:
             logger.warning("No valid symbols to fetch quotes for")
             return skipped_symbols
 
-        # Step 2: Subscribe to all instruments at once
-        logger.info(f"Subscribing to {len(instruments_to_subscribe)} symbols via WebSocket")
-
+        # Step 2: Hold a shared subscription for each instrument. Symbols held
+        # by another request, or lingering from the last refresh, are already
+        # streaming and answer at once.
+        logger.debug(f"Holding {len(instruments_to_subscribe)} symbols via WebSocket")
         for instrument in instruments_to_subscribe:
             try:
-                self.ws_connection.subscribe_detailed_marketdata(instrument)
+                self.ws_connection.acquire_detailed(instrument)
             except Exception as e:
                 logger.warning(f"Failed to subscribe to instrument {instrument}: {str(e)}")
 
-        # Step 3: Collect data while waiting - read continuously to capture all instruments
+        # Step 3: Collect each instrument's own tick. Ticks are stored per
+        # symbol as they arrive, so none is lost to another symbol ticking.
         received_data = {}
         num_instruments = len(instruments_to_subscribe)
-        max_wait_time = min(
-            max(num_instruments * 0.5, 3), 15
-        )  # Between 3-15 seconds based on instrument count
+        max_wait_time = min(max(num_instruments * 0.5, 3), 15)
         start_time = time.time()
-
-        logger.debug(
-            f"Collecting data for up to {max_wait_time:.1f}s for {num_instruments} instruments..."
-        )
-
-        # Read continuously until we have all data or timeout
-        while time.time() - start_time < max_wait_time:
-            detailed_data = self.ws_connection.read_detailed_marketdata()
-
-            if detailed_data and isinstance(detailed_data, dict):
-                token_in_data = detailed_data.get("instrument_token") or detailed_data.get(
-                    "instrumentToken"
-                )
-                if token_in_data and str(token_in_data) in symbol_map:
-                    received_data[str(token_in_data)] = detailed_data
-                    logger.debug(
-                        f"Received data for token {token_in_data} ({len(received_data)}/{num_instruments})"
-                    )
-
-            # Exit early if we have all data
-            if len(received_data) >= num_instruments:
-                logger.debug(f"All {num_instruments} instruments received, exiting early")
-                break
-
-            # Small delay between reads to avoid busy loop
-            time.sleep(0.05)
+        try:
+            while True:
+                for instrument in instruments_to_subscribe:
+                    token_str = str(instrument["instrumentToken"])
+                    if token_str in received_data:
+                        continue
+                    detailed_data = self.ws_connection.read_detailed_for(instrument)
+                    if detailed_data:
+                        received_data[token_str] = detailed_data
+                if len(received_data) >= num_instruments:
+                    break
+                if time.time() - start_time >= max_wait_time:
+                    break
+                time.sleep(QUOTE_POLL_SEC)
+        finally:
+            # Step 4: give the subscriptions back; they linger briefly so the
+            # next refresh of the same symbols is immediate.
+            for instrument in instruments_to_subscribe:
+                try:
+                    self.ws_connection.release_detailed(instrument)
+                except Exception as e:
+                    logger.warning(f"Failed to release instrument {instrument}: {str(e)}")
 
         logger.debug(
             f"Data collection completed: {len(received_data)}/{num_instruments} instruments received"
@@ -898,15 +903,7 @@ class BrokerData:
                     }
                 )
 
-        # Step 6: Unsubscribe after getting data
-        logger.info(f"Unsubscribing from {len(instruments_to_subscribe)} symbols")
-        for instrument in instruments_to_subscribe:
-            try:
-                self.ws_connection.unsubscribe_detailed_marketdata(instrument)
-            except Exception as e:
-                logger.warning(f"Failed to unsubscribe from instrument {instrument}: {str(e)}")
-
-        logger.info(
+        logger.debug(
             f"Retrieved quotes for {len([r for r in results if 'data' in r])}/{len(symbol_map)} symbols"
         )
         return skipped_symbols + results
