@@ -100,6 +100,16 @@ def test_long_minute_ranges_are_split_into_thirty_day_requests(handler):
     assert all(c[1] == "1" for c in handler.calls)
 
 
+def test_dates_may_arrive_as_date_objects(handler):
+    """The history service passes datetime.date, not "YYYY-MM-DD"."""
+    from datetime import date
+
+    handler._rows = {"3": [["2026-11-13T09:15:00+0530", 404.4, 406, 397.65, 400.85, 7533948]]}
+    df = handler.get_history("BEL", "NSE", "D", date(2026, 11, 13), date(2026, 11, 13))
+    assert len(df) == 1
+    assert handler.calls[0][2:] == ("2026-11-13", "2026-11-13")
+
+
 def test_an_index_is_asked_for_on_its_cash_exchange(handler):
     handler.get_history("NIFTY", "NSE_INDEX", "D", "2026-11-13", "2026-11-13")
     assert handler.calls[0][0] == "NSE"

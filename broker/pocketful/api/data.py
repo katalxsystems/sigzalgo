@@ -376,8 +376,10 @@ class BrokerData:
 
         token = self._chart_token(symbol, exchange)
         chart_exchange = CHART_EXCHANGE.get(exchange, exchange)
-        start = datetime.strptime(from_date, "%Y-%m-%d")
-        end = datetime.strptime(to_date, "%Y-%m-%d")
+        # The history service passes date objects; the API and tests pass
+        # "YYYY-MM-DD" strings. pd.to_datetime accepts both.
+        start = pd.to_datetime(from_date).to_pydatetime().replace(tzinfo=None)
+        end = pd.to_datetime(to_date).to_pydatetime().replace(tzinfo=None)
         if end < start:
             return _empty_history()
 
