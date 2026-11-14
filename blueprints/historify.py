@@ -95,6 +95,22 @@ def bulk_remove_watchlist():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@historify_bp.route("/api/watchlist/basket-sync", methods=["POST"])
+@check_session_validity
+def basket_watchlist_sync():
+    """Run the basket watchlist sync now. {"dry_run": true} only reports."""
+    try:
+        from services.basket_watchlist_sync_service import sync_basket_watchlist
+
+        data = request.get_json(silent=True) or {}
+        return jsonify(sync_basket_watchlist(dry_run=bool(data.get("dry_run")))), 200
+    except Exception as e:
+        logger.exception(f"Error syncing basket symbols to the watchlist: {e}")
+        return jsonify(
+            {"status": "error", "message": "Could not sync the basket symbols. See the server log."}
+        ), 500
+
+
 @historify_bp.route("/api/watchlist/bulk", methods=["POST"])
 @check_session_validity
 def bulk_add_watchlist():

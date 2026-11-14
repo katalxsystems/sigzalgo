@@ -90,6 +90,7 @@ class HistorifyScheduler:
 
                 # Restore schedules from database on startup
                 self._restore_schedules()
+                self._register_basket_watchlist_sync()
 
             except Exception as e:
                 logger.exception(f"Failed to initialize Historify Scheduler: {e}")
@@ -148,6 +149,41 @@ class HistorifyScheduler:
 
         except Exception as e:
             logger.exception(f"Error restoring schedules: {e}")
+
+    def _register_basket_watchlist_sync(self):
+        """The daily job keeping the watchlist covering every basket's symbols.
+
+        Weekdays only, at BASKET_WATCHLIST_SYNC_TIME (IST, default 17:45): after
+        the close, while the broker session from the morning login is still
+        valid, and ahead of an evening download schedule. Re-registered on every
+        start so a changed time or BASKET_WATCHLIST_SYNC_ENABLED=FALSE applies.
+        """
+        from services.basket_watchlist_sync_service import (
+            SYNC_JOB_ID,
+            run_scheduled_sync,
+            sync_enabled,
+            sync_time,
+        )
+
+        try:
+            if not sync_enabled():
+                if self.scheduler.get_job(SYNC_JOB_ID):
+                    self.remove_job(SYNC_JOB_ID)
+                logger.info("Basket watchlist sync is switched off")
+                return
+            hour, minute = sync_time()
+            self.scheduler.add_job(
+                run_scheduled_sync,
+                trigger=CronTrigger(
+                    day_of_week="mon-fri", hour=hour, minute=minute, timezone="Asia/Kolkata"
+                ),
+                id=SYNC_JOB_ID,
+                replace_existing=True,
+                name="Historify: sync basket symbols to the watchlist",
+            )
+            logger.info(f"Basket watchlist sync scheduled weekdays at {hour:02d}:{minute:02d} IST")
+        except Exception:
+            logger.exception("Could not schedule the basket watchlist sync")
 
     def _add_schedule_job(self, schedule: dict[str, Any]) -> str | None:
         """Add a schedule to APScheduler based on its configuration"""
