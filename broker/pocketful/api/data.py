@@ -25,6 +25,65 @@ logger = get_logger(__name__)
 #: Client id per login token (hashed). Bounded: one entry per live login.
 _CLIENT_ID_CACHE = TTLCache(maxsize=64, ttl=12 * 3600)
 
+# --- chart history (GET algo.pocketful.in/api/v1/charts) --------------------
+#
+# Verified against the live API: candletype "1" returns 1-minute candles,
+# "3" returns one candle per session (daily); "D"/"1D"/"day" are rejected as
+# an invalid candle type. Prices are in rupees (unlike the WebSocket feed's
+# paise), and each candle is [ISO timestamp with +0530, open, high, low,
+# close, volume]. trade.pocketful.in rejects this endpoint; algo serves it.
+# One 1-minute request returned six weeks (10,945 candles) without error.
+CHART_URL = "https://algo.pocketful.in/api/v1/charts"
+CANDLE_ONE_MINUTE = "1"
+CANDLE_DAILY = "3"
+CHART_CHUNK_DAYS = {CANDLE_ONE_MINUTE: 30, CANDLE_DAILY: 365}
+CHART_EXCHANGE = {"NSE_INDEX": "NSE", "BSE_INDEX": "BSE"}
+#: Session open (IST) intraday bars are aligned to, so a 15m bar is 09:15-09:30.
+SESSION_OPEN = {"MCX": (9, 0), "CDS": (9, 0), "BCD": (9, 0)}
+IST = "Asia/Kolkata"
+
+
+def _empty_history() -> pd.DataFrame:
+    return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume", "oi"])
+
+
+def _candles_to_frame(rows: list) -> pd.DataFrame:
+    """Raw chart candles to an OHLCV frame indexed by tz-aware IST time."""
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(
+        [r[:6] for r in rows if isinstance(r, (list, tuple)) and len(r) >= 6],
+        columns=["timestamp", "open", "high", "low", "close", "volume"],
+    )
+    if df.empty:
+        return df
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(IST)
+    df = df.drop_duplicates(subset="timestamp").sort_values("timestamp").set_index("timestamp")
+    df.index.name = None
+    for col in ("open", "high", "low", "close"):
+        df[col] = df[col].astype(float)
+    df["volume"] = df["volume"].fillna(0).astype("int64")
+    return df
+
+
+_OHLCV = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+
+
+def _resample_intraday(df: pd.DataFrame, minutes: int, session_open: tuple[int, int]) -> pd.DataFrame:
+    """1-minute candles to N-minute bars aligned to the session open."""
+    hour, minute = session_open
+    out = df.resample(
+        f"{minutes}min", origin="start_day", offset=f"{hour}h{minute}min", label="left", closed="left"
+    ).agg(_OHLCV)
+    return out.dropna(subset=["open"])
+
+
+def _resample_daily(df: pd.DataFrame, rule: str) -> pd.DataFrame:
+    """Daily candles to weekly (Monday) or monthly (1st) bars."""
+    out = df.resample(rule, label="left", closed="left").agg(_OHLCV)
+    return out.dropna(subset=["open"])
+
+
 #: How long a quote waits for its symbol's first tick after subscribing.
 QUOTE_WAIT_SEC = 10.0
 #: How often it looks. Ticks are stored per symbol as they arrive, so a short
@@ -114,9 +173,22 @@ class BrokerData:
         # Exchange code mapping for Pocketful WebSocket
         self.exchange_map = {"NSE": 1, "NFO": 2, "CDS": 3, "MCX": 4, "BSE": 6, "BFO": 7}
 
-        # POCKETFUL does not support historical data API
-        # Empty timeframe map since historical data is not supported
-        self.timeframe_map = {}
+        # Candles come from GET algo.pocketful.in/api/v1/charts, which serves
+        # two resolutions: candletype 1 (1 minute) and 3 (daily). Every other
+        # timeframe is built from one of them: intraday from 1-minute candles,
+        # weekly and monthly from daily ones. Value: (source, minutes or rule).
+        self.timeframe_map = {
+            "1m": ("intraday", 1),
+            "3m": ("intraday", 3),
+            "5m": ("intraday", 5),
+            "10m": ("intraday", 10),
+            "15m": ("intraday", 15),
+            "30m": ("intraday", 30),
+            "1h": ("intraday", 60),
+            "D": ("daily", None),
+            "W": ("daily", "W"),
+            "M": ("daily", "M"),
+        }
 
         # Market timing configuration for different exchanges
         self.market_timings = {
@@ -294,22 +366,108 @@ class BrokerData:
         Returns:
             pd.DataFrame: Historical data with OHLCV
         """
-        logger.warning("Historical data API is no longer supported by Pocketful")
-        # Return empty DataFrame with message
-        return pd.DataFrame(
-            {"message": "Pocketful does not support historical data API", "status": "success"},
-            index=[0],
-        )
+        spec = self.timeframe_map.get(timeframe)
+        if not spec:
+            raise PocketfulAPIError(
+                f"Pocketful charts do not offer the {timeframe} timeframe. "
+                f"Choose one of: {', '.join(self.timeframe_map)}."
+            )
+        source, step = spec
+
+        token = self._chart_token(symbol, exchange)
+        chart_exchange = CHART_EXCHANGE.get(exchange, exchange)
+        start = datetime.strptime(from_date, "%Y-%m-%d")
+        end = datetime.strptime(to_date, "%Y-%m-%d")
+        if end < start:
+            return _empty_history()
+
+        candletype = CANDLE_ONE_MINUTE if source == "intraday" else CANDLE_DAILY
+        chunk_days = CHART_CHUNK_DAYS[candletype]
+
+        rows: list = []
+        cursor = start
+        while cursor <= end:
+            chunk_end = min(cursor + timedelta(days=chunk_days - 1), end)
+            rows.extend(
+                self._fetch_chart_candles(chart_exchange, token, candletype, cursor, chunk_end)
+            )
+            cursor = chunk_end + timedelta(days=1)
+
+        df = _candles_to_frame(rows)
+        if df.empty:
+            return _empty_history()
+
+        if source == "intraday":
+            if step != 1:
+                df = _resample_intraday(df, step, SESSION_OPEN.get(exchange, (9, 15)))
+        else:
+            df.index = df.index.normalize()  # one candle per date, at midnight IST
+            if step == "W":
+                df = _resample_daily(df, "W-MON")
+            elif step == "M":
+                df = _resample_daily(df, "MS")
+
+        out = df.reset_index().rename(columns={"index": "timestamp"})
+        out["timestamp"] = out["timestamp"].map(lambda ts: int(ts.timestamp()))
+        out["oi"] = 0
+        return out[["timestamp", "open", "high", "low", "close", "volume", "oi"]]
+
+    def _chart_token(self, symbol: str, exchange: str) -> int:
+        br_symbol = get_br_symbol(symbol, exchange)
+        with db_session() as session:
+            row = (
+                session.query(SymToken)
+                .filter(SymToken.exchange == exchange, SymToken.brsymbol == br_symbol)
+                .first()
+            )
+            if not row:
+                raise PocketfulAPIError(
+                    f"{symbol} on {exchange} is not in the Pocketful master contract. "
+                    "Download the master contract again, then retry."
+                )
+            return int(row.token)
+
+    def _fetch_chart_candles(self, exchange, token, candletype, start, end) -> list:
+        """One /api/v1/charts request; returns its raw candle rows."""
+        headers = {
+            "Authorization": f"Bearer {self.auth_token}",
+            "clientid": self._get_client_id() or "",
+            "accept": "application/json",
+        }
+        params = {
+            "exchange": exchange,
+            "token": str(token),
+            "candletype": candletype,
+            "from_date": start.strftime("%Y-%m-%dT00:00:00"),
+            "to_date": end.strftime("%Y-%m-%dT23:59:59"),
+        }
+        try:
+            response = get_httpx_client().get(
+                CHART_URL, params=params, headers=headers, timeout=30
+            )
+            body = response.json()
+        except Exception as e:
+            logger.exception("Pocketful chart request failed")
+            raise PocketfulAPIError(
+                "Could not reach Pocketful for chart data. Try again in a moment."
+            ) from e
+        if response.status_code != 200 or body.get("status") != "success":
+            logger.error(
+                f"Pocketful chart data refused: HTTP {response.status_code}, "
+                f"message={body.get('message')}"
+            )
+            if response.status_code == 401:
+                raise PocketfulAPIError(
+                    "Pocketful did not accept the login for chart data. Log in to Pocketful again."
+                )
+            raise PocketfulAPIError(
+                f"Pocketful did not return chart data: {body.get('message') or 'no reason given'}."
+            )
+        return (body.get("data") or {}).get("candles") or []
 
     def get_intervals(self) -> list:
-        """Get available intervals/timeframes for historical data
-
-        Returns:
-            list: List of available intervals
-        """
-        logger.warning("Historical data API is no longer supported by Pocketful")
-        # Return empty list with success status
-        return [{"message": "Pocketful does not support historical data API", "status": "success"}]
+        """The chart timeframes Pocketful history serves."""
+        return list(self.timeframe_map)
 
     def _get_client_id(self):
         """
