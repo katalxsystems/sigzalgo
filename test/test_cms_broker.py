@@ -131,6 +131,18 @@ def test_exchange_reads_each_brokers_callback_parameter(broker, params, auth_res
     assert calls[0][1]["account_id"] == "acc"
 
 
+def test_the_pocketful_login_url_carries_the_whole_redirect_uri():
+    """A CMS callback with its own query string was cut at its first "&"."""
+    from urllib.parse import parse_qs, urlparse
+
+    callback = "https://www.signalz.co.in/broker-callback/?broker=pocketful&account=a1"
+    url, error = cms_broker._pocketful_url("acc", "CLIENT", callback, "st")
+    assert error is None
+    query = parse_qs(urlparse(url).query)
+    assert query["redirect_uri"] == [callback]
+    assert query["client_id"] == ["CLIENT"] and query["state"] == ["st"]
+
+
 def test_upstox_and_pocketful_get_the_cms_redirect_uri():
     for broker, params, result in (
         ("upstox", {"code": "C"}, ("T", None)),

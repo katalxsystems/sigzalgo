@@ -216,9 +216,13 @@ def _paytm_url(account_id, api_key, redirect_uri, state):
 
 
 def _pocketful_url(account_id, api_key, redirect_uri, state):
+    # Encoded: Pocketful's OAuth server (Ory Hydra) decodes the parameter and
+    # compares it exactly with the registered URL. Unencoded, a CMS callback
+    # with its own query string was cut at its first "&", so the value Hydra
+    # received matched no registered URL.
     return (
         "https://trade.pocketful.in/oauth2/auth"
-        f"?client_id={api_key}&redirect_uri={redirect_uri}&response_type=code"
+        f"?client_id={api_key}&redirect_uri={quote(redirect_uri, safe='')}&response_type=code"
         f"&scope={quote('orders holdings', safe='')}&state={quote(state, safe='')}",
         None,
     )
@@ -397,7 +401,12 @@ def login_url():
     if not url:
         return jsonify({"status": "error", "message": error}), 400
 
-    logger.info(f"[CMS-BROKER] Issued {broker} login URL for account {account.name}")
+    # The redirect_uri is logged so it can be compared with the one registered
+    # on the broker's app, which a mismatch error never shows.
+    logger.info(
+        f"[CMS-BROKER] Issued {broker} login URL for account {account.name}, "
+        f"redirect_uri={redirect_uri}"
+    )
     return jsonify({"status": "success", "data": {"login_url": url}})
 
 
