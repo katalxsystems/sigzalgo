@@ -131,8 +131,13 @@ class PocketfulWebSocketAdapter(BaseBrokerWebSocketAdapter):
                 ws_url = f"{self.BASE_URL}/ws/v1/feeds?login_id={self.user_id}&access_token={self.access_token}"
 
                 # Create WebSocket connection
+                # The feed authenticates from the Authorization header; the
+                # query token alone is refused with 401.
+                from broker.pocketful.api.pocketfulwebsocket import feed_auth_header
+
                 self.ws_client = websocket.WebSocketApp(
                     ws_url,
+                    header=feed_auth_header(self.access_token),
                     on_message=self._on_message,
                     on_error=self._on_error,
                     on_close=self._on_close,

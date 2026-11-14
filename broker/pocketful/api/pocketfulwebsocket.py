@@ -101,6 +101,16 @@ def on_close(ws, close_status_code=None, close_msg=None):
     ws_connected = False
 
 
+def feed_auth_header(access_token):
+    """Handshake headers for the market-data feed (wss://.../ws/v1/feeds).
+
+    The feed checks an ``Authorization: Bearer`` header. A token sent only as
+    the ``access_token`` query parameter is refused with 401 even when the
+    same token works for REST, so every feed connection sends both.
+    """
+    return [f"Authorization: Bearer {access_token}"] if access_token else []
+
+
 def on_open(ws):
     logger.info("WebSocket connection established")
     # Start heartbeat thread
@@ -264,8 +274,10 @@ class PocketfulSocket:
                 )
                 logger.info(f"Connecting to WebSocket: {full_url}")
 
-                # Connect to WebSocket
-                websock = self._connect(full_url)
+                # Connect to WebSocket. The feed authenticates the handshake
+                # from an Authorization header: with the token only in the
+                # query string it answers 401 to a token REST accepts.
+                websock = self._connect(full_url, access_token)
 
                 # Start WebSocket in a thread
                 ws_thread = threading.Thread(target=self._webs_start, args=(websock,))
@@ -290,11 +302,15 @@ class PocketfulSocket:
                 logger.error(f"WebSocket connection error: {str(e)}")
                 return False
 
-    def _connect(self, url):
-        """Create WebSocket connection"""
+    def _connect(self, url, access_token=None):
+        """Create WebSocket connection, sending the token as a Bearer header."""
         websocket.enableTrace(False)
         ws = websocket.WebSocketApp(
-            url, on_message=on_message, on_error=on_error, on_close=on_close
+            url,
+            header=feed_auth_header(access_token or self.access_token),
+            on_message=on_message,
+            on_error=on_error,
+            on_close=on_close,
         )
         ws.on_open = on_open
         return ws
