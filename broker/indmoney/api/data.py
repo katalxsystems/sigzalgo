@@ -8,6 +8,7 @@ import pandas as pd
 from broker.indmoney.api.baseurl import get_url
 from broker.indmoney.api.rate_limiter import rate_limited_request
 from database.token_db import get_token
+from utils.broker_backpressure import BrokerBusyError
 from utils.httpx_client import get_httpx_client
 from utils.logging import get_logger
 
@@ -20,7 +21,10 @@ logger = get_logger(__name__)
 # them here so subsequent quote calls skip them and stay a single fast batch.
 # Cached codes are re-tested after a TTL in case they become quotable again.
 _BAD_SCRIP_CODES = {}          # scrip_code -> monotonic() time it was marked bad
-_BAD_SCRIP_TTL = 300.0         # seconds before a bad code is retried
+# Seconds before a refused code is asked about again. 15 minutes, not 5: an
+# option chain holds many untraded strikes, and each expiry re-ran the whole
+# bisection for all of them, which is what kept the shared quote queue full.
+_BAD_SCRIP_TTL = 900.0
 _bad_scrip_lock = threading.Lock()
 
 
@@ -34,6 +38,34 @@ def _is_known_bad(scrip_code):
             _BAD_SCRIP_CODES.pop(scrip_code, None)
             return False
         return True
+
+
+#: What a trader sees for a contract IndMoney will not price. Verified against
+#: the live API: a far out-of-the-money strike that has not traded (BEL 220 PE
+#: with BEL near 400) is answered "Invalid scrip codes" even though it is in
+#: IndMoney's own instrument master, while nearby strikes quote normally.
+UNQUOTABLE_MESSAGE = (
+    "IndMoney does not provide a live price for this contract yet. It usually "
+    "means the contract has not traded today; nearer strikes are priced normally."
+)
+
+
+class UnquotableContract(Exception):
+    """IndMoney refused this contract; it is skipped for _BAD_SCRIP_TTL."""
+
+    def __init__(self):
+        super().__init__(UNQUOTABLE_MESSAGE)
+
+
+def _is_invalid_scrip(error) -> bool:
+    """True for IndMoney's 400 that names the contract, not a wider failure."""
+    return "Invalid scrip codes" in str(error)
+
+
+def _refuse_if_known_bad(scrip_code):
+    """Answer a refused contract from memory instead of asking IndMoney again."""
+    if _is_known_bad(scrip_code):
+        raise UnquotableContract()
 
 
 def _mark_bad(scrip_code):
@@ -88,8 +120,11 @@ def get_api_response(endpoint, auth, method="GET", params=None):
             res = rate_limited_request(client, method, url, headers=headers, params=params)
 
         logger.debug(f"Request completed. Status code: {res.status_code}")
-        logger.info(f"Actual request URL: {res.url}")
+        logger.debug(f"Actual request URL: {res.url}")
 
+    except BrokerBusyError:
+        # Refused before sending: keep its type and its trader-facing sentence.
+        raise
     except Exception as req_error:
         logger.error(f"Request failed: {str(req_error)}")
         raise Exception(f"Failed to make request to Indmoney API: {str(req_error)}")
@@ -332,8 +367,9 @@ class BrokerData:
         """
         try:
             scrip_code = self._get_scrip_code(symbol, exchange)
+            _refuse_if_known_bad(scrip_code)
 
-            logger.info(f"Getting quotes for symbol: {symbol}, exchange: {exchange}")
+            logger.debug(f"Getting quotes for symbol: {symbol}, exchange: {exchange}")
             logger.debug(f"Using scrip code: {scrip_code}")
 
             params = {"scrip-codes": scrip_code}
@@ -384,7 +420,14 @@ class BrokerData:
                     logger.debug(f"Successfully fetched full quotes: {result}")
                     return result
 
+            except BrokerBusyError:
+                raise
             except Exception as full_error:
+                if _is_invalid_scrip(full_error):
+                    # The LTP and depth fallbacks get the same answer; asking
+                    # them too cost two more requests per refused contract.
+                    _mark_bad(scrip_code)
+                    raise UnquotableContract() from full_error
                 logger.warning(
                     f"Full quotes endpoint failed, falling back to separate calls: {str(full_error)}"
                 )
@@ -444,6 +487,22 @@ class BrokerData:
             logger.debug(f"Final quotes result: {result}")
             return result
 
+        except (UnquotableContract, BrokerBusyError) as e:
+            # Expected outcomes with their own trader-facing sentence; no
+            # traceback for every refresh of an unpriced strike.
+            logger.debug(f"get_quotes {symbol}:{exchange}: {e}")
+            return {
+                "ltp": 0,
+                "open": 0,
+                "high": 0,
+                "low": 0,
+                "volume": 0,
+                "bid": 0,
+                "ask": 0,
+                "prev_close": 0,
+                "oi": 0,
+                "error": str(e),
+            }
         except Exception as e:
             logger.error(f"Error in get_quotes: {str(e)}", exc_info=True)
             # Return default structure with error info
@@ -525,6 +584,9 @@ class BrokerData:
             params = {"scrip-codes": ",".join(codes)}
             response = get_api_response("/market/quotes/full", self.auth_token, "GET", params)
             return response.get("data", {}) or {}
+        except BrokerBusyError:
+            # Not a bad code: nothing was sent. Bisecting would only queue more.
+            raise
         except Exception as e:
             msg = str(e)
             # A 400 carrying the server's "Invalid scrip codes or mode" text
@@ -657,8 +719,9 @@ class BrokerData:
         """
         try:
             scrip_code = self._get_scrip_code(symbol, exchange)
+            _refuse_if_known_bad(scrip_code)
 
-            logger.info(f"Getting depth for symbol: {symbol}, exchange: {exchange}")
+            logger.debug(f"Getting depth for symbol: {symbol}, exchange: {exchange}")
             logger.debug(f"Using scrip code: {scrip_code}")
 
             params = {"scrip-codes": scrip_code}
@@ -671,7 +734,12 @@ class BrokerData:
                 )
                 full_quotes_data = full_response.get("data", {}).get(scrip_code, {})
                 logger.debug(f"Full quotes data retrieved for OHLC: {bool(full_quotes_data)}")
+            except BrokerBusyError:
+                raise
             except Exception as full_error:
+                if _is_invalid_scrip(full_error):
+                    _mark_bad(scrip_code)
+                    raise UnquotableContract() from full_error
                 logger.warning(f"Could not fetch full quotes for OHLC: {str(full_error)}")
 
             try:
@@ -895,8 +963,9 @@ class BrokerData:
 
             indmoney_interval = self.timeframe_map[interval]
             scrip_code = self._get_scrip_code(symbol, exchange)
+            _refuse_if_known_bad(scrip_code)
 
-            logger.info(f"Getting history for symbol: {symbol}, exchange: {exchange}")
+            logger.debug(f"Getting history for symbol: {symbol}, exchange: {exchange}")
             logger.debug(f"Interval: {interval} -> {indmoney_interval}")
             logger.debug(f"Date range: {start_date} to {end_date}")
             logger.debug(f"Using scrip code: {scrip_code}")
@@ -949,7 +1018,7 @@ class BrokerData:
 
                     endpoint = f"/market/historical/{indmoney_interval}"
                     logger.debug(f"Fetching chunk {chunk_start} to {chunk_end}")
-                    logger.info(f"Request params: {params}")
+                    logger.debug(f"Request params: {params}")
 
                     response = get_api_response(endpoint, self.auth_token, "GET", params)
 
@@ -1026,7 +1095,13 @@ class BrokerData:
                     logger.debug(f"Successfully processed {len(chunk_candles)} candles from chunk")
                     all_candles.extend(chunk_candles)
 
+                except BrokerBusyError:
+                    raise
                 except Exception as chunk_error:
+                    if _is_invalid_scrip(chunk_error):
+                        # Every later chunk gets the same refusal; stop here.
+                        _mark_bad(scrip_code)
+                        raise UnquotableContract() from chunk_error
                     logger.error(
                         f"Error fetching chunk {chunk_start} to {chunk_end}: {str(chunk_error)}"
                     )

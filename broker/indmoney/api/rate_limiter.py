@@ -35,6 +35,7 @@ from datetime import datetime
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
+from utils.broker_backpressure import BrokerBusyError
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -64,6 +65,27 @@ _DAILY_WARN_FRACTION = 0.8
 MAX_RETRIES = 3
 BASE_BACKOFF = 1.0  # seconds; doubled per attempt when no Retry-After is sent
 MAX_BACKOFF = 30.0
+
+#: Longest a market-data request (quotes, depth, history) may wait for its
+#: turn, under every worker type. utils.broker_backpressure bounds waits only
+#: under gthread; production runs eventlet, where the shared 4/s quote queue
+#: had no ceiling. With an option chain, the strategy feed and the CMS all
+#: quoting, a request could sit 20s or more in it, and the CMS gave up first
+#: ("cURL error 28 ... after 20001 milliseconds"). Refusing at once with the
+#: busy sentence answers inside the caller's timeout; orders are not bounded
+#: here (their bucket keeps its own policy).
+DATA_MAX_WAIT_SECONDS = 8.0
+_BOUNDED_BUCKETS = ("quote", "data")
+
+
+def _data_wait_ceiling(bucket):
+    """The wait ceiling for a market-data bucket, or None for no bound."""
+    if bucket not in _BOUNDED_BUCKETS:
+        return None
+    from utils.broker_backpressure import max_queue_wait
+
+    gthread = max_queue_wait("data")
+    return DATA_MAX_WAIT_SECONDS if gthread is None else min(gthread, DATA_MAX_WAIT_SECONDS)
 
 _lock = threading.Lock()
 _next_free = {}  # bucket -> earliest monotonic time a request may go out
@@ -137,12 +159,17 @@ def apply_rate_limit(bucket):
     if not rate:
         return
     min_interval = 1.0 / rate
+    ceiling = _data_wait_ceiling(bucket)
 
     with _lock:
         now = time.monotonic()
         start = max(now, _next_free.get(bucket, 0.0))
-        _next_free[bucket] = start + min_interval
         sleep_for = start - now
+        # Checked before booking, so a refused caller leaves no reservation
+        # behind to delay everyone after it.
+        if ceiling is not None and sleep_for > ceiling:
+            raise BrokerBusyError(retry_after=sleep_for)
+        _next_free[bucket] = start + min_interval
 
     # Sleep outside the lock so other threads can reserve their own slots.
     if sleep_for > 0:
@@ -236,6 +263,13 @@ def rate_limited_request(client, method, url, **kwargs):
 
         if attempt < retries:
             delay = retry_delay(response.headers, attempt)
+            ceiling = _data_wait_ceiling(bucket)
+            if ceiling is not None and delay > ceiling:
+                raise BrokerBusyError(
+                    "IndMoney asked OpenAlgo to slow down for longer than a request can be "
+                    "held. Try again in a minute.",
+                    retry_after=delay,
+                )
             logger.warning(
                 f"IndMoney rate limit hit (429) on {method} {url} [{bucket}]; "
                 f"retry {attempt + 1}/{retries} in {delay:.2f}s"
