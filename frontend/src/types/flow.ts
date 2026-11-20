@@ -669,6 +669,12 @@ export interface HttpRequestNodeData {
   body?: string
   /** Milliseconds, capped at 60000 by the executor. */
   timeout?: number
+  /** 0-3. Only connection failures and 429/502/503/504 are retried. */
+  retries?: number
+  /** Milliseconds between attempts, 500-10000. */
+  retryDelay?: number
+  /** Also retry a POST/PUT/PATCH whose reply never came (GET/DELETE always do). */
+  retryOnTimeout?: boolean
   outputVariable?: string
 }
 

@@ -1545,6 +1545,10 @@ export const DEFAULT_NODE_DATA = {
     body: '',
     // Milliseconds, as the panel's own label and bounds already said.
     timeout: 30000,
+    // Off by default: a repeated POST is a second event on the far side.
+    retries: 0,
+    retryDelay: 2000,
+    retryOnTimeout: false,
     outputVariable: 'response',
   },
   symbol: {

@@ -1,4 +1,5 @@
 import os
+import time
 from typing import List
 
 from sqlalchemy import (
@@ -102,10 +103,18 @@ def insert_symtokens_in_batches(rows: list[dict]) -> None:
     A failure part-way leaves the batches before it committed. Callers already
     delete the broker's rows first, so that is a partial master instead of an
     empty one, and the next download replaces it.
+
+    Each batch also yields to the eventlet hub. SQLite runs the insert in C, so
+    without a yield the whole loop (about 20s for Nubra's 163k rows) held the
+    single production worker: no request was answered, scheduler jobs were
+    missed, and the CMS timed out ("cURL error 28") on any call made during a
+    master-contract download. time.sleep(0) is eventlet's yield when patched
+    and a no-op on the dev server.
     """
     for start in range(0, len(rows), SYMTOKEN_INSERT_BATCH):
         db_session.bulk_insert_mappings(SymToken, rows[start : start + SYMTOKEN_INSERT_BATCH])
         db_session.commit()
+        time.sleep(0)
 
 
 @event.listens_for(Session, "do_orm_execute")

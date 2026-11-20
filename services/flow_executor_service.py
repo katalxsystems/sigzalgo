@@ -47,7 +47,7 @@ MAX_NODE_DEPTH = 100
 MAX_NODE_VISITS = 500
 
 # Logic gates combine the boolean results of their inputs. Wires into these
-# nodes are data edges, not control edges — see the edge filter below.
+# nodes are data edges, not control edges â€” see the edge filter below.
 GATE_NODE_TYPES = ("andGate", "orGate", "notGate")
 # Nodes that fan out into a TRUE and a FALSE branch. Like a gate, each is
 # combinational: one result per run, however many paths reach it.
@@ -644,7 +644,7 @@ class WorkflowContext:
         def replacer(match):
             var_path = match.group(1).strip()
 
-            # Built-in variables — match only as a single whole token
+            # Built-in variables â€” match only as a single whole token
             builtin_value = self._get_builtin_variable(var_path)
             if builtin_value is not None:
                 return builtin_value
@@ -2181,7 +2181,9 @@ class NodeExecutor:
         if response.get("status") == "error" or response.get("error"):
             detail = response.get("message") or response.get("error") or "unknown error"
             hint = ""
-            if source != "db":
+            # A symbol the master contract does not hold is not an interval
+            # problem; the interval hint would send the trader the wrong way.
+            if source != "db" and "not found" not in str(detail).lower():
                 hint = (
                     f" If your broker does not support the '{interval}' interval, use the "
                     "Intervals node to list supported ones, or set Source to Historify DB "
@@ -3364,6 +3366,18 @@ class NodeExecutor:
     # Stored timeouts at or below this are legacy seconds (see execute_http_request).
     HTTP_TIMEOUT_LEGACY_SECONDS_MAX = 60
 
+    # Opt-in retries. Off by default: most of these calls are POSTs that act on
+    # the far side, and a repeat is a second event. Only failures where the
+    # request almost certainly did not take effect are retried (see
+    # execute_http_request), and every attempt together stays inside a budget
+    # because the run holds the workflow for its whole duration.
+    HTTP_RETRIES_MAX = 3
+    HTTP_RETRY_DELAY_DEFAULT_MS = 2_000
+    HTTP_RETRY_DELAY_MIN_MS = 500
+    HTTP_RETRY_DELAY_MAX_MS = 10_000
+    HTTP_RETRY_BUDGET_S = 90
+    HTTP_RETRY_STATUSES = frozenset({429, 502, 503, 504})
+
     @staticmethod
     def _redact_url(url: str) -> str:
         """URL without credentials or query string, for logs.
@@ -3547,43 +3561,124 @@ class NodeExecutor:
             self.log(f"HTTP request aborted: {message}", "error")
             return {"status": "error", "message": message}
 
-        self.log(f"HTTP {method} {self._redact_url(url)}")
+        if method not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+            return {"status": "error", "message": f"Unsupported method: {method}"}
+
+        retries = min(max(self.get_int(node_data, "retries", 0), 0), self.HTTP_RETRIES_MAX)
+        retry_delay = (
+            min(
+                max(
+                    self.get_int(node_data, "retryDelay", self.HTTP_RETRY_DELAY_DEFAULT_MS),
+                    self.HTTP_RETRY_DELAY_MIN_MS,
+                ),
+                self.HTTP_RETRY_DELAY_MAX_MS,
+            )
+            / 1000
+        )
+        retry_on_timeout = bool(node_data.get("retryOnTimeout")) or method in ("GET", "DELETE")
+        attempts = retries + 1
+        shown_url = self._redact_url(url)
+        started = time_module.monotonic()
+
+        self.log(f"HTTP {method} {shown_url}")
 
         # Its own client, not the shared broker pool: a slow or hostile endpoint
         # here must not consume a connection that order placement needs.
         # follow_redirects stays off so a redirect cannot escape the destination
         # check above.
         with httpx.Client(timeout=timeout, follow_redirects=False) as client:
-            try:
-                if method == "GET":
-                    response = client.get(url, headers=headers)
-                elif method in ("POST", "PUT", "PATCH"):
-                    send = getattr(client, method.lower())
-                    try:
-                        body_json = json.loads(body) if body else {}
-                        response = send(url, json=body_json, headers=headers)
-                    except json.JSONDecodeError:
-                        response = send(url, content=body, headers=headers)
-                elif method == "DELETE":
-                    response = client.delete(url, headers=headers)
-                else:
-                    return {"status": "error", "message": f"Unsupported method: {method}"}
-
+            for attempt in range(1, attempts + 1):
+                retry_reason = None
+                wait = retry_delay
                 try:
-                    response_data = response.json()
-                except Exception:
-                    response_data = response.text
+                    response = self._send_http_once(client, method, url, headers, body)
+                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+                    # The request never left: retrying cannot repeat anything.
+                    outcome = {
+                        "status": "error",
+                        "message": f"could not reach {shown_url}: {str(e) or type(e).__name__}",
+                    }
+                    retry_reason = "could not connect"
+                except httpx.TimeoutException:
+                    # Sent, and maybe acted on, with the reply lost. A POST is
+                    # only repeated when the author said the server tolerates it.
+                    outcome = {
+                        "status": "error",
+                        "message": f"no reply from {shown_url} within {timeout:g} seconds",
+                    }
+                    if retry_on_timeout:
+                        retry_reason = "no reply in time"
+                except httpx.HTTPError as e:
+                    outcome = {"status": "error", "message": f"could not reach {shown_url}: {e}"}
+                    if retry_on_timeout:
+                        retry_reason = "connection dropped"
+                else:
+                    outcome = self._http_result(response)
+                    if attempt < attempts and response.status_code in self.HTTP_RETRY_STATUSES:
+                        retry_reason = f"server answered {response.status_code}"
+                        wait = max(wait, self._retry_after_seconds(response))
 
-                result = {
-                    "status": "success" if response.is_success else "error",
-                    "statusCode": response.status_code,
-                    "data": response_data,
-                }
-                self.store_output(node_data, result)
-                return result
+                if retry_reason is None or attempt == attempts:
+                    if attempt > 1 and outcome.get("message"):
+                        outcome["message"] += f" (after {attempt} attempts)"
+                    if "statusCode" in outcome:
+                        self.store_output(node_data, outcome)
+                    return outcome
 
-            except httpx.HTTPError as e:
-                return {"status": "error", "message": str(e)}
+                # Stop early rather than hold the workflow past its budget.
+                if time_module.monotonic() - started + wait + timeout > self.HTTP_RETRY_BUDGET_S:
+                    outcome["message"] += " (no time left to retry)"
+                    if "statusCode" in outcome:
+                        self.store_output(node_data, outcome)
+                    return outcome
+
+                self.log(
+                    f"HTTP attempt {attempt} of {attempts} failed ({retry_reason}); "
+                    f"retrying in {wait:g}s"
+                )
+                time_module.sleep(wait)
+
+    def _send_http_once(self, client, method, url, headers, body):
+        """One request. Raises httpx errors to the retry loop."""
+        if method in ("POST", "PUT", "PATCH"):
+            send = getattr(client, method.lower())
+            if isinstance(body, (dict, list)):
+                return send(url, json=body, headers=headers)
+            try:
+                body_json = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                return send(url, content=body, headers=headers)
+            return send(url, json=body_json, headers=headers)
+        return client.request(method, url, headers=headers)
+
+    @staticmethod
+    def _http_result(response) -> dict:
+        try:
+            response_data = response.json()
+        except Exception:
+            response_data = response.text
+
+        result = {
+            "status": "success" if response.is_success else "error",
+            "statusCode": response.status_code,
+            "data": response_data,
+        }
+        if not response.is_success:
+            # Without this the log said only "node failed": the server's reply
+            # was stored in the variable and never shown. The branch-stop line
+            # in the run log prints this message.
+            reply = response_data if isinstance(response_data, str) else json.dumps(response_data)
+            result["message"] = f"the server answered {response.status_code}: {reply[:300]}"
+        return result
+
+    @classmethod
+    def _retry_after_seconds(cls, response) -> float:
+        """A Retry-After the server sent, in seconds, capped at the max delay."""
+        try:
+            value = float((getattr(response, "headers", None) or {}).get("Retry-After", 0))
+        except (TypeError, ValueError):
+            return 0.0
+        return min(max(value, 0.0), cls.HTTP_RETRY_DELAY_MAX_MS / 1000)
 
     # === Condition Nodes ===
 
@@ -3676,7 +3771,7 @@ class NodeExecutor:
     def execute_fund_check(self, node_data: dict) -> dict:
         """Execute Fund Check node.
 
-        UI writes a single `minAvailable` field — semantics: "trigger True
+        UI writes a single `minAvailable` field â€” semantics: "trigger True
         if available cash is at least this much". The previous version read
         `operator`/`threshold` (never written by the UI), so it always
         defaulted to `available > 0` and ignored `minAvailable`.
@@ -3901,7 +3996,7 @@ class NodeExecutor:
     def _compare(left: float, operator: str, right: float) -> bool:
         """Compare two numbers using either symbol operators (>, <, ==, !=,
         >=, <=) used by the UI or word operators (gt, lt, eq, neq, gte, lte)
-        used by some legacy node configs. Unknown operator → False."""
+        used by some legacy node configs. Unknown operator â†’ False."""
         ops = {
             ">": left > right,
             "gt": left > right,
@@ -3959,7 +4054,7 @@ class NodeExecutor:
         # The editor writes conditionType (entry/exit/custom) as a role tag on
         # the node. It never changes the comparison, but echoing it into the log
         # line and the result payload is what makes a graph with several time
-        # gates readable in the execution log — "which 15:15 check was that?".
+        # gates readable in the execution log â€” "which 15:15 check was that?".
         condition_type = node_data.get("conditionType", "entry")
 
         now = datetime.now().time()
@@ -4936,7 +5031,7 @@ def execute_node_chain(
     edges_to_follow = edge_map.get(node_id, [])
 
     # For condition nodes, filter edges based on the truthy/falsy source handle.
-    # Different node types emit different handle vocabularies — NotGate and
+    # Different node types emit different handle vocabularies â€” NotGate and
     # TimeCondition use "yes"/"no", while PositionCheck, FundCheck,
     # PriceCondition, and TimeWindow use "true"/"false". Treat them as synonyms
     # so all condition forks are honored regardless of which node produced them.
@@ -4956,7 +5051,7 @@ def execute_node_chain(
         FALSE_HANDLES = {"no", "false"}
         # A condition that could not be evaluated (e.g. an operand that did
         # not resolve to a number) must take NEITHER branch. Treating it as
-        # False would route the else-path — on a "RSI < 70 -> BUY else SELL"
+        # False would route the else-path â€” on a "RSI < 70 -> BUY else SELL"
         # graph a typo'd variable would silently fire the SELL. Pass-through
         # edges (logging/alerting) still run so the failure is visible.
         errored = result.get("status") == "error"
@@ -4964,7 +5059,7 @@ def execute_node_chain(
         # control flow: the gate reads each input's stored boolean and ignores
         # the handle the wire left from. Branch-filtering these edges meant a
         # False input never travelled to the gate, so the gate stayed parked on
-        # "waiting for N more input(s)" and never fired at all — an OR with one
+        # "waiting for N more input(s)" and never fired at all â€” an OR with one
         # True and one False produced nothing (OR behaved like AND), no gate
         # could ever drive its False branch, and which input happened to be
         # evaluated last decided the outcome. The gate's own once-per-run guard
@@ -4992,7 +5087,7 @@ def execute_node_chain(
             elif not condition_met and source_handle in FALSE_HANDLES:
                 filtered_edges.append(edge)
             elif not is_branch_handle:
-                # Edge has no condition handle — pass-through (e.g. a Log node
+                # Edge has no condition handle â€” pass-through (e.g. a Log node
                 # wired to the node's main bottom handle, not the True/False forks).
                 filtered_edges.append(edge)
         edges_to_follow = filtered_edges

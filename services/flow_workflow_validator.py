@@ -951,6 +951,27 @@ def _enum_and_range_errors(base: str, node_type: str, data: dict, strict: bool) 
                         timeout,
                     )
                 )
+        for field, low, high, unit in (
+            ("retries", 0, HTTP_RETRIES_MAX, "(a count of extra attempts)"),
+            ("retryDelay", HTTP_RETRY_DELAY_MIN_MS, HTTP_RETRY_DELAY_MAX_MS, "milliseconds"),
+        ):
+            value = data.get(field)
+            if value is None or value == "" or (isinstance(value, str) and "{{" in value):
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                number = None
+            if number is None or number < low or number > high:
+                found.append(
+                    _err(
+                        f"{base}/data/{field}",
+                        f"invalid_{field.lower()}",
+                        f"{field} must be between {low} and {high} {unit}.",
+                        f"{low}..{high}",
+                        value,
+                    )
+                )
     return found
 
 
@@ -959,6 +980,10 @@ def _enum_and_range_errors(base: str, node_type: str, data: dict, strict: bool) 
 HTTP_TIMEOUT_MAX_MS = 60_000
 # A second is the shortest timeout that can describe a real remote call.
 HTTP_TIMEOUT_MIN_MS = 1_000
+# Mirror NodeExecutor.HTTP_RETRIES_MAX and HTTP_RETRY_DELAY_*_MS.
+HTTP_RETRIES_MAX = 3
+HTTP_RETRY_DELAY_MIN_MS = 500
+HTTP_RETRY_DELAY_MAX_MS = 10_000
 
 # The methods execute_http_request actually implements. Anything else reached
 # the node and returned "Unsupported method" at run time.

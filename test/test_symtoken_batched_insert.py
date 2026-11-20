@@ -79,6 +79,22 @@ def test_another_writer_gets_the_lock_between_batches(symtoken_db, monkeypatch):
     verify.close()
 
 
+def test_each_batch_yields_to_other_requests(symtoken_db, monkeypatch):
+    """Under eventlet the insert ran in C for ~20s without yielding, so the one
+    worker answered nothing and the CMS timed out mid-download."""
+    _, session = symtoken_db
+    monkeypatch.setattr(symbol, "SYMTOKEN_INSERT_BATCH", 2)
+    events = []
+    real_commit = session.commit
+    monkeypatch.setattr(session, "commit", lambda: (real_commit(), events.append("commit")))
+    monkeypatch.setattr(symbol.time, "sleep", lambda s: events.append(f"yield {s}"))
+
+    with broker_scope("testbroker"):
+        symbol.insert_symtokens_in_batches(_rows(5))
+
+    assert events == ["commit", "yield 0"] * 3
+
+
 def test_nothing_to_insert_is_a_no_op(symtoken_db):
     with broker_scope("testbroker"):
         symbol.insert_symtokens_in_batches([])

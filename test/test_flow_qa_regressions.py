@@ -502,6 +502,124 @@ def test_http_request_rejects_non_public_destinations(url):
     assert "refusing" in result["message"]
 
 
+def test_http_request_failure_says_what_the_server_answered(monkeypatch):
+    """The run log said only "httpRequest node failed (node failed)"."""
+    import httpx
+
+    def reply(request):
+        return httpx.Response(422, json={"error": "price_event missing call_id"})
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(reply), **kw)
+    )
+    monkeypatch.setattr(fes.NodeExecutor, "_check_http_destination", classmethod(lambda c, u: None))
+    executor = fes.NodeExecutor(None, fes.WorkflowContext(), [])
+
+    result = executor.execute_http_request(
+        {"url": "https://api.example.com/event", "method": "POST", "body": "{}"}
+    )
+
+    assert result["status"] == "error"
+    assert "422" in result["message"] and "call_id" in result["message"]
+
+
+def _http_executor(monkeypatch, handler):
+    import httpx
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw)
+    )
+    monkeypatch.setattr(fes.NodeExecutor, "_check_http_destination", classmethod(lambda c, u: None))
+    slept = []
+    monkeypatch.setattr(fes.time_module, "sleep", slept.append)
+    return fes.NodeExecutor(None, fes.WorkflowContext(), []), slept
+
+
+def _replies(*items):
+    """A handler that answers each request with the next item (status or exception)."""
+    import httpx
+
+    seen = []
+
+    def handler(request):
+        item = items[len(seen)]
+        seen.append(request.method)
+        if isinstance(item, Exception):
+            raise item
+        return httpx.Response(item, json={"n": len(seen)})
+
+    return handler, seen
+
+
+NODE = {"url": "https://api.example.com/event", "method": "POST", "body": "{}"}
+
+
+def test_no_retry_unless_asked(monkeypatch):
+    handler, seen = _replies(503, 200)
+    executor, _ = _http_executor(monkeypatch, handler)
+    assert executor.execute_http_request(NODE)["status"] == "error"
+    assert len(seen) == 1
+
+
+def test_a_busy_server_is_retried_until_it_answers(monkeypatch):
+    handler, seen = _replies(503, 502, 200)
+    executor, slept = _http_executor(monkeypatch, handler)
+    result = executor.execute_http_request({**NODE, "retries": 3, "retryDelay": 1000})
+    assert result["status"] == "success" and len(seen) == 3
+    assert slept == [1.0, 1.0]
+
+
+def test_a_refused_request_is_not_retried(monkeypatch):
+    handler, seen = _replies(422, 200)
+    executor, _ = _http_executor(monkeypatch, handler)
+    result = executor.execute_http_request({**NODE, "retries": 3})
+    assert result["statusCode"] == 422 and len(seen) == 1
+
+
+def test_a_post_whose_reply_was_lost_is_not_repeated_by_default(monkeypatch):
+    import httpx
+
+    handler, seen = _replies(httpx.ReadTimeout("slow"), 200)
+    executor, _ = _http_executor(monkeypatch, handler)
+    result = executor.execute_http_request({**NODE, "retries": 3})
+    assert result["status"] == "error" and "no reply" in result["message"]
+    assert len(seen) == 1
+
+
+def test_a_lost_reply_is_retried_when_the_author_allows_it(monkeypatch):
+    import httpx
+
+    handler, seen = _replies(httpx.ReadTimeout("slow"), 200)
+    executor, _ = _http_executor(monkeypatch, handler)
+    result = executor.execute_http_request({**NODE, "retries": 1, "retryOnTimeout": True})
+    assert result["status"] == "success" and len(seen) == 2
+
+
+def test_a_failed_connection_is_always_safe_to_retry(monkeypatch):
+    import httpx
+
+    handler, seen = _replies(httpx.ConnectError("refused"), 200)
+    executor, _ = _http_executor(monkeypatch, handler)
+    assert executor.execute_http_request({**NODE, "retries": 1})["status"] == "success"
+    assert len(seen) == 2
+
+
+def test_the_last_failure_names_the_attempt_count(monkeypatch):
+    handler, seen = _replies(503, 503)
+    executor, _ = _http_executor(monkeypatch, handler)
+    result = executor.execute_http_request({**NODE, "retries": 1})
+    assert "503" in result["message"] and "after 2 attempts" in result["message"]
+
+
+def test_retries_are_capped(monkeypatch):
+    handler, seen = _replies(*([503] * 10))
+    executor, _ = _http_executor(monkeypatch, handler)
+    executor.execute_http_request({**NODE, "retries": 50})
+    assert len(seen) == fes.NodeExecutor.HTTP_RETRIES_MAX + 1
+
+
 def test_http_request_rejects_unparseable_headers():
     """The editor writes headers as a JSON string; a bad one must not go out bare."""
     executor = fes.NodeExecutor(None, fes.WorkflowContext(), [])

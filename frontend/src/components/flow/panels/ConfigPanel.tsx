@@ -3155,6 +3155,59 @@ export function ConfigPanel() {
                     }
                   />
                 </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-2">
+                    <Label className="text-xs">Retries</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={3}
+                      className="h-8"
+                      value={(nodeData.retries as number) ?? 0}
+                      onChange={(e) =>
+                        handleDataChange(
+                          'retries',
+                          Math.min(3, Math.max(0, parseInt(e.target.value, 10) || 0))
+                        )
+                      }
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-xs">Retry delay (ms)</Label>
+                    <Input
+                      type="number"
+                      min={500}
+                      max={10000}
+                      step={500}
+                      className="h-8"
+                      disabled={!nodeData.retries}
+                      value={(nodeData.retryDelay as number) || 2000}
+                      onChange={(e) =>
+                        handleDataChange('retryDelay', parseInt(e.target.value, 10) || 2000)
+                      }
+                    />
+                  </div>
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Retries only when the request could not connect or the server answered 429, 502,
+                  503 or 504. A refused request (400, 401, 404, 422) is not retried.
+                </p>
+                {Boolean(nodeData.retries) &&
+                  ['POST', 'PUT', 'PATCH'].includes((nodeData.method as string) || 'GET') && (
+                    <div className="flex items-center justify-between rounded-lg border p-3">
+                      <div>
+                        <Label className="text-xs">Also retry when no reply comes back</Label>
+                        <p className="text-[10px] text-muted-foreground">
+                          The server may already have acted on it. Turn on only if it ignores
+                          repeats.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={(nodeData.retryOnTimeout as boolean) || false}
+                        onCheckedChange={(v) => handleDataChange('retryOnTimeout', v)}
+                      />
+                    </div>
+                  )}
                 <div className="space-y-2">
                   <Label className="text-xs">Output Variable</Label>
                   <Input
